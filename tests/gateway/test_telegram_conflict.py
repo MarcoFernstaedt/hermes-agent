@@ -84,6 +84,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     async def fake_start_polling(**kwargs):
         captured["error_callback"] = kwargs["error_callback"]
+        captured["drop_pending_updates"] = kwargs.get("drop_pending_updates")
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=fake_start_polling),
@@ -112,6 +113,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     assert ok is True
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    assert captured["drop_pending_updates"] is False
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})

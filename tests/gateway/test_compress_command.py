@@ -54,6 +54,7 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner._session_db = MagicMock(name="session_db")
     return runner
 
 
@@ -77,11 +78,12 @@ async def test_compress_command_reports_noop_without_success_banner():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("run_agent.AIAgent", return_value=agent_instance) as agent_cls,
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
 
+    assert agent_cls.call_args.kwargs["session_db"] is runner._session_db
     assert "No changes from compression" in result
     assert "Compressed:" not in result
     assert "Approx request size: ~100 tokens (unchanged)" in result

@@ -2424,9 +2424,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
+                # Preserve updates that arrived while the gateway was down or
+                # restarting. Dropping pending updates makes Telegram look
+                # "connected" while user messages vanish silently.
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                     error_callback=_polling_error_callback,
                 )
             
