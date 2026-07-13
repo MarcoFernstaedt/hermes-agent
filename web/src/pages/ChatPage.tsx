@@ -31,6 +31,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
+import { ChatModeTransition } from "@/components/ChatModeTransition";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -1742,46 +1743,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.28)]">
-          {!rawConsoleOpen && (
-            <ChatBubbleFeed
-              messages={feedState.messages}
-              composer={composer}
-              disabled={ptyState !== "open"}
-              isWorking={agentRunning}
-              rawConsoleOpen={rawConsoleOpen}
-              focusSignal={reconnectNonce}
-              onComposerChange={setComposer}
-              onSubmit={submitComposer}
-              onStop={stopAgent}
-              onRetry={retryMessage}
-              onApproval={answerApproval}
-              onClarify={answerClarify}
-              onImages={(files) => imageAttachRef.current(files)}
-              onToggleRawConsole={() => setRawConsoleOpen(true)}
-            />
-          )}
+          <ChatModeTransition
+            activeMode={rawConsoleOpen ? "console" : "feed"}
+            feed={
+              <ChatBubbleFeed
+                messages={feedState.messages}
+                composer={composer}
+                disabled={ptyState !== "open"}
+                isWorking={agentRunning}
+                rawConsoleOpen={rawConsoleOpen}
+                focusSignal={reconnectNonce}
+                onComposerChange={setComposer}
+                onSubmit={submitComposer}
+                onStop={stopAgent}
+                onRetry={retryMessage}
+                onApproval={answerApproval}
+                onClarify={answerClarify}
+                onImages={(files) => imageAttachRef.current(files)}
+                onToggleRawConsole={() => setRawConsoleOpen(true)}
+              />
+            }
+            console={
+              <div
+                className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-2 sm:p-3"
+                style={{
+                  backgroundColor: terminalBg,
+                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+                }}
+              >
+                <div
+                  ref={hostRef}
+                  className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+                />
 
-          {/* Keep the original native terminal alive off-screen in Chat Feed mode.
-              Raw Console restores its full original presentation and controls. */}
-          <div
-            className={cn(
-              "flex flex-col overflow-hidden",
-              rawConsoleOpen
-                ? "absolute inset-0 z-10 p-2 sm:p-3"
-                : "pointer-events-none fixed left-[-200vw] top-0 h-[720px] w-[1100px] opacity-0",
-            )}
-            style={{
-              backgroundColor: terminalBg,
-              boxShadow: rawConsoleOpen ? "0 8px 32px rgba(0, 0, 0, 0.4)" : undefined,
-            }}
-            aria-hidden={!rawConsoleOpen}
-          >
-            <div
-              ref={hostRef}
-              className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-            />
-
-            {rawConsoleOpen && (
               <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1.5 sm:bottom-3 sm:right-3 lg:bottom-4 lg:right-4">
                 <Button
                   ghost
@@ -1822,8 +1816,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   </span>
                 </Button>
               </div>
-            )}
-          </div>
+              </div>
+            }
+          />
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">

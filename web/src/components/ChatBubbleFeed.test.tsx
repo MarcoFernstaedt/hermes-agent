@@ -37,3 +37,22 @@ describe("busy chat composer", () => {
     expect(html).not.toContain("/steer");
   });
 });
+
+describe("chat feed refinements", () => {
+  it("keeps composer controls accessible without keyboard helper copy", () => {
+    const html = renderToStaticMarkup(<ChatBubbleFeed {...baseProps} composer="" />);
+
+    expect(html).toContain('aria-label="Message Imperator"');
+    expect(html).toContain('aria-label="Stop agent"');
+    expect(html).not.toContain("Enter sends");
+    expect(html).not.toContain("Shift+Enter");
+  });
+
+  it("uses an understated accessible chat icon for the empty state", () => {
+    const html = renderToStaticMarkup(<ChatBubbleFeed {...baseProps} composer="" />);
+
+    expect(html).toContain('aria-label="Start a new chat"');
+    expect(html).toContain("lucide-messages-square");
+    expect(html).not.toContain("lucide-sparkles");
+  });
+});

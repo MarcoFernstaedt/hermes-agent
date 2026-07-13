@@ -7,7 +7,6 @@ import {
   LoaderCircle,
   RotateCcw,
   SendHorizontal,
-  Sparkles,
   Square,
   TerminalSquare,
 } from "lucide-react";
@@ -24,6 +23,7 @@ import {
   SlashPopover,
   type SlashPopoverHandle,
 } from "@/components/SlashPopover";
+import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { getChatWelcome, type ChatFeedMessage } from "@/lib/chat-feed-model";
 import { GatewayClient } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
@@ -218,13 +218,7 @@ export function ChatBubbleFeed({
         aria-relevant="additions text"
       >
         {messages.length === 0 ? (
-          <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center text-text-tertiary">
-            <div className="rounded-full border border-primary/30 bg-primary/10 p-3 text-primary">
-              <Sparkles className="size-5" />
-            </div>
-            <p className="text-sm font-medium text-text-secondary">{welcome.greeting}</p>
-            <p className="max-w-sm text-xs">{welcome.prompt}</p>
-          </div>
+          <ChatEmptyState greeting={welcome.greeting} prompt={welcome.prompt} />
         ) : (
           <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 sm:gap-4">
             {messages.map((message) => {
@@ -456,8 +450,7 @@ export function ChatBubbleFeed({
             </Button>
           </div>
 
-          <div className="mt-1.5 flex items-center justify-between gap-2 px-1 text-[0.6875rem] text-text-tertiary">
-            <span>Enter sends · Shift+Enter adds a line</span>
+          <div className="mt-1.5 flex items-center justify-end px-1 text-[0.6875rem] text-text-tertiary">
             <Button
               ghost
               size="sm"
