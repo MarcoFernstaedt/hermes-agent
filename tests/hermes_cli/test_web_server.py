@@ -20,6 +20,28 @@ from hermes_cli.config import (
 )
 
 
+@pytest.mark.asyncio
+async def test_event_subscriber_emits_heartbeat_while_idle():
+    from hermes_cli import web_server
+
+    class IdleSubscriber:
+        def __init__(self):
+            self.sent = []
+
+        async def receive_text(self):
+            await asyncio.Event().wait()
+
+        async def send_text(self, payload):
+            self.sent.append(payload)
+
+    subscriber = IdleSubscriber()
+    await web_server._receive_event_subscriber_or_heartbeat(subscriber, timeout=0.001)
+
+    assert [json.loads(payload) for payload in subscriber.sent] == [
+        {"method": "heartbeat"}
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

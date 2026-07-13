@@ -138,35 +138,130 @@ const hydrationRowsOverlap = (
   );
 };
 
+const completedDurableUserIndexes = (
+  history: ChatFeedMessage[],
+): Map<string, number[]> => {
+  const completed = new Map<string, number[]>();
+  for (let index = 0; index < history.length; index += 1) {
+    const stored = history[index];
+    if (stored.role !== "user") continue;
+    let hasCompletion = false;
+    for (let turnIndex = index + 1; turnIndex < history.length; turnIndex += 1) {
+      if (history[turnIndex].role === "user") break;
+      if (history[turnIndex].role === "assistant") {
+        hasCompletion = true;
+        break;
+      }
+    }
+    const text = stored.text.trim();
+    if (!hasCompletion || !text) continue;
+    const indexes = completed.get(text) ?? [];
+    indexes.push(index);
+    completed.set(text, indexes);
+  }
+  return completed;
+};
+
+const claimCompletedDurableTurn = (
+  history: ChatFeedMessage[],
+  completed: Map<string, number[]>,
+  claimed: Set<number>,
+  live: ChatFeedMessage,
+  requireTimestampMatch: boolean,
+): boolean => {
+  if (live.role !== "user") return false;
+  const candidates = completed.get(live.text.trim()) ?? [];
+  for (const index of candidates) {
+    if (claimed.has(index)) continue;
+    if (requireTimestampMatch) {
+      const raw = history[index].raw;
+      const rawTimestamp =
+        raw && typeof raw === "object"
+          ? (raw as { timestamp?: unknown }).timestamp
+          : undefined;
+      // Text alone cannot distinguish a missed completion from a newly queued
+      // repeated prompt. Ambiguous timestamp-less rows must remain pending.
+      if (typeof rawTimestamp !== "number") continue;
+      if (
+        Math.abs(
+          normalizedTimestamp(rawTimestamp) - normalizedTimestamp(live.timestamp),
+        ) > 1_000
+      ) {
+        continue;
+      }
+    }
+    claimed.add(index);
+    return true;
+  }
+  return false;
+};
+
 export function mergeHydratedFeedState(
   history: ChatFeedMessage[],
   state: ChatFeedState,
 ): ChatFeedState {
-  const live = state.messages.filter((message) => !message.id.startsWith("history-"));
-  let overlap = 0;
-  const maximum = Math.min(history.length, live.length);
-
-  for (let size = maximum; size > 0; size -= 1) {
-    const historyStart = history.length - size;
+  const completed = completedDurableUserIndexes(history);
+  const claimedCompleted = new Set<number>();
+  // Durable/history rows and already-acknowledged local user rows consume their
+  // matching completed turns before optimistic rows are considered. This keeps
+  // a second identical queued prompt distinct from the first completed turn.
+  for (const message of state.messages) {
     if (
-      live.slice(0, size).every((message, index) =>
-        hydrationRowsOverlap(history[historyStart + index], message),
+      message.role === "user" &&
+      message.status !== "sending" &&
+      message.status !== "waiting"
+    ) {
+      claimCompletedDurableTurn(
+        history,
+        completed,
+        claimedCompleted,
+        message,
+        false,
+      );
+    }
+  }
+  const live = state.messages.filter((message) => {
+    if (message.id.startsWith("history-")) return false;
+    if (
+      (message.status === "sending" || message.status === "waiting") &&
+      claimCompletedDurableTurn(
+        history,
+        completed,
+        claimedCompleted,
+        message,
+        true,
       )
     ) {
-      overlap = size;
-      break;
+      return false;
+    }
+    return true;
+  });
+  let overlap = 0;
+  let historyStart = history.length;
+  const maximum = Math.min(history.length, live.length);
+
+  outer: for (let size = maximum; size > 0; size -= 1) {
+    for (let start = history.length - size; start >= 0; start -= 1) {
+      if (
+        live.slice(0, size).every((message, index) =>
+          hydrationRowsOverlap(history[start + index], message),
+        )
+      ) {
+        overlap = size;
+        historyStart = start;
+        break outer;
+      }
     }
   }
 
-  const historyStart = history.length - overlap;
   const activeIds = new Set(
     [state.activeAssistantId, state.activeApprovalId, state.activeClarifyId].filter(
       (id): id is string => Boolean(id),
     ),
   );
   const reconciledOverlap = live.slice(0, overlap).map((message, index) =>
-    activeIds.has(message.id) ||
-    message.status === "streaming" ||
+    ((activeIds.has(message.id) || message.status === "streaming") &&
+      message.role !== "assistant") ||
     message.status === "running" ||
     message.status === "waiting"
       ? message
@@ -175,6 +270,7 @@ export function mergeHydratedFeedState(
   const messages = [
     ...history.slice(0, historyStart),
     ...reconciledOverlap,
+    ...history.slice(historyStart + overlap),
     ...live.slice(overlap),
   ];
   const retainedIds = new Set(messages.map((message) => message.id));
@@ -337,6 +433,15 @@ export function chatFeedReducer(
   if (event.type === "message.complete") {
     const finalText = firstText(payload.text, payload.rendered);
     const id = state.activeAssistantId;
+    if (!id && finalText) {
+      for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+        const message = state.messages[index];
+        if (message.role === "user") break;
+        if (message.role !== "assistant") continue;
+        if (message.status === "sent" && message.text === finalText) return state;
+        break;
+      }
+    }
     const messages = id
       ? replaceMessage(state.messages, id, (message) => ({
           ...message,

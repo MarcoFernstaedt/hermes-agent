@@ -99,6 +99,28 @@ describe("chat feed model", () => {
     expect(state.activeAssistantId).toBeNull();
   });
 
+  it("treats a replayed completion frame as idempotent", () => {
+    const completed = chatFeedReducer(empty, {
+      type: "message.complete",
+      sessionId: "runtime-1",
+      payload: { text: "final answer" },
+      now: 220,
+    });
+    const withTool = chatFeedReducer(completed, {
+      type: "tool.complete",
+      payload: { tool_id: "proof", name: "terminal", result: "ok" },
+      now: 225,
+    });
+    const replayed = chatFeedReducer(withTool, {
+      type: "message.complete",
+      sessionId: "runtime-1",
+      payload: { text: "final answer" },
+      now: 230,
+    });
+
+    expect(replayed.messages).toEqual(withTool.messages);
+  });
+
   it("does not expose reasoning deltas in the visible assistant response", () => {
     const started = chatFeedReducer(empty, {
       type: "message.start",
@@ -192,7 +214,7 @@ describe("chat feed model", () => {
     expect(messages[3]).toMatchObject({ title: "terminal", text: "proof" });
   });
 
-  it("reconciles only the ordered current-turn overlap and preserves an active stream", () => {
+  it("reconciles the durable completed turn and preserves later running tools", () => {
     const history = hydrateSessionMessages([
       { role: "user", content: "hello", timestamp: 1 },
       { role: "assistant", content: "Hello there", timestamp: 2 },
@@ -228,9 +250,128 @@ describe("chat feed model", () => {
 
     expect(merged.messages.filter((message) => message.role === "user")).toHaveLength(1);
     expect(merged.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
-    expect(merged.messages.some((message) => message.id === "live-assistant")).toBe(true);
+    expect(
+      merged.messages.some(
+        (message) => message.role === "assistant" && message.text === "Hello there",
+      ),
+    ).toBe(true);
     expect(merged.messages.some((message) => message.id === "live-tool")).toBe(true);
-    expect(merged.activeAssistantId).toBe("live-assistant");
+    expect(merged.activeAssistantId).toBeNull();
+  });
+
+  it("replaces a missed completed turn instead of retaining its Sending row", () => {
+    const history = hydrateSessionMessages([
+      { role: "user", content: "hello", timestamp: 1 },
+      { role: "assistant", content: "completed while offline", timestamp: 2 },
+    ]);
+    const merged = mergeHydratedFeedState(history, {
+      ...empty,
+      messages: [
+        {
+          id: "optimistic-user",
+          role: "user",
+          text: "hello",
+          status: "sending",
+          timestamp: 1.5,
+        },
+      ],
+    });
+
+    expect(merged.messages).toHaveLength(2);
+    expect(merged.messages[0]).toMatchObject({ role: "user", status: "sent" });
+    expect(merged.messages[1]).toMatchObject({
+      role: "assistant",
+      status: "sent",
+      text: "completed while offline",
+    });
+    expect(merged.messages.some((message) => message.status === "sending")).toBe(false);
+  });
+
+  it("removes a stale Sending row behind an operational row when the durable turn completed", () => {
+    const history = hydrateSessionMessages([
+      { role: "user", content: "hello", timestamp: 60 },
+      { role: "assistant", content: "completed while offline", timestamp: 61 },
+    ]);
+    const merged = mergeHydratedFeedState(history, {
+      ...empty,
+      messages: [
+        {
+          id: "running-tool",
+          role: "tool",
+          title: "status",
+          text: "still running",
+          status: "running",
+          timestamp: 50,
+        },
+        {
+          id: "optimistic-user",
+          role: "user",
+          text: "hello",
+          status: "sending",
+          timestamp: 60.2,
+        },
+      ],
+    });
+
+    expect(merged.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(merged.messages.some((message) => message.status === "sending")).toBe(false);
+    expect(merged.messages.some((message) => message.id === "running-tool")).toBe(true);
+  });
+
+  it("preserves a repeated queued prompt after the identical prior turn completes", () => {
+    const history = hydrateSessionMessages([
+      { role: "user", content: "continue", timestamp: 100 },
+      { role: "assistant", content: "first answer", timestamp: 101 },
+    ]);
+    const merged = mergeHydratedFeedState(history, {
+      ...empty,
+      messages: [
+        {
+          id: "first-user",
+          role: "user",
+          text: "continue",
+          status: "sent",
+          timestamp: 100,
+        },
+        {
+          id: "queued-duplicate",
+          role: "user",
+          text: "continue",
+          status: "sending",
+          timestamp: 100.5,
+        },
+      ],
+    });
+
+    expect(
+      merged.messages.some((message) => message.id === "queued-duplicate"),
+    ).toBe(true);
+    expect(
+      merged.messages.find((message) => message.id === "queued-duplicate"),
+    ).toMatchObject({ status: "sending", text: "continue" });
+  });
+
+  it("keeps ambiguous timestamp-less repeated prompts pending", () => {
+    const history = hydrateSessionMessages([
+      { role: "user", content: "continue" },
+      { role: "assistant", content: "older answer" },
+    ]);
+    const merged = mergeHydratedFeedState(history, {
+      ...empty,
+      messages: [
+        {
+          id: "ambiguous-duplicate",
+          role: "user",
+          text: "continue",
+          status: "sending",
+          timestamp: 200,
+        },
+      ],
+    });
+
+    expect(
+      merged.messages.find((message) => message.id === "ambiguous-duplicate"),
+    ).toMatchObject({ status: "sending" });
   });
 
   it("preserves a running tool row while reconciling hydrated overlap", () => {

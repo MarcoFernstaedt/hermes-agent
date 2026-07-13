@@ -15666,6 +15666,20 @@ async def pub_ws(ws: WebSocket) -> None:
         pass
 
 
+_EVENT_HEARTBEAT_SECONDS = 15.0
+_EVENT_HEARTBEAT_FRAME = json.dumps({"method": "heartbeat"}, separators=(",", ":"))
+
+
+async def _receive_event_subscriber_or_heartbeat(
+    ws: WebSocket, timeout: float = _EVENT_HEARTBEAT_SECONDS
+) -> None:
+    """Keep idle subscribers provably alive without requiring browser pings."""
+    try:
+        await asyncio.wait_for(ws.receive_text(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await ws.send_text(_EVENT_HEARTBEAT_FRAME)
+
+
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -15693,10 +15707,9 @@ async def events_ws(ws: WebSocket) -> None:
 
     try:
         while True:
-            # Subscribers don't speak — the receive() just blocks until
-            # disconnect so the connection stays open as long as the
-            # browser holds it.
-            await ws.receive_text()
+            # Idle subscribers receive an application heartbeat. The browser
+            # uses it to distinguish a healthy quiet chat from a half-open WS.
+            await _receive_event_subscriber_or_heartbeat(ws)
     except WebSocketDisconnect:
         pass
     finally:

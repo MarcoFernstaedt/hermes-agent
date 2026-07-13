@@ -26,7 +26,14 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, MessagesSquare, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
@@ -37,6 +44,12 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  eventChannelForPtyAttach,
+  isPtyOwnershipReady,
+  ptyOwnershipLockName,
+  shouldWaitForExistingPtyLock,
+} from "@/lib/chat-channel";
 import {
   approvalChoiceKey,
   chatFeedReducer,
@@ -51,6 +64,11 @@ import {
 } from "@/lib/chat-feed-model";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  connectResilientEventSocket,
+  isTerminalDashboardEventFailure,
+} from "@/lib/resilient-event-socket";
+import {
+  createCurrentPtySocket,
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -74,15 +92,17 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 
 // Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
 // Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
-// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
+// instead of spawning a fresh one. sessionStorage keeps independent browser tabs
+// from attaching to and replacing each other's live PTY.
 // ``rotate`` mints a new token — used when the user explicitly starts a fresh
 // session so the old keep-alive PTY is NOT reattached (the registry reaps it).
 const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
+const PTY_EVENT_IDENTITY_KEY = "hermes.pty.event-channel.v1";
 function ptyAttachToken(rotate = false): string {
   let t = "";
   if (!rotate) {
     try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+      t = window.sessionStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
     } catch {
       /* private mode / storage blocked */
     }
@@ -92,7 +112,7 @@ function ptyAttachToken(rotate = false): string {
     crypto.getRandomValues(a);
     t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+      window.sessionStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
     } catch {
       /* ignore */
     }
@@ -100,18 +120,28 @@ function ptyAttachToken(rotate = false): string {
   return t;
 }
 
-// Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
-function generateChannelId(scope?: string): string {
-  const prefix = scope ? "chat" : "chat-fresh";
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
+function rotateAlignedPtyAttachToken(): string {
+  const token = ptyAttachToken(true);
+  try {
+    window.sessionStorage.setItem(PTY_EVENT_IDENTITY_KEY, token);
+  } catch {
+    /* private mode / storage blocked */
   }
-  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
-    36,
-  )}`;
+  return token;
+}
+
+function alignedPtyAttachToken(): string {
+  const token = ptyAttachToken();
+  try {
+    if (window.sessionStorage.getItem(PTY_EVENT_IDENTITY_KEY) === token) {
+      return token;
+    }
+  } catch {
+    return token;
+  }
+  // One-time migration from random per-mount event channels: an existing PTY
+  // cannot change its publisher URL, so rotate it once onto the aligned scheme.
+  return rotateAlignedPtyAttachToken();
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -210,6 +240,88 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
+  const [ptyAttachIdentity, setPtyAttachIdentity] = useState(() =>
+    typeof window !== "undefined" ? alignedPtyAttachToken() : "unavailable",
+  );
+  const [ownershipReadyToken, setOwnershipReadyToken] = useState<string | null>(
+    null,
+  );
+  const fallbackOwnershipRotatedRef = useRef(false);
+  useEffect(() => {
+    const claimedToken = ptyAttachIdentity;
+    const lockManager =
+      typeof navigator !== "undefined" && "locks" in navigator
+        ? navigator.locks
+        : null;
+    if (!lockManager) {
+      // Without an atomic cross-tab primitive, fail safe by rotating once for
+      // this document rather than risking that a copied token steals a PTY.
+      if (!fallbackOwnershipRotatedRef.current) {
+        fallbackOwnershipRotatedRef.current = true;
+        setPtyAttachIdentity(rotateAlignedPtyAttachToken());
+      } else {
+        setOwnershipReadyToken(claimedToken);
+      }
+      return;
+    }
+
+    const navigationType = (
+      window.performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined
+    )?.type;
+    const abortLockRequest = new AbortController();
+    let cancelled = false;
+    let releaseLock: () => void = () => {};
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+
+    void lockManager.request(
+      ptyOwnershipLockName(claimedToken),
+      {
+        mode: "exclusive",
+        // A true reload waits for its outgoing document to release the lock.
+        // A new/duplicated tab probes atomically and rotates when occupied.
+        ifAvailable: !shouldWaitForExistingPtyLock(navigationType),
+        signal: abortLockRequest.signal,
+      },
+      async (lock) => {
+        if (cancelled) return;
+        if (!lock) {
+          setPtyAttachIdentity((current) =>
+            current === claimedToken ? rotateAlignedPtyAttachToken() : current,
+          );
+          return;
+        }
+        setOwnershipReadyToken(claimedToken);
+        await holdLock;
+      },
+    ).catch((error: unknown) => {
+      if (
+        cancelled ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
+        return;
+      }
+      // If the lock API exists but is unusable, retain fail-safe fallback
+      // behavior: rotate once for this document before allowing attachment.
+      if (!fallbackOwnershipRotatedRef.current) {
+        fallbackOwnershipRotatedRef.current = true;
+        setPtyAttachIdentity((current) =>
+          current === claimedToken ? rotateAlignedPtyAttachToken() : current,
+        );
+      } else {
+        setOwnershipReadyToken(claimedToken);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      abortLockRequest.abort();
+      releaseLock();
+    };
+  }, [ptyAttachIdentity]);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
   // True from the moment the connect effect begins until the socket resolves
@@ -221,6 +333,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
     useState<PtyConnectionState>("connecting");
+  const [readyEventChannel, setReadyEventChannel] = useState<string | null>(null);
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
@@ -231,7 +344,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
-  const [chatGeneration, setChatGeneration] = useState(0);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -249,7 +361,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setComposer("");
     setFeedState(EMPTY_CHAT_FEED);
     setAgentRunning(false);
-    setChatGeneration((generation) => generation + 1);
   }, []);
   const reconnectPty = useCallback(() => {
     forceFreshPtyRef.current = false;
@@ -265,6 +376,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [clearReconnectTimer]);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
+    setPtyAttachIdentity(rotateAlignedPtyAttachToken());
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -281,6 +393,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     next.delete("resume");
     forceFreshPtyRef.current = true;
+    setPtyAttachIdentity(rotateAlignedPtyAttachToken());
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -347,12 +460,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  const ptyTargetKey = `${scopedProfile ?? "default"}\0${resumeParam ?? "new"}`;
+  const ptyTargetKeyRef = useRef(ptyTargetKey);
+  useLayoutEffect(() => {
+    if (ptyTargetKeyRef.current === ptyTargetKey) return;
+    ptyTargetKeyRef.current = ptyTargetKey;
+    forceFreshPtyRef.current = false;
+    setPtyAttachIdentity(rotateAlignedPtyAttachToken());
+    resetFreshChatProjection();
+  }, [ptyTargetKey, resetFreshChatProjection]);
+  // The PTY-side event publisher is fixed to the channel chosen when that
+  // keep-alive process starts. Derive the subscriber from the same persistent
+  // attach identity so reload/reattach cannot silently split the two streams.
   const channel = useMemo(
-    () =>
-      generateChannelId(
-        `${resumeParam ?? ""}\0${scopedProfile}\0${chatGeneration}`,
-      ),
-    [resumeParam, scopedProfile, chatGeneration],
+    () => eventChannelForPtyAttach(ptyAttachIdentity),
+    [ptyAttachIdentity],
+  );
+  const eventSocketReady = readyEventChannel === channel;
+  const ptyOwnershipReady = isPtyOwnershipReady(
+    ptyAttachIdentity,
+    ownershipReadyToken,
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
@@ -366,8 +493,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // execution authority; this subscriber is a read-only projection of the
   // same message/tool/approval stream already used by the native clients.
   useEffect(() => {
+    if (!ptyOwnershipReady) return;
     let unmounting = false;
-    let eventsSocket: WebSocket | null = null;
     const eventGeneration = eventChannelGenerationRef.current + 1;
     eventChannelGenerationRef.current = eventGeneration;
     hydrationGenerationRef.current += 1;
@@ -416,11 +543,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         });
     };
 
-    void (async () => {
-      const url = await api.buildWsUrl("/api/events", { channel });
-      if (unmounting) return;
-      eventsSocket = new WebSocket(url);
-      eventsSocket.addEventListener("message", (raw) => {
+    const stopEventSocket = connectResilientEventSocket({
+      buildUrl: () => api.buildWsUrl("/api/events", { channel }),
+      onMessage: (raw) => {
         if (
           !shouldHandleChannelEvent(
             eventGeneration,
@@ -481,9 +606,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (event.type === "message.start") setAgentRunning(true);
         if (event.type === "message.complete" || event.type === "error") {
           setAgentRunning(false);
+          const sessionId = activeStoredSessionIdRef.current;
+          if (sessionId) {
+            hydratedSessionIdsRef.current.delete(sessionId);
+            hydrateStoredSession(sessionId);
+          }
         }
-      });
-      eventsSocket.addEventListener("error", () => {
+      },
+      onConnected: (reconnected) => {
+        setReadyEventChannel(channel);
+        setBanner((current) =>
+          current?.startsWith("Structured chat feed") ? null : current,
+        );
+        const sessionId = activeStoredSessionIdRef.current;
+        if (sessionId) {
+          if (reconnected) hydrationGenerationRef.current += 1;
+          hydratedSessionIdsRef.current.delete(sessionId);
+          hydrateStoredSession(sessionId);
+        }
+      },
+      isTerminalFailure: isTerminalDashboardEventFailure,
+      onTerminalFailure: ({ code, error }) => {
+        if (
+          !shouldHandleChannelEvent(
+            eventGeneration,
+            eventChannelGenerationRef.current,
+            unmounting,
+          )
+        ) {
+          return;
+        }
+        setReadyEventChannel((current) =>
+          current === channel ? null : current,
+        );
+        setPtyState("closed");
+        const detail =
+          error instanceof Error
+            ? error.message
+            : code === 4403
+              ? "request host/origin was refused"
+              : "session authentication was rejected";
+        setBanner(`Structured chat feed unavailable: ${detail}. Reload to authenticate.`);
+      },
+      onDisconnected: () => {
         if (
           shouldHandleChannelEvent(
             eventGeneration,
@@ -491,10 +656,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             unmounting,
           )
         ) {
-          setBanner("Structured chat feed disconnected. Raw console remains available.");
+          setBanner((current) =>
+            current && !current.startsWith("Structured chat feed")
+              ? current
+              : "Structured chat feed reconnecting. Raw console remains available.",
+          );
         }
-      });
-    })();
+      },
+    });
 
     return () => {
       unmounting = true;
@@ -502,9 +671,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         eventChannelGenerationRef.current += 1;
       }
       hydrationGenerationRef.current += 1;
-      eventsSocket?.close();
+      stopEventSocket();
     };
-  }, [channel, scopedProfile]);
+  }, [channel, ptyOwnershipReady, scopedProfile]);
 
   // Restore the selected session into semantic bubbles before new live events
   // arrive. Stored system/tool rows are retained rather than prettified away.
@@ -821,6 +990,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   useEffect(() => {
+    if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;
 
@@ -1245,6 +1415,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // ``return cleanup`` stays at the top level; handlers + disposables
     // are hoisted to ``let`` bindings the cleanup closes over.
     let unmounting = false;
+    let effectSocket: WebSocket | null = null;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     const forceFresh = forceFreshPtyRef.current;
@@ -1279,16 +1450,34 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
-      // Keep-alive identity: reattach to this tab's living PTY across
-      // refresh/transient drops. A forced-fresh start rotates the token so
-      // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      // Keep-alive identity and semantic event channel rotate together before
+      // a forced-fresh render; reconnects reuse both values unchanged.
+      params.attach = ptyAttachIdentity;
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
-      const url = await api.buildWsUrl("/api/pty", params);
-      const ws = new WebSocket(url);
+      let ws: WebSocket | null;
+      try {
+        ws = await createCurrentPtySocket(
+          () => api.buildWsUrl("/api/pty", params),
+          (url) => new WebSocket(url),
+          () => !unmounting,
+        );
+      } catch (error) {
+        if (!unmounting) {
+          connectInFlightRef.current = false;
+          setPtyState("closed");
+          setBanner(
+            error instanceof Error
+              ? `Chat websocket unavailable: ${error.message}`
+              : "Chat websocket unavailable.",
+          );
+        }
+        return;
+      }
+      if (!ws) return;
+      effectSocket = ws;
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
@@ -1308,6 +1497,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, PTY_CONNECTING_TIMEOUT_MS);
 
     ws.onopen = () => {
+      if (unmounting || wsRef.current !== ws) {
+        try {
+          ws.close();
+        } catch {
+          /* obsolete socket */
+        }
+        return;
+      }
       clearReconnectTimer();
       clearConnectingTimer();
       connectInFlightRef.current = false;
@@ -1348,6 +1545,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onmessage = (ev) => {
+      if (unmounting || wsRef.current !== ws) return;
       if (typeof ev.data === "string") {
         term.write(ev.data);
       } else {
@@ -1356,7 +1554,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
-      wsRef.current = null;
+      if (wsRef.current === ws) wsRef.current = null;
       connectInFlightRef.current = false;
       clearConnectingTimer();
       if (unmounting) {
@@ -1523,13 +1721,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearReconnectTimer();
       clearConnectingTimer();
       connectInFlightRef.current = false;
-      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
-      // ticket fetch makes the open async). The cleanup runs at the outer
-      // effect's top level so it can't reach into that scope — close via
-      // the ref instead. ``?.`` covers the race where unmount fires before
-      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
-      wsRef.current?.close();
-      wsRef.current = null;
+      // Close only the socket created by this effect. A later effect may have
+      // already installed its own socket in wsRef while this cleanup runs.
+      try {
+        effectSocket?.close();
+      } catch {
+        /* already closed */
+      }
+      if (wsRef.current === effectSocket) {
+        wsRef.current = null;
+      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -1539,7 +1740,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       copyResetTokenRef.current += 1;
     };
-  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [
+    channel,
+    clearReconnectTimer,
+    resumeParam,
+    scopedProfile,
+    reconnectNonce,
+    ptyAttachIdentity,
+    eventSocketReady,
+  ]);
 
   // Refit the off-screen terminal on tab activation. Only return focus to
   // xterm when the user explicitly opened the raw console; the chat composer
