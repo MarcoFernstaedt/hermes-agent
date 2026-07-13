@@ -418,6 +418,84 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
+    def test_unavailable_login_page_keeps_imperator_identity_and_fail_closed_message(self):
+        clear_providers()
+
+        page = render_login_html()
+
+        assert "<title>Sign-in unavailable — Imperator</title>" in page
+        assert "<h1>Imperator</h1>" in page
+        assert 'role="alert"' in page
+        assert "Sign-in is currently unavailable." in page
+
+    def test_login_page_has_imperator_private_system_identity(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            page = render_login_html()
+            assert "<title>Sign in — Imperator</title>" in page
+            assert '<p class="eyebrow">Private system</p>' in page
+            assert "<h1>Imperator</h1>" in page
+            assert "Your connection stays within the private Tailnet." in page
+            assert "host" not in page.lower()
+        finally:
+            clear_providers()
+
+    def test_password_form_exposes_accessible_labels_status_and_errors(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            page = render_login_html()
+            assert '<section class="card" aria-labelledby="login-heading"' in page
+            assert '<h2 id="login-heading">Sign in</h2>' in page
+            assert 'aria-labelledby="password-provider-0-title"' in page
+            assert 'id="password-provider-0-username"' in page
+            assert 'for="password-provider-0-username"' in page
+            assert 'id="password-provider-0-password"' in page
+            assert 'for="password-provider-0-password"' in page
+            assert 'aria-describedby="password-provider-0-error password-provider-0-status"' in page
+            assert 'id="password-provider-0-error" class="form-error" role="alert"' in page
+            assert 'id="password-provider-0-status" class="form-status" role="status"' in page
+            assert 'aria-live="polite"' in page
+            assert 'aria-busy="false"' in page
+        finally:
+            clear_providers()
+
+    def test_password_form_uses_safe_unique_ids_for_arbitrary_provider_names(self):
+        class SpacedNameProvider(PasswordProvider):
+            name = 'provider name & "quoted"'
+            display_name = "Spaced Provider"
+
+        clear_providers()
+        register_provider(SpacedNameProvider())
+        register_provider(PasswordProvider())
+        try:
+            page = render_login_html()
+            assert 'data-provider="provider name &amp; &quot;quoted&quot;"' in page
+            assert 'id="password-provider-0-username"' in page
+            assert 'for="password-provider-0-username"' in page
+            assert 'id="password-provider-1-username"' in page
+            assert 'for="password-provider-1-username"' in page
+            assert 'id="provider name' not in page
+        finally:
+            clear_providers()
+
+    def test_login_page_css_supports_keyboard_touch_mobile_and_reduced_motion(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            page = render_login_html()
+            assert "min-height: 44px" in page
+            assert ":focus-visible" in page
+            assert "@media (max-width: 480px)" in page
+            assert "@media (prefers-reduced-motion: reduce)" in page
+            assert "transition: none" in page
+            assert "footer {" in page
+            footer_css = page.split("footer {", 1)[1].split("}", 1)[0]
+            assert "color: var(--muted)" in footer_css
+        finally:
+            clear_providers()
+
     def test_password_provider_renders_credential_form_and_script(self):
         clear_providers()
         register_provider(PasswordProvider())

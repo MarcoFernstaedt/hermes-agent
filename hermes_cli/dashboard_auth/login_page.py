@@ -4,11 +4,11 @@ No React, no JavaScript dependency. Listed providers come from the
 registry; clicking a provider sends a GET to
 ``/auth/login?provider=<name>``.
 
-Visual styling mirrors the Nous Research design system (the
+Visual styling builds on the Nous Research design system (the
 ``@nous-research/ui`` package the React dashboard uses): the same
-``Collapse`` / ``Rules Compressed`` typeface, amber-on-dark colour
-tokens (``#170d02`` / ``#ffac02`` / ``#fff``), uppercase + wide-tracking
-brand chrome, and the inset-bevel button shadow. Fonts are served
+``Collapse`` / ``Rules Compressed`` typeface, uppercase + wide-tracking
+brand chrome, and the inset-bevel button shadow, with an Imperator-specific
+high-contrast blue palette. Fonts are served
 out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
 already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
 ``middleware.py``), so the page renders without needing the React
@@ -38,7 +38,7 @@ _LOGIN_HTML_TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Hermes Agent</title>
+<title>Sign in — Imperator</title>
 <style>
   /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
   @font-face {{
@@ -71,12 +71,14 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   :root {{
-    --background-base: #170d02;
-    --background: #170d02;
-    --midground: #ffac02;
-    --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
-    --hairline-strong: color-mix(in srgb, #ffac02 35%, transparent);
+    --background-base: #07111f;
+    --background: #07111f;
+    --midground: #7dd3fc;
+    --foreground: #f8fafc;
+    --muted: #b8c5d6;
+    --danger: #fca5a5;
+    --hairline: #29415f;
+    --hairline-strong: #4b6b91;
   }}
 
   *, *::before, *::after {{ box-sizing: border-box; }}
@@ -130,7 +132,12 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   @media (prefers-reduced-motion: reduce) {{
-    main {{ animation: none; }}
+    *, *::before, *::after {{
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition: none !important;
+    }}
   }}
 
   /* Brand wordmark above the card — same uppercase + wide-tracking
@@ -144,6 +151,14 @@ _LOGIN_HTML_TEMPLATE = """\
     letter-spacing: 0.32em;
     text-transform: uppercase;
     color: var(--midground);
+  }}
+  .eyebrow {{
+    margin: 0 0 0.35rem;
+    color: var(--midground);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
   }}
   .brand .dot {{
     display: inline-block;
@@ -169,6 +184,13 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   h1 {{
+    margin: 0;
+    font-size: clamp(2rem, 10vw, 3.4rem);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }}
+
+  h2 {{
     margin: 0 0 0.4rem;
     font-family: 'Rules Compressed', 'Collapse', sans-serif;
     font-weight: 600;
@@ -190,12 +212,13 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   /* Provider button — mirrors DS Button (default variant):
-     amber surface, dark text, uppercase + wide tracking, inset bevel. */
+     accent surface, dark text, uppercase + wide tracking, inset bevel. */
   .provider-btn {{
     display: block;
     width: 100%;
     box-sizing: border-box;
     padding: 0.95rem 1rem;
+    min-height: 44px;
     text-align: center;
     background: var(--midground);
     color: var(--background-base);
@@ -226,7 +249,7 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   /* Password provider form — same visual language as the OAuth buttons:
-     squared inputs, hairline borders, amber focus ring. */
+     squared inputs, hairline borders, accent focus ring. */
   .provider-form {{
     display: grid;
     gap: 0.75rem;
@@ -254,6 +277,7 @@ _LOGIN_HTML_TEMPLATE = """\
     width: 100%;
     box-sizing: border-box;
     padding: 0.7rem 0.8rem;
+    min-height: 44px;
     background: color-mix(in srgb, #000000 25%, var(--background-base));
     color: var(--foreground);
     border: 1px solid var(--hairline-strong);
@@ -267,9 +291,14 @@ _LOGIN_HTML_TEMPLATE = """\
     box-shadow: 0 0 0 1px var(--midground);
   }}
   .form-error {{
-    color: #ff6b6b;
+    color: var(--danger);
     font-size: 0.82rem;
     letter-spacing: 0.02em;
+  }}
+  .form-status {{
+    min-height: 1.25rem;
+    color: var(--muted);
+    font-size: 0.82rem;
   }}
   .provider-form .provider-btn {{
     margin-top: 0.25rem;
@@ -278,7 +307,7 @@ _LOGIN_HTML_TEMPLATE = """\
   footer {{
     margin-top: 1.75rem;
     text-align: center;
-    color: color-mix(in srgb, var(--foreground) 45%, transparent);
+    color: var(--muted);
     font-size: 0.75rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -298,20 +327,29 @@ _LOGIN_HTML_TEMPLATE = """\
     background: var(--midground);
     color: var(--background-base);
   }}
+  @media (max-width: 480px) {{
+    body {{ display: block; padding: 1rem; }}
+    main {{ margin: 0 auto; }}
+    .card {{ padding: 1.5rem 1.25rem; }}
+    .brand {{ margin-bottom: 1rem; text-align: left; }}
+  }}
 </style>
 </head>
 <body>
 <main>
-  <div class="brand">Nous<span class="dot"></span>Research</div>
-  <div class="card">
-    <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
+  <header class="brand">
+    <p class="eyebrow">Private system</p>
+    <h1>Imperator</h1>
+  </header>
+  <section class="card" aria-labelledby="login-heading" aria-describedby="login-context">
+    <h2 id="login-heading">Sign in</h2>
+    <p class="subtitle" id="login-context">Use your authorized credentials to continue. Your connection stays within the private Tailnet.</p>
     <div class="provider-list">
 {provider_buttons}
     </div>
-  </div>
+  </section>
   <footer>
-    <span class="sep"></span>Public bind &middot; Auth required<span class="sep"></span>
+    Authorized access only
   </footer>
 </main>
 {password_script}
@@ -325,7 +363,7 @@ _EMPTY_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Hermes Agent</title>
+<title>Sign-in unavailable — Imperator</title>
 <style>
   @font-face {
     font-family: 'Collapse';
@@ -342,10 +380,11 @@ _EMPTY_HTML = """\
     src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }
   :root {
-    --background-base: #170d02;
-    --midground: #ffac02;
-    --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
+    --background-base: #07111f;
+    --midground: #7dd3fc;
+    --foreground: #f8fafc;
+    --muted: #b8c5d6;
+    --hairline: #29415f;
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
@@ -370,31 +409,44 @@ _EMPTY_HTML = """\
       inset -1px -1px 0 0 rgba(0, 0, 0, 0.4),
       0 24px 60px -20px rgba(0, 0, 0, 0.6);
   }
+  .eyebrow {
+    margin: 0 0 0.35rem;
+    color: var(--midground);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
   h1 {
+    margin: 0 0 1.5rem;
+    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-size: clamp(2rem, 10vw, 3.4rem);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--midground);
+  }
+  h2 {
     margin: 0 0 1rem;
     font-family: 'Rules Compressed', 'Collapse', sans-serif;
     font-weight: 600; font-size: 1.5rem;
     letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--midground);
+    color: var(--foreground);
   }
-  p { margin: 0 0 1rem; }
-  code {
-    background: var(--midground);
-    color: var(--background-base);
-    padding: 0.1em 0.35em;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9em;
-  }
+  p { margin: 0; color: var(--muted); }
+  p + p { margin-top: 1rem; }
 </style>
 </head>
 <body>
 <main>
-<h1>Sign-in unavailable</h1>
-<p>This dashboard is bound to a non-loopback host but no authentication
-providers are installed.</p>
+<p class="eyebrow">Private system</p>
+<h1>Imperator</h1>
+<section role="alert" aria-labelledby="unavailable-heading">
+<h2 id="unavailable-heading">Sign-in unavailable</h2>
+<p>Sign-in is currently unavailable. No authentication providers are installed.</p>
 <p>Install <code>plugins/dashboard-auth-nous</code> (default) or another
 auth provider, or restart with <code>--insecure</code> to bypass the
 auth gate (not recommended on untrusted networks).</p>
+</section>
 </main>
 </body>
 </html>
@@ -417,7 +469,10 @@ _PASSWORD_FORM_SCRIPT = """\
       ev.preventDefault();
       var err = form.querySelector('.form-error');
       var btn = form.querySelector('button[type=submit]');
+      var status = form.querySelector('.form-status');
       if (err) { err.hidden = true; err.textContent = ''; }
+      if (status) { status.textContent = 'Signing in…'; }
+      form.setAttribute('aria-busy', 'true');
       if (btn) { btn.disabled = true; }
       var body = {
         provider: form.getAttribute('data-provider') || '',
@@ -441,9 +496,13 @@ _PASSWORD_FORM_SCRIPT = """\
           : (resp.status === 401 ? 'Invalid username or password.'
                                  : 'Sign-in failed. Please try again.');
         if (err) { err.textContent = msg; err.hidden = false; }
+        if (status) { status.textContent = ''; }
+        form.setAttribute('aria-busy', 'false');
         if (btn) { btn.disabled = false; }
       }).catch(function () {
         if (err) { err.textContent = 'Network error. Please try again.'; err.hidden = false; }
+        if (status) { status.textContent = ''; }
+        form.setAttribute('aria-busy', 'false');
         if (btn) { btn.disabled = false; }
       });
     });
@@ -481,10 +540,14 @@ def render_login_html(*, next_path: str = "") -> str:
 
     buttons = []
     needs_password_script = False
-    for p in providers:
+    for provider_index, p in enumerate(providers):
         if getattr(p, "supports_password", False):
             needs_password_script = True
-            buttons.append(_render_password_form(p, next_path))
+            buttons.append(
+                _render_password_form(
+                    p, next_path, id_prefix=f"password-provider-{provider_index}"
+                )
+            )
         else:
             buttons.append(
                 f'      <a class="provider-btn" '
@@ -498,7 +561,7 @@ def render_login_html(*, next_path: str = "") -> str:
     )
 
 
-def _render_password_form(provider, next_path: str) -> str:
+def _render_password_form(provider, next_path: str, *, id_prefix: str) -> str:
     """Render a username/password form for a ``supports_password`` provider.
 
     The form is wired by :data:`_PASSWORD_FORM_SCRIPT` (a single delegated
@@ -514,21 +577,22 @@ def _render_password_form(provider, next_path: str) -> str:
     safe_next = html.escape(next_path, quote=True) if next_path else ""
     return (
         f'      <form class="provider-form" data-provider="{pname}" '
-        f'autocomplete="on">\n'
-        f'        <div class="form-title">Sign in with {plabel}</div>\n'
+        f'autocomplete="on" aria-busy="false" aria-labelledby="{id_prefix}-title">\n'
+        f'        <div id="{id_prefix}-title" class="form-title">Sign in with {plabel}</div>\n'
         f'        <input type="hidden" name="next" value="{safe_next}">\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Username</span>\n'
-        f'          <input class="field-input" type="text" name="username" '
+        f'        <div class="field">\n'
+        f'          <label class="field-label" for="{id_prefix}-username">Username</label>\n'
+        f'          <input id="{id_prefix}-username" class="field-input" type="text" name="username" '
         f'autocomplete="username" autocapitalize="none" '
-        f'autocorrect="off" spellcheck="false" required>\n'
-        f'        </label>\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Password</span>\n'
-        f'          <input class="field-input" type="password" name="password" '
-        f'autocomplete="current-password" required>\n'
-        f'        </label>\n'
-        f'        <div class="form-error" role="alert" hidden></div>\n'
+        f'autocorrect="off" spellcheck="false" inputmode="text" required>\n'
+        f'        </div>\n'
+        f'        <div class="field">\n'
+        f'          <label class="field-label" for="{id_prefix}-password">Password</label>\n'
+        f'          <input id="{id_prefix}-password" class="field-input" type="password" name="password" '
+        f'autocomplete="current-password" aria-describedby="{id_prefix}-error {id_prefix}-status" required>\n'
+        f'        </div>\n'
+        f'        <div id="{id_prefix}-error" class="form-error" role="alert" hidden></div>\n'
+        f'        <div id="{id_prefix}-status" class="form-status" role="status" aria-live="polite"></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'
         f'      </form>'
     )
