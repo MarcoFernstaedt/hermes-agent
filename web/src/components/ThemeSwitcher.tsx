@@ -10,6 +10,7 @@ import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
 import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { imperatorThemeLabel } from "@/lib/imperator-branding";
 
 /**
  * Compact theme picker mounted next to the language switcher in the header.
@@ -57,7 +58,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   }, [open, close, useMobileSheet]);
 
   const current = availableThemes.find((th) => th.name === themeName);
-  const label = current?.label ?? themeName;
+  const label = imperatorThemeLabel(current?.label ?? themeName);
   const sheetTitle = t.theme?.title ?? "Theme";
 
   return (
@@ -192,7 +193,7 @@ function ThemeSwitcherOptions({
               <Typography
                 className="truncate text-display text-xs tracking-wide"
               >
-                {th.label}
+                {imperatorThemeLabel(th.label)}
               </Typography>
               {th.description && (
                 <Typography className="truncate text-xs tracking-normal text-text-tertiary">

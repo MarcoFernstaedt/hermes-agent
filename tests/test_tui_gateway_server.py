@@ -4834,6 +4834,7 @@ def test_session_info_includes_session_title(monkeypatch):
     )
 
     assert info["title"] == "Dashboard title"
+    assert info["session_id"] == "session-key"
 
 
 def test_session_info_includes_install_warning_for_pip(monkeypatch):

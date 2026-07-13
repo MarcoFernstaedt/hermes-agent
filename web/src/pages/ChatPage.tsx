@@ -25,16 +25,29 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { Copy, MessagesSquare, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
+import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  approvalChoiceKey,
+  chatFeedReducer,
+  createOptimisticUserMessage,
+  hydrateSessionMessages,
+  mergeHydratedFeedState,
+  parseDashboardEventFrame,
+  shouldApplyHydration,
+  shouldHandleChannelEvent,
+  type ChatFeedMessage,
+  type ChatFeedState,
+} from "@/lib/chat-feed-model";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -107,6 +120,13 @@ function generateChannelId(scope?: string): string {
 const DEFAULT_TERMINAL_BACKGROUND = "#000000";
 const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
 
+const EMPTY_CHAT_FEED: ChatFeedState = {
+  messages: [],
+  activeAssistantId: null,
+  activeApprovalId: null,
+  activeClarifyId: null,
+};
+
 function buildTerminalTheme(background: string, foreground: string) {
   return {
     background,
@@ -156,6 +176,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const imageAttachRef = useRef<(files: File[]) => void>(() => undefined);
+  const [feedState, setFeedState] = useState<ChatFeedState>(EMPTY_CHAT_FEED);
+  const [composer, setComposer] = useState("");
+  const [rawConsoleOpen, setRawConsoleOpen] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const copyResetTokenRef = useRef(0);
+  const optimisticCounterRef = useRef(0);
+  const hydratedSessionIdsRef = useRef(new Set<string>());
+  const hydrationGenerationRef = useRef(0);
+  const eventChannelGenerationRef = useRef(0);
+  const activeRuntimeSessionIdRef = useRef<string | null>(null);
+  const activeStoredSessionIdRef = useRef<string | null>(null);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -173,8 +206,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
@@ -199,6 +230,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const [chatGeneration, setChatGeneration] = useState(0);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -207,6 +239,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+  }, []);
+  const resetFreshChatProjection = useCallback(() => {
+    hydrationGenerationRef.current += 1;
+    activeRuntimeSessionIdRef.current = null;
+    activeStoredSessionIdRef.current = null;
+    hydratedSessionIdsRef.current.clear();
+    setComposer("");
+    setFeedState(EMPTY_CHAT_FEED);
+    setAgentRunning(false);
+    setChatGeneration((generation) => generation + 1);
   }, []);
   const reconnectPty = useCallback(() => {
     forceFreshPtyRef.current = false;
@@ -230,8 +272,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setLastCloseCode(null);
     setPtyState("connecting");
+    resetFreshChatProjection();
     setReconnectNonce((n) => n + 1);
-  }, [clearReconnectTimer]);
+  }, [clearReconnectTimer, resetFreshChatProjection]);
   const startFreshDashboardChat = useCallback(() => {
     const next = new URLSearchParams(searchParams);
 
@@ -246,8 +289,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setLastCloseCode(null);
     setPtyState("connecting");
+    resetFreshChatProjection();
     setReconnectNonce((n) => n + 1);
-  }, [clearReconnectTimer, searchParams, setSearchParams]);
+  }, [
+    clearReconnectTimer,
+    resetFreshChatProjection,
+    searchParams,
+    setSearchParams,
+  ]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -298,8 +347,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
   const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
-    [resumeParam, scopedProfile],
+    () =>
+      generateChannelId(
+        `${resumeParam ?? ""}\0${scopedProfile}\0${chatGeneration}`,
+      ),
+    [resumeParam, scopedProfile, chatGeneration],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
@@ -308,6 +360,346 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+
+  // Structured event relay for the bubble transcript. The PTY remains the
+  // execution authority; this subscriber is a read-only projection of the
+  // same message/tool/approval stream already used by the native clients.
+  useEffect(() => {
+    let unmounting = false;
+    let eventsSocket: WebSocket | null = null;
+    const eventGeneration = eventChannelGenerationRef.current + 1;
+    eventChannelGenerationRef.current = eventGeneration;
+    hydrationGenerationRef.current += 1;
+    hydratedSessionIdsRef.current.clear();
+    activeRuntimeSessionIdRef.current = null;
+    activeStoredSessionIdRef.current = null;
+    queueMicrotask(() => {
+      if (!unmounting) {
+        setFeedState(EMPTY_CHAT_FEED);
+        setAgentRunning(false);
+      }
+    });
+
+    const hydrateStoredSession = (sessionId: string) => {
+      if (!sessionId || hydratedSessionIdsRef.current.has(sessionId)) return;
+      hydratedSessionIdsRef.current.add(sessionId);
+      const requestGeneration = hydrationGenerationRef.current;
+      void api
+        .getSessionMessages(sessionId, scopedProfile)
+        .then((response) => {
+          if (
+            unmounting ||
+            !shouldApplyHydration(
+              requestGeneration,
+              hydrationGenerationRef.current,
+              sessionId,
+              activeStoredSessionIdRef.current,
+            )
+          ) {
+            return;
+          }
+          const history = hydrateSessionMessages(response.messages);
+          setFeedState((state) => mergeHydratedFeedState(history, state));
+        })
+        .catch(() => {
+          if (
+            shouldApplyHydration(
+              requestGeneration,
+              hydrationGenerationRef.current,
+              sessionId,
+              activeStoredSessionIdRef.current,
+            )
+          ) {
+            hydratedSessionIdsRef.current.delete(sessionId);
+          }
+        });
+    };
+
+    void (async () => {
+      const url = await api.buildWsUrl("/api/events", { channel });
+      if (unmounting) return;
+      eventsSocket = new WebSocket(url);
+      eventsSocket.addEventListener("message", (raw) => {
+        if (
+          !shouldHandleChannelEvent(
+            eventGeneration,
+            eventChannelGenerationRef.current,
+            unmounting,
+          )
+        ) {
+          return;
+        }
+        const event = parseDashboardEventFrame(String(raw.data));
+        if (!event) return;
+
+        const runtimeSessionId = event.sessionId ?? null;
+        const storedSessionId = event.payload?.session_id;
+        if (event.type === "session.info") {
+          if (
+            activeRuntimeSessionIdRef.current &&
+            runtimeSessionId &&
+            activeRuntimeSessionIdRef.current !== runtimeSessionId
+          ) {
+            return;
+          }
+          if (!activeRuntimeSessionIdRef.current && runtimeSessionId) {
+            activeRuntimeSessionIdRef.current = runtimeSessionId;
+          }
+
+          if (typeof storedSessionId === "string" && storedSessionId) {
+            const previousStoredSessionId = activeStoredSessionIdRef.current;
+            if (previousStoredSessionId !== storedSessionId) {
+              hydrationGenerationRef.current += 1;
+              hydratedSessionIdsRef.current.clear();
+              if (previousStoredSessionId) {
+                setFeedState(EMPTY_CHAT_FEED);
+              }
+            }
+            activeStoredSessionIdRef.current = storedSessionId;
+            hydrateStoredSession(storedSessionId);
+          }
+          if (typeof event.payload?.running === "boolean") {
+            setAgentRunning(event.payload.running);
+          }
+        } else {
+          // The channel isolates this PTY. After a browser reload, a live event
+          // can arrive before another session.info frame, so use its runtime ID
+          // as the active one while still rejecting mismatches afterward.
+          if (!activeRuntimeSessionIdRef.current && runtimeSessionId) {
+            activeRuntimeSessionIdRef.current = runtimeSessionId;
+          }
+          if (
+            runtimeSessionId &&
+            activeRuntimeSessionIdRef.current !== runtimeSessionId
+          ) {
+            return;
+          }
+        }
+
+        setFeedState((state) => chatFeedReducer(state, event));
+        if (event.type === "message.start") setAgentRunning(true);
+        if (event.type === "message.complete" || event.type === "error") {
+          setAgentRunning(false);
+        }
+      });
+      eventsSocket.addEventListener("error", () => {
+        if (
+          shouldHandleChannelEvent(
+            eventGeneration,
+            eventChannelGenerationRef.current,
+            unmounting,
+          )
+        ) {
+          setBanner("Structured chat feed disconnected. Raw console remains available.");
+        }
+      });
+    })();
+
+    return () => {
+      unmounting = true;
+      if (eventChannelGenerationRef.current === eventGeneration) {
+        eventChannelGenerationRef.current += 1;
+      }
+      hydrationGenerationRef.current += 1;
+      eventsSocket?.close();
+    };
+  }, [channel, scopedProfile]);
+
+  // Restore the selected session into semantic bubbles before new live events
+  // arrive. Stored system/tool rows are retained rather than prettified away.
+  useEffect(() => {
+    if (!resumeParam) return;
+    if (activeStoredSessionIdRef.current !== resumeParam) {
+      hydrationGenerationRef.current += 1;
+      hydratedSessionIdsRef.current.clear();
+      activeStoredSessionIdRef.current = resumeParam;
+    }
+    if (hydratedSessionIdsRef.current.has(resumeParam)) return;
+    hydratedSessionIdsRef.current.add(resumeParam);
+    const requestGeneration = hydrationGenerationRef.current;
+    let cancelled = false;
+    void api
+      .getSessionMessages(resumeParam, scopedProfile)
+      .then((response) => {
+        if (
+          cancelled ||
+          !shouldApplyHydration(
+            requestGeneration,
+            hydrationGenerationRef.current,
+            resumeParam,
+            activeStoredSessionIdRef.current,
+          )
+        ) {
+          return;
+        }
+        const history = hydrateSessionMessages(response.messages);
+        setFeedState((state) => mergeHydratedFeedState(history, state));
+      })
+      .catch(() => {
+        if (
+          shouldApplyHydration(
+            requestGeneration,
+            hydrationGenerationRef.current,
+            resumeParam,
+            activeStoredSessionIdRef.current,
+          )
+        ) {
+          hydratedSessionIdsRef.current.delete(resumeParam);
+        }
+        // The live event stream and lossless raw console remain usable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, scopedProfile, channel]);
+
+  const sendPtyText = useCallback((text: string, submit = true): boolean => {
+    const ws = wsRef.current;
+    const term = termRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !term) return false;
+    term.paste(text);
+    if (submit) {
+      window.setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send("\r");
+        }
+      }, 40);
+    }
+    return true;
+  }, []);
+
+  const markOptimisticFailed = useCallback((id: string) => {
+    setFeedState((state) => ({
+      ...state,
+      messages: state.messages.map((message) =>
+        message.id === id ? { ...message, status: "error" } : message,
+      ),
+    }));
+  }, []);
+
+  const submitComposer = useCallback(() => {
+    const text = composer.trim();
+    if (!text) return;
+    const now = Date.now();
+    const isSlashCommand = text.startsWith("/");
+    const id = `user-${now}-${optimisticCounterRef.current++}`;
+    const activeClarify = feedState.activeClarifyId
+      ? feedState.messages.find((message) => message.id === feedState.activeClarifyId)
+      : null;
+    if (!isSlashCommand) {
+      setFeedState((state) => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            ...createOptimisticUserMessage(text, id, now),
+            status: agentRunning ? "waiting" : "sending",
+          },
+        ],
+      }));
+    }
+    setComposer("");
+
+    let sent = false;
+    if (activeClarify && activeClarify.choices?.length) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        // Move to "Other", confirm, then paste the free-form answer.
+        ws.send("\x1b[B".repeat(activeClarify.choices.length));
+        ws.send("\r");
+        window.setTimeout(() => sendPtyText(text), 50);
+        sent = true;
+      }
+    } else {
+      sent = sendPtyText(text);
+    }
+
+    if (!sent) {
+      if (!isSlashCommand) markOptimisticFailed(id);
+      return;
+    }
+
+    if (activeClarify) {
+      setFeedState((state) => {
+        const resolved = chatFeedReducer(state, {
+          type: "clarify.resolved",
+          payload: { answer: text },
+        });
+        return {
+          ...resolved,
+          messages: resolved.messages.map((message) =>
+            message.id === id ? { ...message, status: "sent" } : message,
+          ),
+        };
+      });
+    }
+  }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, sendPtyText]);
+
+  const stopAgent = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send("\x03");
+  }, []);
+
+  const handleCopyLast = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send("/copy");
+    window.setTimeout(() => {
+      const current = wsRef.current;
+      if (current?.readyState === WebSocket.OPEN) current.send("\r");
+    }, 100);
+    setCopyState("copied");
+    const resetToken = ++copyResetTokenRef.current;
+    window.setTimeout(() => {
+      if (copyResetTokenRef.current === resetToken) setCopyState("idle");
+    }, 1500);
+    termRef.current?.focus();
+  }, []);
+
+  const retryMessage = useCallback(
+    (message: ChatFeedMessage) => {
+      if (!sendPtyText(message.text)) return;
+      setFeedState((state) => ({
+        ...state,
+        messages: state.messages.map((item) =>
+          item.id === message.id ? { ...item, status: "sending" } : item,
+        ),
+      }));
+    },
+    [sendPtyText],
+  );
+
+  const answerApproval = useCallback(
+    (
+      choice: "once" | "session" | "always" | "deny",
+      message: ChatFeedMessage,
+    ) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(approvalChoiceKey(choice, message.allowPermanent !== false));
+      setFeedState((state) =>
+        chatFeedReducer(state, {
+          type: "approval.resolved",
+          payload: { choice },
+        }),
+      );
+    },
+    [],
+  );
+
+  const answerClarify = useCallback((answer: string, message: ChatFeedMessage) => {
+    const ws = wsRef.current;
+    const index = message.choices?.indexOf(answer) ?? -1;
+    if (!ws || ws.readyState !== WebSocket.OPEN || index < 0) return;
+    ws.send(String(index + 1));
+    setFeedState((state) =>
+      chatFeedReducer(state, {
+        type: "clarify.resolved",
+        payload: { answer },
+      }),
+    );
+  }, []);
 
   useEffect(() => {
     if (!isActive) {
@@ -427,25 +819,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
-  const handleCopyLast = () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send the slash as a burst, wait long enough for Ink's tokenizer to
-    // emit a keypress event for each character (not coalesce them into a
-    // paste), then send Return as its own event.  The timing here is
-    // empirical — 100ms is safely past Node's default stdin coalescing
-    // window and well inside UI responsiveness.
-    ws.send("/copy");
-    setTimeout(() => {
-      const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
-    }, 100);
-    setCopyState("copied");
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
-    termRef.current?.focus();
-  };
-
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -547,7 +920,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
     // clipboard.paste / xclip never see the browser clipboard, so image paste
     // must upload browser bytes to HERMES_HOME/images, then drive `/image`
-    // over the PTY (same burst-then-Return timing as handleCopyLast).
+    // over the PTY (same burst-then-Return timing as composer submission).
     let imageUploadDisposed = false;
     const pasteDelay = () =>
       new Promise<void>((resolve) => window.setTimeout(resolve, 40));
@@ -587,6 +960,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
+    imageAttachRef.current = uploadAndAttachImages;
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
       if (!files.length) return;
@@ -1121,11 +1495,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     })();
 
-    term.focus();
+    // The semantic composer owns focus by default. The terminal only receives
+    // focus when the user explicitly opens the lossless raw-console fallback.
 
     return () => {
       unmounting = true;
       imageUploadDisposed = true;
+      imageAttachRef.current = () => undefined;
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
@@ -1156,33 +1532,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
-      if (copyResetRef.current) {
-        clearTimeout(copyResetRef.current);
-        copyResetRef.current = null;
-      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      copyResetTokenRef.current += 1;
     };
   }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
 
-  // When the user returns to the chat tab (isActive: false → true), the
-  // terminal host just transitioned from display:none to display:flex.
-  // ResizeObserver won't fire on that kind of style-driven box change —
-  // xterm thinks its grid is still whatever it was when the tab was
-  // hidden (or 0×0, if it was hidden before first fit).  Force a refit
-  // after two animation frames so layout has committed.
-  //
-  // Focus handling: we only steal focus back into the terminal when
-  // nothing else inside ChatPage was holding it (typically the first
-  // activation after mount, where document.activeElement is <body>; or
-  // a return after the user had been typing in the terminal, where
-  // focus was already on the xterm textarea before the tab got hidden
-  // and has since fallen back to <body>).  If the user had clicked
-  // into the sidebar (model picker, tool-call entry) before switching
-  // tabs, we must not yank focus away from wherever they left it when
-  // they come back — that's a surprise and an a11y foot-gun.
+  // Refit the off-screen terminal on tab activation. Only return focus to
+  // xterm when the user explicitly opened the raw console; the chat composer
+  // remains the default interactive surface.
   useEffect(() => {
     if (!isActive) return;
     let raf1 = 0;
@@ -1192,25 +1552,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
-        const host = hostRef.current;
-        const active = typeof document !== "undefined"
-          ? document.activeElement
-          : null;
-        const focusIsElsewhereInChatPage =
-          active !== null &&
-          active !== document.body &&
-          host !== null &&
-          !host.contains(active);
-        if (!focusIsElsewhereInChatPage) {
-          termRef.current?.focus();
-        }
+        if (rawConsoleOpen) termRef.current?.focus();
       });
     });
     return () => {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [isActive]);
+  }, [isActive, rawConsoleOpen]);
 
   const maybeReconnectOnPageResume = useCallback(() => {
     const visibilityState =
@@ -1392,20 +1741,89 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.28)]">
+          {!rawConsoleOpen && (
+            <ChatBubbleFeed
+              messages={feedState.messages}
+              composer={composer}
+              disabled={ptyState !== "open"}
+              isWorking={agentRunning}
+              rawConsoleOpen={rawConsoleOpen}
+              focusSignal={reconnectNonce}
+              onComposerChange={setComposer}
+              onSubmit={submitComposer}
+              onStop={stopAgent}
+              onRetry={retryMessage}
+              onApproval={answerApproval}
+              onClarify={answerClarify}
+              onImages={(files) => imageAttachRef.current(files)}
+              onToggleRawConsole={() => setRawConsoleOpen(true)}
+            />
           )}
-          style={{
-            backgroundColor: terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
+
+          {/* Keep the original native terminal alive off-screen in Chat Feed mode.
+              Raw Console restores its full original presentation and controls. */}
           <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
+            className={cn(
+              "flex flex-col overflow-hidden",
+              rawConsoleOpen
+                ? "absolute inset-0 z-10 p-2 sm:p-3"
+                : "pointer-events-none fixed left-[-200vw] top-0 h-[720px] w-[1100px] opacity-0",
+            )}
+            style={{
+              backgroundColor: terminalBg,
+              boxShadow: rawConsoleOpen ? "0 8px 32px rgba(0, 0, 0, 0.4)" : undefined,
+            }}
+            aria-hidden={!rawConsoleOpen}
+          >
+            <div
+              ref={hostRef}
+              className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            />
+
+            {rawConsoleOpen && (
+              <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1.5 sm:bottom-3 sm:right-3 lg:bottom-4 lg:right-4">
+                <Button
+                  ghost
+                  onClick={handleCopyLast}
+                  title="Copy last assistant response as raw markdown"
+                  aria-label="Copy last assistant response"
+                  className={cn(
+                    "normal-case tracking-normal font-normal",
+                    "rounded border border-current/30 bg-black/20",
+                    "opacity-70 hover:opacity-100 hover:border-current/60",
+                    "transition-opacity duration-150 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                  )}
+                  style={{ color: terminalFg }}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Copy className="h-3 w-3 shrink-0" />
+                    <span className="hidden min-[400px]:inline tracking-wide">
+                      {copyState === "copied" ? "copied" : "copy last response"}
+                    </span>
+                  </span>
+                </Button>
+                <Button
+                  ghost
+                  onClick={() => setRawConsoleOpen(false)}
+                  title="Return to Chat Feed"
+                  aria-label="Return to Chat Feed"
+                  className={cn(
+                    "normal-case tracking-normal font-normal",
+                    "rounded border border-current/30 bg-black/20",
+                    "opacity-70 hover:opacity-100 hover:border-current/60",
+                    "transition-opacity duration-150 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                  )}
+                  style={{ color: terminalFg }}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <MessagesSquare className="h-3 w-3 shrink-0" />
+                    <span className="hidden min-[400px]:inline tracking-wide">Chat Feed</span>
+                  </span>
+                </Button>
+              </div>
+            )}
+          </div>
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
@@ -1428,9 +1846,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
-              Offer an in-place restart so the user never has to refresh the
-              whole page to get a working chat back. */}
           {ptyState === "ended" && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
@@ -1445,31 +1860,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </Button>
             </div>
           )}
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: terminalFg }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
         </div>
 
         {!narrow && (

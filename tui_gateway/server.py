@@ -3366,6 +3366,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         yolo = False
     info: dict = {
+        # Stored SQLite session id. Browser chat bubbles use this to hydrate
+        # the reattached PTY transcript after a refresh; runtime gateway sid
+        # alone is not a valid /api/sessions/{id} key.
+        "session_id": session_key,
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
         "reasoning_effort": reasoning_effort,
