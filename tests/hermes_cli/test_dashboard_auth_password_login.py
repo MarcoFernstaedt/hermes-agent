@@ -488,6 +488,7 @@ class TestLoginPageRender:
             assert "min-height: 44px" in page
             assert ":focus-visible" in page
             assert "@media (max-width: 480px)" in page
+            assert ".brand { margin-bottom: 1rem; text-align: center; }" in page
             assert "@media (prefers-reduced-motion: reduce)" in page
             assert "transition: none" in page
             assert "footer {" in page

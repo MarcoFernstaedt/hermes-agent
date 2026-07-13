@@ -331,7 +331,7 @@ _LOGIN_HTML_TEMPLATE = """\
     body {{ display: block; padding: 1rem; }}
     main {{ margin: 0 auto; }}
     .card {{ padding: 1.5rem 1.25rem; }}
-    .brand {{ margin-bottom: 1rem; text-align: left; }}
+    .brand {{ margin-bottom: 1rem; text-align: center; }}
   }}
 </style>
 </head>
