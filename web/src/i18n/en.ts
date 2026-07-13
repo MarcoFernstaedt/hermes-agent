@@ -53,8 +53,8 @@ export const en: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Imperator",
+    brandShort: "IM",
     closeNavigation: "Close navigation",
     closeModelTools: "Close model and tools",
     footer: {
@@ -82,6 +82,13 @@ export const en: Translations = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
+    },
+    navSections: {
+      operate: "Operate",
+      automate: "Automate",
+      connect: "Connect",
+      settings: "Settings",
+      menu: "Menu",
     },
     modelToolsSheetSubtitle: "& tools",
     modelToolsSheetTitle: "Model",

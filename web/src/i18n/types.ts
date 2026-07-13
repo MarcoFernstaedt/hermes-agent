@@ -100,6 +100,15 @@ export interface Translations {
       sessions: string;
       skills: string;
     };
+    // Optional: sidebar section headings + the mobile bottom-bar Menu tab.
+    // Non-English locales fall back to the English literals until translated.
+    navSections?: {
+      operate: string;
+      automate: string;
+      connect: string;
+      settings: string;
+      menu: string;
+    };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
     navigation: string;

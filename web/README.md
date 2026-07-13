@@ -1,11 +1,13 @@
-# Hermes Agent — Web UI
+# Imperator — Web UI
 
-Browser-based dashboard for managing Hermes Agent configuration, API keys, and monitoring active sessions.
+Browser-based dashboard for managing the agent's configuration, API keys, and active sessions.
 
 ## Stack
 
 - **Vite** + **React 19** + **TypeScript**
-- **Tailwind CSS v4** with custom dark theme
+- **Tailwind CSS v4** with the single **Imperator** scheme (imperial gold on
+  deep obsidian violet — see `docs/design/imperator-dashboard-ux.md`; theme
+  switching was deliberately removed)
 - **shadcn/ui**-style components (hand-rolled, no CLI dependency)
 
 ## Development
@@ -54,7 +56,7 @@ src/
 
 ## Typography & contrast rules
 
-Read before adding or editing UI styles. These rules keep the dashboard legible across all built-in themes and stop drift back into the patterns the design system was just refactored out of.
+Read before adding or editing UI styles. These rules keep the dashboard legible in the Imperator scheme and stop drift back into the patterns the design system was just refactored out of.
 
 ### Text size floor
 

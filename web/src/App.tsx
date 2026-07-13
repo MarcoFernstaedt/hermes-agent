@@ -92,12 +92,10 @@ import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
-import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
-import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -197,6 +195,49 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
+  },
+];
+
+/**
+ * Sidebar groupings for the built-in nav. Purely presentational — routing,
+ * plugin insertion, and the analytics gate all still run off the flat
+ * nav list; sections just cluster the rendered links so the sidebar reads
+ * as a small set of scannable groups instead of an 18-item wall. Items the
+ * sections don't claim (e.g. future additions) fall into the last group,
+ * so nothing can silently disappear from navigation.
+ */
+const NAV_SECTIONS: Array<{
+  id: string;
+  /** Optional i18n key under t.app.navSections; label is the fallback. */
+  labelKey?: "operate" | "automate" | "connect" | "settings";
+  label: string;
+  paths: string[];
+}> = [
+  {
+    id: "operate",
+    labelKey: "operate",
+    label: "Operate",
+    paths: ["/sessions", "/files", "/analytics", "/logs"],
+  },
+  {
+    id: "automate",
+    labelKey: "automate",
+    label: "Automate",
+    paths: ["/cron", "/skills", "/plugins", "/mcp", "/webhooks"],
+  },
+  {
+    id: "connect",
+    labelKey: "connect",
+    label: "Connect",
+    paths: ["/channels", "/pairing", "/profiles"],
+  },
+  {
+    // "Settings", not "System" — the sidebar's system-actions block below
+    // the nav already carries a "System" heading.
+    id: "settings",
+    labelKey: "settings",
+    label: "Settings",
+    paths: ["/models", "/config", "/env", "/system", "/docs"],
   },
 ];
 
@@ -350,7 +391,6 @@ export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
-  const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
@@ -454,8 +494,6 @@ export default function App() {
     [manifests],
   );
 
-  const layoutVariant = theme.layoutVariant ?? "standard";
-
   useEffect(() => {
     if (!mobileOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -482,7 +520,7 @@ export default function App() {
   return (
     <ProfileProvider>
     <div
-      data-layout-variant={layoutVariant}
+      data-layout-variant="standard"
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
@@ -501,11 +539,6 @@ export default function App() {
           "border-b border-current/20",
           "bg-background-base",
         )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
       >
         <Button
           ghost
@@ -519,7 +552,7 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
           {t.app.brand}
         </Typography>
       </header>
@@ -554,11 +587,6 @@ export default function App() {
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",
             )}
-            style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
-            }}
           >
             <div
               className={cn(
@@ -575,10 +603,8 @@ export default function App() {
               >
                 <PluginSlot name="header-left" />
 
-                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
-                  Hermes
-                  <br />
-                  Agent
+                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
+                  {t.app.brand}
                 </Typography>
               </div>
 
@@ -615,18 +641,13 @@ export default function App() {
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
-              </ul>
+              <GroupedCoreNav
+                closeMobile={closeMobile}
+                collapsed={isDesktopCollapsed}
+                items={sidebarNav.coreItems}
+                t={t}
+                tooltipWarmRef={tooltipWarmRef}
+              />
 
               {sidebarNav.pluginItems.length > 0 && (
                 <div
@@ -688,14 +709,6 @@ export default function App() {
 
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
-
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
                   label={t.language.switchTo}
                   tooltipWarmRef={tooltipWarmRef}
                 >
@@ -730,8 +743,10 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
+                  // Mobile keeps extra bottom inset so content scrolls clear
+                  // of the fixed bottom tab bar; desktop has no bar.
                   !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                    "pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -784,9 +799,107 @@ export default function App() {
         </div>
       </div>
 
+      {!isChatRoute && !mobileOpen && (
+        <MobileBottomNav
+          items={builtinNav}
+          onOpenMenu={() => setMobileOpen(true)}
+          t={t}
+        />
+      )}
+
       <PluginSlot name="overlay" />
     </div>
     </ProfileProvider>
+  );
+}
+
+/** Primary destinations surfaced in the mobile bottom tab bar. Everything
+ *  else stays one tap away behind the Menu drawer. */
+const MOBILE_PRIMARY_PATHS = ["/chat", "/sessions", "/channels", "/system"];
+
+/**
+ * Fixed bottom tab bar on phone/tablet widths — the modern mobile-nav
+ * pattern: 3–4 primary destinations always one thumb-tap away, plus a
+ * Menu tab that opens the full navigation drawer. Hidden on desktop
+ * (sidebar takes over) and on /chat (the terminal + software keyboard
+ * need the full viewport height there).
+ */
+function MobileBottomNav({
+  items,
+  onOpenMenu,
+  t,
+}: {
+  items: NavItem[];
+  onOpenMenu: () => void;
+  t: Translations;
+}) {
+  const primary = MOBILE_PRIMARY_PATHS.map((p) =>
+    items.find((i) => i.path === p),
+  ).filter((i): i is NavItem => Boolean(i));
+
+  const linkClass = (isActive: boolean) =>
+    cn(
+      "relative flex min-h-[3.25rem] w-full flex-col items-center justify-center gap-0.5 px-1 py-1.5",
+      "font-sans text-display text-xs tracking-[0.06em]",
+      "transition-colors cursor-pointer",
+      "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+      isActive ? "text-midground" : "text-text-secondary",
+    );
+
+  return (
+    <nav
+      aria-label={t.app.navigation}
+      className={cn(
+        "lg:hidden fixed bottom-0 left-0 right-0 z-40",
+        "border-t border-current/20 bg-background-base",
+        "pb-[env(safe-area-inset-bottom,0px)]",
+      )}
+    >
+      <ul className="flex items-stretch">
+        {primary.map((item) => {
+          const { icon: Icon, label, labelKey, path } = item;
+          const navLabel = labelKey
+            ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+            : label;
+          return (
+            <li key={path} className="min-w-0 flex-1">
+              <NavLink
+                to={path}
+                end={path === "/sessions"}
+                className={({ isActive }) => linkClass(isActive)}
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <span
+                        aria-hidden
+                        className="absolute left-1/2 top-0 h-0.5 w-8 -translate-x-1/2 bg-midground"
+                      />
+                    )}
+                    <Icon className="h-4.5 w-4.5 shrink-0" />
+                    <span className="max-w-full truncate">{navLabel}</span>
+                  </>
+                )}
+              </NavLink>
+            </li>
+          );
+        })}
+
+        <li className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={onOpenMenu}
+            aria-label={t.app.openNavigation}
+            className={linkClass(false)}
+          >
+            <Menu className="h-4.5 w-4.5 shrink-0" />
+            <span className="max-w-full truncate">
+              {t.app.navSections?.menu ?? "Menu"}
+            </span>
+          </button>
+        </li>
+      </ul>
+    </nav>
   );
 }
 
@@ -803,6 +916,84 @@ export default function App() {
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
   return <div key={profile || "__own__"} className="contents">{children}</div>;
+}
+
+/**
+ * Renders the built-in nav items clustered under the NAV_SECTIONS
+ * headings. Chat (when present) stays pinned above the first section;
+ * items no section claims fall into the final group so new routes are
+ * always reachable even before they're categorized.
+ */
+function GroupedCoreNav({
+  closeMobile,
+  collapsed,
+  items,
+  t,
+  tooltipWarmRef,
+}: GroupedCoreNavProps) {
+  const byPath = new Map(items.map((i) => [i.path, i]));
+  const claimed = new Set<string>(["/chat"]);
+  for (const section of NAV_SECTIONS) {
+    for (const p of section.paths) claimed.add(p);
+  }
+  const unclaimed = items.filter((i) => !claimed.has(i.path));
+
+  const chatItem = byPath.get("/chat");
+
+  const renderItem = (item: NavItem) => (
+    <SidebarNavLink
+      closeMobile={closeMobile}
+      collapsed={collapsed}
+      item={item}
+      key={item.path}
+      t={t}
+      tooltipWarmRef={tooltipWarmRef}
+    />
+  );
+
+  return (
+    <>
+      {chatItem && <ul className="flex flex-col">{renderItem(chatItem)}</ul>}
+
+      {NAV_SECTIONS.map((section, index) => {
+        const sectionItems = section.paths
+          .map((p) => byPath.get(p))
+          .filter((i): i is NavItem => Boolean(i));
+        if (index === NAV_SECTIONS.length - 1) {
+          sectionItems.push(...unclaimed);
+        }
+        if (sectionItems.length === 0) return null;
+
+        const heading = section.labelKey
+          ? (t.app.navSections?.[section.labelKey] ?? section.label)
+          : section.label;
+
+        return (
+          <div
+            className={cn(
+              "flex flex-col pb-1",
+              // Collapsed rail hides headings — keep a hairline so the
+              // groups still read as groups.
+              collapsed && "lg:border-t lg:border-current/10",
+            )}
+            key={section.id}
+          >
+            <span
+              className={cn(
+                "px-5 pt-3 pb-1",
+                "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+                collapsed && "lg:hidden",
+              )}
+            >
+              {heading}
+            </span>
+
+            <ul className="flex flex-col">{sectionItems.map(renderItem)}</ul>
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function SidebarNavLink({
@@ -852,9 +1043,6 @@ function SidebarNavLink({
               : "text-text-secondary hover:text-midground",
           )
         }
-        style={{
-          clipPath: "var(--component-tab-clip-path)",
-        }}
       >
         {({ isActive }) => (
           <>
@@ -1313,6 +1501,14 @@ interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
   label: string;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface GroupedCoreNavProps {
+  closeMobile: () => void;
+  collapsed: boolean;
+  items: NavItem[];
+  t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }
 

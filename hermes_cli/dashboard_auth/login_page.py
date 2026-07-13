@@ -7,8 +7,9 @@ registry; clicking a provider sends a GET to
 Visual styling builds on the Nous Research design system (the
 ``@nous-research/ui`` package the React dashboard uses): the same
 ``Collapse`` / ``Rules Compressed`` typeface, uppercase + wide-tracking
-brand chrome, and the inset-bevel button shadow, with an Imperator-specific
-high-contrast blue palette. Fonts are served
+brand chrome, and the inset-bevel button shadow, with the Imperator
+scheme: imperial gold on a deep obsidian-violet canvas (the same palette
+the SPA applies — see ``web/src/themes/presets.ts``). Fonts are served
 out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
 already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
 ``middleware.py``), so the page renders without needing the React
@@ -71,14 +72,17 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   :root {{
-    --background-base: #07111f;
-    --background: #07111f;
-    --midground: #7dd3fc;
-    --foreground: #f8fafc;
-    --muted: #b8c5d6;
+    /* Imperator scheme — imperial gold on deep obsidian violet. Keep in
+       sync with the SPA (web/src/index.css + web/src/themes/presets.ts)
+       so login → dashboard reads as one product. */
+    --background-base: #0f0b1e;
+    --background: #0f0b1e;
+    --midground: #e8c87a;
+    --foreground: #f6f1e4;
+    --muted: #c4b998;
     --danger: #fca5a5;
-    --hairline: #29415f;
-    --hairline-strong: #4b6b91;
+    --hairline: #382c52;
+    --hairline-strong: #5a4a80;
   }}
 
   *, *::before, *::after {{ box-sizing: border-box; }}
@@ -380,11 +384,12 @@ _EMPTY_HTML = """\
     src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }
   :root {
-    --background-base: #07111f;
-    --midground: #7dd3fc;
-    --foreground: #f8fafc;
-    --muted: #b8c5d6;
-    --hairline: #29415f;
+    /* Imperator scheme — keep in sync with the main login template above. */
+    --background-base: #0f0b1e;
+    --midground: #e8c87a;
+    --foreground: #f6f1e4;
+    --muted: #c4b998;
+    --hairline: #382c52;
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
