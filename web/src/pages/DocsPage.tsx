@@ -5,7 +5,10 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 
-export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
+// Documentation home — served from the Imperator Systems domain. The Docs
+// page iframes this URL and offers it as an open-in-new-tab link, so the
+// host must allow embedding; adjust the path here if the docs move.
+export const HERMES_DOCS_URL = "https://imperatorsystems.tech/docs/";
 
 const DS_BUTTON_OUTLINED_LINK_CN = cn(
   "group relative inline-grid grid-cols-[auto_1fr_auto] items-center",
