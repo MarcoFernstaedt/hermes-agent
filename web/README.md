@@ -41,18 +41,23 @@ This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a 
 
 ```
 src/
-├── components/ui/   # Reusable UI primitives (Card, Badge, Button, Input, etc.)
+├── components/      # Shared components (chat feed, palette, sidebar, dialogs…)
 ├── lib/
-│   ├── api.ts       # API client — typed fetch wrappers for all backend endpoints
-│   └── utils.ts     # cn() helper for Tailwind class merging
-├── pages/
-│   ├── StatusPage   # Agent status, active/recent sessions
-│   ├── ConfigPage   # Dynamic config editor (reads schema from backend)
-│   └── EnvPage      # API key management with save/clear
-├── App.tsx          # Main layout and navigation
+│   ├── api.ts               # API client — typed fetch wrappers for all backend endpoints
+│   ├── event-channel-hub.ts # Shared resilient /api/events socket per channel
+│   ├── chat-feed-model.ts   # Event → bubble-transcript reducer
+│   └── utils.ts             # cn() helper for Tailwind class merging
+├── pages/           # One route per file, all lazy-loaded except ChatPage
+│                    # (Sessions, Files, Analytics, Models, Logs, Cron, Skills,
+│                    #  Plugins, MCP, Channels, Webhooks, Pairing, Profiles,
+│                    #  Config, Env/Keys, System, Docs, Chat)
+├── App.tsx          # Shell: grouped sidebar, mobile tab bar, ⌘K palette, routes
 ├── main.tsx         # React entry point
-└── index.css        # Tailwind imports and theme variables
+└── index.css        # Tailwind imports + the static Imperator scheme tokens
 ```
+
+The UX and design rules (palette, navigation model, responsive and
+branding rules) live in `docs/design/imperator-dashboard-ux.md`.
 
 ## Typography & contrast rules
 

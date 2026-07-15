@@ -408,7 +408,9 @@ export default function App() {
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  // ⌘K / Ctrl+K opens the command palette from anywhere in the app.
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the app —
+  // except inside a terminal pane, where Ctrl+K is a real shell binding
+  // (kill-line) that must reach the PTY, not the palette.
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (
@@ -417,6 +419,8 @@ export default function App() {
         !event.shiftKey &&
         event.key.toLowerCase() === "k"
       ) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.(".xterm, .hermes-chat-xterm-host")) return;
         event.preventDefault();
         setPaletteOpen((open) => !open);
       }
