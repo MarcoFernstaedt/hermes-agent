@@ -7123,8 +7123,20 @@ def _dispatch_once_locked(
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
+
+    def _workspace_identity(value: object) -> str:
+        """Return one canonical identity for a concrete workspace path."""
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            resolved = Path(raw).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            resolved = Path(os.path.abspath(os.path.expanduser(raw)))
+        return os.path.normcase(str(resolved))
+
     workspace_owners = {
-        str(active["workspace_path"]): str(active["id"])
+        _workspace_identity(active["workspace_path"]): str(active["id"])
         for active in conn.execute(
             "SELECT id, workspace_path FROM tasks "
             "WHERE status = 'running' AND workspace_path IS NOT NULL "
@@ -7238,7 +7250,8 @@ def _dispatch_once_locked(
             result.skipped_nonspawnable.append(row["id"])
             continue
         workspace_path = str(row["workspace_path"] or "").strip()
-        workspace_owner = workspace_owners.get(workspace_path) if workspace_path else None
+        workspace_key = _workspace_identity(workspace_path)
+        workspace_owner = workspace_owners.get(workspace_key) if workspace_key else None
         if workspace_owner is not None:
             result.skipped_workspace_conflicted.append(
                 (row["id"], workspace_owner, workspace_path)
@@ -7291,8 +7304,8 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
-            if workspace_path:
-                workspace_owners[workspace_path] = row["id"]
+            if workspace_key:
+                workspace_owners[workspace_key] = row["id"]
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -7348,7 +7361,7 @@ def _dispatch_once_locked(
             # counter is cleared only on successful completion (see
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-            workspace_owners[str(workspace)] = claimed.id
+            workspace_owners[_workspace_identity(workspace)] = claimed.id
             spawned += 1
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap

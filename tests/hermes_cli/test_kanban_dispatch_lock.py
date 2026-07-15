@@ -137,3 +137,33 @@ def test_dispatch_serializes_tasks_that_share_a_workspace(conn, tmp_path, monkey
     deferred = kb.get_task(conn, second)
     assert deferred is not None
     assert deferred.status == "ready"
+
+
+def test_dispatch_serializes_equivalent_workspace_spellings(conn, tmp_path, monkeypatch):
+    """Alias spellings of one directory must share the same dispatch owner."""
+    workspace = tmp_path / "shared-repo"
+    workspace.mkdir()
+    alias = workspace / ".." / workspace.name
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+
+    first = kb.create_task(
+        conn, title="first", assignee="worker-a", workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    second = kb.create_task(
+        conn, title="second", assignee="worker-b", workspace_kind="dir",
+        workspace_path=str(alias),
+    )
+    spawned: list[str] = []
+
+    result = kb.dispatch_once(
+        conn,
+        spawn_fn=lambda task, _workspace, board=None: spawned.append(task.id) or 900001,
+        max_spawn=2,
+    )
+
+    assert spawned == [first]
+    assert result.skipped_workspace_conflicted == [(second, first, str(alias))]
+    deferred = kb.get_task(conn, second)
+    assert deferred is not None
+    assert deferred.status == "ready"

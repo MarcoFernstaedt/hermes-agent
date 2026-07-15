@@ -314,19 +314,19 @@ describe("chat feed model", () => {
     });
     state = chatFeedReducer(state, {
       type: "message.delta",
-      payload: { text: "/home/marco/private/audio.mp3" },
+      payload: { text: "/home/testuser/private/audio.mp3" },
       now: 302,
     });
     state = chatFeedReducer(state, {
       type: "message.complete",
       eventId: "completion-1",
-      payload: { text: "Done.\nMEDIA:/home/marco/private/audio.mp3" },
+      payload: { text: "Done.\nMEDIA:/home/testuser/private/audio.mp3" },
       now: 303,
     });
     const replayed = chatFeedReducer(state, {
       type: "message.complete",
       eventId: "completion-1",
-      payload: { text: "Done.\nMEDIA:/home/marco/private/audio.mp3" },
+      payload: { text: "Done.\nMEDIA:/home/testuser/private/audio.mp3" },
       now: 304,
     });
     const distinct = chatFeedReducer(replayed, {
@@ -340,7 +340,7 @@ describe("chat feed model", () => {
     expect(distinct.messages).toHaveLength(2);
     expect(distinct.messages.map((message) => message.text)).toEqual(["Done.", "Done."]);
     expect(distinct.messages.map((message) => message.text).join("\n")).not.toContain(
-      "/home/marco",
+      "/home/testuser",
     );
     expect(distinct.messages.map((message) => message.text).join("\n")).not.toContain(
       "/different/private",

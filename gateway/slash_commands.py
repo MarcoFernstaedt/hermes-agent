@@ -2744,6 +2744,36 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
         return t("gateway.reasoning.set_session", effort=effort)
 
+    async def _send_pending_write_buttons(
+        self,
+        event: MessageEvent,
+        subsystem: str,
+        records: list,
+        content: str,
+    ) -> bool:
+        """Use Telegram's exact-snapshot approval UI when available."""
+        if event.source.platform != Platform.TELEGRAM:
+            return False
+        try:
+            if not records:
+                return False
+            adapter = self._adapter_for_source(event.source)
+            sender = getattr(adapter, "send_pending_write_approval", None) if adapter else None
+            if not callable(sender):
+                return False
+            metadata = self._thread_metadata_for_source(event.source)
+            result = await sender(
+                str(event.source.chat_id),
+                subsystem,
+                records,
+                content,
+                metadata=metadata,
+            )
+            return bool(getattr(result, "success", False))
+        except Exception:
+            logger.debug("pending-write approval buttons unavailable", exc_info=True)
+            return False
+
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate.
 
@@ -2774,12 +2804,22 @@ class GatewaySlashCommandsMixin:
         # load_on_disk_store() honors the user's configured char limits.
         store = load_on_disk_store()
 
+        shows_pending = not args or args[0].lower() == "pending"
+        pending_records = wa.list_pending(wa.MEMORY) if shows_pending else None
         out = handle_pending_subcommand(
-            wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
+            wa.MEMORY,
+            args,
+            memory_store=store,
+            set_mode_fn=_set_approval,
+            pending_records=pending_records,
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
                    "reject <id>, approval <on|off>.")
+        if shows_pending and await self._send_pending_write_buttons(
+            event, wa.MEMORY, pending_records, out
+        ):
+            return ""
         return out
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
@@ -2821,8 +2861,13 @@ class GatewaySlashCommandsMixin:
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
+        shows_pending = not args or args[0].lower() == "pending"
+        pending_records = wa.list_pending(wa.SKILLS) if shows_pending else None
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=_set_approval,
+            wa.SKILLS,
+            args,
+            set_mode_fn=_set_approval,
+            pending_records=pending_records,
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
@@ -2838,6 +2883,10 @@ class GatewaySlashCommandsMixin:
             out = (out[:3000]
                    + "\n… (truncated — full diff in "
                      f"~/.hermes/pending/skills/{pending_id}.json)")
+        if shows_pending and await self._send_pending_write_buttons(
+            event, wa.SKILLS, pending_records, out
+        ):
+            return ""
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:

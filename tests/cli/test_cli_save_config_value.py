@@ -1,9 +1,14 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
-import yaml
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 
 class TestSaveConfigValueAtomic:
@@ -132,3 +137,43 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+    def test_serializes_with_authoritative_cross_process_lock(self, config_env, tmp_path):
+        """Legacy CLI writes must not bypass hermes_cli.config transactions."""
+        from hermes_cli.config import _config_transaction_lock
+
+        ready = tmp_path / "child-ready"
+        script = (
+            "from pathlib import Path\n"
+            "import sys\n"
+            "import cli\n"
+            "cli._hermes_home = Path(sys.argv[1])\n"
+            "Path(sys.argv[2]).write_text('ready', encoding='utf-8')\n"
+            "raise SystemExit(0 if cli.save_config_value('display.skin', 'mono') else 1)\n"
+        )
+
+        child = None
+        try:
+            with _config_transaction_lock(config_env):
+                child = subprocess.Popen(
+                    [sys.executable, "-c", script, str(config_env.parent), str(ready)],
+                    cwd=str(Path(__file__).resolve().parents[2]),
+                    env=os.environ.copy(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                deadline = time.monotonic() + 10
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert ready.exists(), "child did not reach the locked config write"
+                time.sleep(0.2)
+                assert child.poll() is None, "child bypassed the config transaction lock"
+
+            stdout, stderr = child.communicate(timeout=10)
+            assert child.returncode == 0, (stdout, stderr)
+            assert yaml.safe_load(config_env.read_text())["display"]["skin"] == "mono"
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
