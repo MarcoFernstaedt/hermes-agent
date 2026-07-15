@@ -5347,6 +5347,73 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Persistent memory/skill write approvals (pw:choice:all) ---
+        if data.startswith("pw:"):
+            parts = data.split(":", 2)
+            choice = parts[1] if len(parts) == 3 and parts[2] == "all" else ""
+            if choice not in {"approve", "reject", "change"}:
+                await query.answer(text="Invalid pending-approval action.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to resolve pending changes.")
+                return
+
+            if choice == "change":
+                await query.answer(text="Reply with the changes you want.")
+                original = str(getattr(query_message, "text", "") or "Pending changes")
+                try:
+                    await query.edit_message_text(
+                        text=original + "\n\nReply with the exact changes you want before approval.",
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            try:
+                from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+                verb = "approve" if choice == "approve" else "reject"
+                memory_store = None
+                if choice == "approve":
+                    from tools.memory_tool import MemoryStore
+                    memory_store = await asyncio.to_thread(MemoryStore)
+
+                memory_result = await asyncio.to_thread(
+                    handle_pending_subcommand,
+                    "memory",
+                    [verb, "all"],
+                    memory_store=memory_store,
+                )
+                skills_result = await asyncio.to_thread(
+                    handle_pending_subcommand,
+                    "skills",
+                    [verb, "all"],
+                )
+                label = "Approved" if choice == "approve" else "Denied"
+                await query.answer(text=f"{label} pending changes.")
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} pending changes.\n\n{memory_result}\n{skills_result}",
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("[%s] pending-write approval callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Could not resolve pending changes.")
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)

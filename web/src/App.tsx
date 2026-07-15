@@ -1098,11 +1098,12 @@ function SidebarSystemActions({
 
   useEffect(() => {
     if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
       return;
     }
     let cancelled = false;
-    setUpdateConfirmChecking(true);
+    queueMicrotask(() => {
+      if (!cancelled) setUpdateConfirmChecking(true);
+    });
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -1145,8 +1146,8 @@ function SidebarSystemActions({
     items.push({
       action: "update",
       icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
+      label: "Upgrade Imperator",
+      runningLabel: "Upgrading Imperator",
       spin: false,
     });
   }
@@ -1158,6 +1159,7 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
+      setUpdateConfirmInfo(null);
       setUpdateConfirmOpen(true);
       return;
     }
@@ -1175,6 +1177,7 @@ function SidebarSystemActions({
 
   const confirmUpdate = () => {
     setUpdateConfirmOpen(false);
+    setUpdateConfirmInfo(null);
     void runAction("update");
     navigate("/sessions");
     onNavigate();
@@ -1244,7 +1247,10 @@ function SidebarSystemActions({
         updateConfirmChecking ? t.common.loading : updateConfirmDescription
       }
       loading={pendingAction === "update" || updateConfirmChecking}
-      onCancel={() => setUpdateConfirmOpen(false)}
+      onCancel={() => {
+        setUpdateConfirmOpen(false);
+        setUpdateConfirmInfo(null);
+      }}
       onConfirm={confirmUpdate}
       open={updateConfirmOpen}
       title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}

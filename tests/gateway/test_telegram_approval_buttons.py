@@ -235,6 +235,75 @@ class TestTelegramExecApproval:
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 
+class TestTelegramPendingWriteApprovalCallback:
+    """Persistent write approvals can be resolved from notifier buttons."""
+
+    @staticmethod
+    def _query(data):
+        query = AsyncMock()
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Approval needed"
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Marco"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        return query, update
+
+    @pytest.mark.asyncio
+    async def test_approve_all_applies_memory_and_skill_pending_writes(self):
+        adapter = _make_adapter()
+        query, update = self._query("pw:approve:all")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.handle_pending_subcommand", side_effect=[
+                 "Approved 2 memory write(s).", "Approved 3 skills write(s)."
+             ]) as handle, \
+             patch("tools.memory_tool.MemoryStore", return_value=object()):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert handle.call_count == 2
+        assert handle.call_args_list[0].args[:2] == ("memory", ["approve", "all"])
+        assert handle.call_args_list[1].args[:2] == ("skills", ["approve", "all"])
+        query.answer.assert_awaited_once()
+        edited = query.edit_message_text.await_args.kwargs
+        assert "Approved 2 memory" in edited["text"]
+        assert "Approved 3 skills" in edited["text"]
+        assert edited["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_deny_all_discards_both_pending_queues(self):
+        adapter = _make_adapter()
+        query, update = self._query("pw:reject:all")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.handle_pending_subcommand", side_effect=[
+                 "Rejected 2 pending memory write(s).", "Rejected 3 pending skills write(s)."
+             ]) as handle:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert handle.call_args_list[0].args[:2] == ("memory", ["reject", "all"])
+        assert handle.call_args_list[1].args[:2] == ("skills", ["reject", "all"])
+        assert "Rejected 3 pending skills" in query.edit_message_text.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_request_changes_prompts_for_chat_reply_without_mutating(self):
+        adapter = _make_adapter()
+        query, update = self._query("pw:change:all")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.handle_pending_subcommand") as handle:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        handle.assert_not_called()
+        assert "Reply with the exact changes" in query.edit_message_text.await_args.kwargs["text"]
+        assert query.edit_message_text.await_args.kwargs["reply_markup"] is None
+
+
 class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 

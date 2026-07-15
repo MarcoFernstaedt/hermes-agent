@@ -1,9 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  createCurrentPtySocket,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "./pty-reconnect";
+
+describe("createCurrentPtySocket", () => {
+  it("does not create a socket when its target changes while the URL is pending", async () => {
+    let resolveUrl!: (url: string) => void;
+    const buildUrl = () => new Promise<string>((resolve) => { resolveUrl = resolve; });
+    const socketFactory = vi.fn();
+    let current = true;
+
+    const pending = createCurrentPtySocket(buildUrl, socketFactory, () => current);
+    current = false;
+    resolveUrl("wss://dashboard/api/pty?ticket=stale");
+
+    await expect(pending).resolves.toBeNull();
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("closes a candidate invalidated during creation", async () => {
+    const close = vi.fn();
+    const isCurrent = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+    await expect(
+      createCurrentPtySocket(
+        async () => "wss://dashboard/api/pty?ticket=stale",
+        () => ({ close }) as unknown as WebSocket,
+        isCurrent,
+      ),
+    ).resolves.toBeNull();
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
 
 describe("shouldReconnectPtyOnPageResume", () => {
   it("reconnects a missing socket when the active page becomes visible", () => {

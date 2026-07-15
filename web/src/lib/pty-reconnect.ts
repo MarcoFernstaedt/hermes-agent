@@ -27,6 +27,27 @@ export interface PtyResumeReconnectInput {
   connectInFlight?: boolean;
 }
 
+/**
+ * Resolve a single-use PTY URL without allowing an obsolete React effect to
+ * create or retain a socket after its profile/session/channel was replaced.
+ */
+export async function createCurrentPtySocket(
+  buildUrl: () => Promise<string>,
+  socketFactory: (url: string) => WebSocket,
+  isCurrent: () => boolean,
+): Promise<WebSocket | null> {
+  const url = await buildUrl();
+  if (!isCurrent()) return null;
+  const candidate = socketFactory(url);
+  if (isCurrent()) return candidate;
+  try {
+    candidate.close();
+  } catch {
+    // The caller's generation check is authoritative.
+  }
+  return null;
+}
+
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
 const WS_CLOSING = 2;

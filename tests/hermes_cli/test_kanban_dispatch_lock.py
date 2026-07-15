@@ -101,3 +101,39 @@ def test_reentrant_same_path_lock_is_exclusive(conn):
         assert held_a is True
         with kb._dispatch_tick_lock(db_path) as held_b:
             assert held_b is False, "same-board lock must be exclusive"
+
+
+def test_dispatch_serializes_tasks_that_share_a_workspace(conn, tmp_path, monkeypatch):
+    """Two ready tasks must not spawn concurrently into the same directory."""
+    workspace = tmp_path / "shared-repo"
+    workspace.mkdir()
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+
+    first = kb.create_task(
+        conn,
+        title="sessions slice",
+        assignee="worker-a",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    second = kb.create_task(
+        conn,
+        title="profiles slice",
+        assignee="worker-b",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    spawned: list[str] = []
+
+    def spy_spawn(task, workspace_path, board=None):
+        spawned.append(task.id)
+        return 900000 + len(spawned)
+
+    result = kb.dispatch_once(conn, spawn_fn=spy_spawn, max_spawn=2)
+
+    assert spawned == [first]
+    assert result.spawned[0][0] == first
+    assert result.skipped_workspace_conflicted == [(second, first, str(workspace))]
+    deferred = kb.get_task(conn, second)
+    assert deferred is not None
+    assert deferred.status == "ready"

@@ -1,6 +1,8 @@
 import type { GatewayClient } from "@/lib/gatewayClient";
+import { nextSlashSelection } from "@/lib/slash-selection";
+import { shouldShowSlashCommands } from "@/lib/chat-feed-model";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { ChevronRight } from "lucide-react";
+
 import {
   forwardRef,
   useCallback,
@@ -50,6 +52,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
     const [selected, setSelected] = useState(0);
     const [replaceFrom, setReplaceFrom] = useState(1);
     const lastInputRef = useRef<string>("");
+    const listRef = useRef<HTMLDivElement | null>(null);
 
     // Debounced completion fetch. We never clear `items` in the effect body
     // (doing so would flag react-hooks/set-state-in-effect); instead the
@@ -90,7 +93,15 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     // Only consume keys when the popover is actually visible. Stale items from
     // a previous slash prefix are ignored once the user deletes the "/".
-    const visible = items.length > 0 && input.startsWith("/");
+    const visible = items.length > 0 && shouldShowSlashCommands(input);
+
+    useEffect(() => {
+      if (!visible) return;
+      const selectedOption = listRef.current?.querySelector<HTMLElement>(
+        `[data-slash-index="${selected}"]`,
+      );
+      selectedOption?.scrollIntoView({ block: "nearest" });
+    }, [selected, visible]);
 
     useImperativeHandle(
       ref,
@@ -101,12 +112,12 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
           switch (e.key) {
             case "ArrowDown":
               e.preventDefault();
-              setSelected((s) => (s + 1) % items.length);
+              setSelected((s) => nextSlashSelection(s, 1, items.length));
               return true;
 
             case "ArrowUp":
               e.preventDefault();
-              setSelected((s) => (s - 1 + items.length) % items.length);
+              setSelected((s) => nextSlashSelection(s, -1, items.length));
               return true;
 
             case "Tab": {
@@ -133,6 +144,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     return (
       <div
+        ref={listRef}
         className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
         role="listbox"
       >
@@ -145,14 +157,15 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               active={active}
               role="option"
               aria-selected={active}
+              data-slash-index={i}
               onMouseEnter={() => setSelected(i)}
               onClick={() => apply(it)}
-              className="px-3 py-1.5"
+              className={
+                active
+                  ? "px-3 py-1.5 bg-primary/15 text-primary ring-1 ring-inset ring-primary/35"
+                  : "px-3 py-1.5"
+              }
             >
-              <ChevronRight
-                className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
-              />
-
               <span className="font-mono text-xs shrink-0 truncate">
                 {it.display}
               </span>
