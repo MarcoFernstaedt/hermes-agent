@@ -58,6 +58,7 @@ import {
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
 import { cn } from "@/lib/utils";
+import { imperatorBrand } from "@/lib/imperator-branding";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -601,7 +602,7 @@ export default function SkillsPage() {
                                 </Badge>
                               </div>
                               <p className="text-xs text-text-secondary mb-2">
-                                {ts.description}
+                                {imperatorBrand(ts.description)}
                               </p>
                               {ts.enabled && !ts.configured && (
                                 <p className="text-xs text-amber-300 mb-2">
@@ -675,7 +676,7 @@ export default function SkillsPage() {
           <DialogHeader>
             <DialogTitle>Learn a skill</DialogTitle>
             <DialogDescription>
-              Point Hermes at anything and it will distill a reusable skill —
+              Point Imperator at anything and it will distill a reusable skill —
               following the house authoring standards. Fill in any combination
               below; the agent gathers the sources and writes the skill in chat.
             </DialogDescription>
@@ -760,7 +761,7 @@ function SkillRow({
           </span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-          {skill.description || noDescriptionLabel}
+          {skill.description ? imperatorBrand(skill.description) : noDescriptionLabel}
         </p>
       </div>
       <Button
@@ -1086,7 +1087,7 @@ function HubBrowser({
                   Featured skills
                 </span>
                 <span className="text-xs text-text-tertiary">
-                  from the Hermes index — search above for thousands more
+                  from the Imperator index — search above for thousands more
                 </span>
               </div>
               {featured.map((r) => (
@@ -1290,7 +1291,7 @@ function HubResultCard({
             )}
           </div>
           <p className="text-xs text-text-secondary line-clamp-2">
-            {result.description}
+            {imperatorBrand(result.description)}
           </p>
           <div className="flex flex-wrap items-center gap-1 mt-1">
             {result.tags.slice(0, 5).map((tag) => (
@@ -1409,7 +1410,7 @@ function SkillDetailDialog({
         </DialogHeader>
 
         <div className="mt-1 flex flex-col gap-1">
-          <p className="text-xs text-text-secondary">{result.description}</p>
+          <p className="text-xs text-text-secondary">{imperatorBrand(result.description)}</p>
           <p className="text-xs font-mono text-text-tertiary truncate">
             {result.identifier}
           </p>
@@ -1623,7 +1624,7 @@ function ScanPanel({
                     {f.file}:{f.line}
                   </span>
                 </div>
-                <p className="text-xs text-text-secondary">{f.description}</p>
+                <p className="text-xs text-text-secondary">{imperatorBrand(f.description)}</p>
               </div>
             </div>
           ))}

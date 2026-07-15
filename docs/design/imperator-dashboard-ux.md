@@ -105,10 +105,48 @@ learnable:
 
 ### 2.5 Chat
 
-Chat is the one full-viewport page: the real TUI over PTY/WebSocket with
-a right rail (model picker + session list) that folds into a slide-over
-on narrow screens. It is mounted persistently so switching tabs never
-kills the terminal session.
+Chat is a first-class chat app, not a terminal. The default surface is
+the **bubble feed** — the interaction model users know from ChatGPT and
+Claude:
+
+- User messages right-aligned, Imperator replies left-aligned and
+  rendered as **markdown** (code blocks, lists, links) with a streaming
+  caret while the reply is in flight.
+- A bottom **composer**: auto-growing textarea, Enter to send /
+  Shift+Enter for newline, slash-command popover, image paste & drop,
+  and a send button that flips to **Stop** while the agent is working.
+- **Approvals and clarifications arrive as interactive bubbles.** When
+  the agent needs permission (dangerous command, pending write) the
+  feed shows an "Approval required" card with *Allow once / Allow this
+  session / Always allow / Deny* buttons; clarify prompts render their
+  choices as buttons plus a free-form path through the composer. Answers
+  are delivered over the same PTY WebSocket the terminal uses, and the
+  resolved choice is recorded on the bubble ("Approved for session",
+  etc.), so the transcript stays an audit trail.
+- Tool/system activity folds into collapsible "Operational output" rows
+  so the conversation stays readable while nothing is hidden.
+- Time-of-day greeting on the empty state; unread "New messages" pill
+  when scrolled up.
+
+Under the hood the PTY remains the execution authority: the feed is a
+read-only projection of the structured event stream (`/api/events`),
+with history hydrated from the session store. The **raw console**
+(xterm) stays one toggle away for full-fidelity TUI access, and the
+right rail (model picker + session list) folds into a slide-over sheet
+on narrow screens. The page is mounted persistently so switching tabs
+never kills the session.
+
+### 2.6 Branding rule
+
+No user-visible "Hermes" or "Nous Research": the product name is
+**Imperator**; the org line is **Imperator Systems**. Frontend copy is
+rebranded at the source; copy that arrives from the backend (skill,
+plugin, channel, config, and env descriptions) is rebranded at render
+time via `imperatorBrand()` in `web/src/lib/imperator-branding.ts`.
+Exceptions, on purpose: literal CLI commands (`hermes update`,
+`hermes gateway start`), env keys (`HERMES_*`), URLs, and the Nous
+Portal product name — changing those would break real instructions and
+integrations.
 
 ## 3. Responsive rules
 

@@ -579,7 +579,7 @@ export function chatFeedReducer(
   }
 
   if (event.type === "error") {
-    const text = firstText(payload.message, payload.error, "Hermes reported an error");
+    const text = firstText(payload.message, payload.error, "Imperator reported an error");
     const id = state.activeAssistantId;
     const messages = id
       ? replaceMessage(state.messages, id, (message) => ({

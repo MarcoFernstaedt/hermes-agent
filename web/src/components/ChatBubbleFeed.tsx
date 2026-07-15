@@ -24,6 +24,7 @@ import {
   type SlashPopoverHandle,
 } from "@/components/SlashPopover";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
+import { Markdown } from "@/components/Markdown";
 import { getChatWelcome, type ChatFeedMessage } from "@/lib/chat-feed-model";
 import { GatewayClient } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
@@ -284,6 +285,22 @@ export function ChatBubbleFeed({
                           {message.text || "No textual output"}
                         </pre>
                       </details>
+                    ) : assistant ? (
+                      // Assistant replies render as markdown (code blocks,
+                      // lists, links…) with a streaming caret — the reading
+                      // experience users know from ChatGPT/Claude.
+                      <div className="min-w-0 break-words">
+                        {message.text ? (
+                          <Markdown
+                            content={message.text}
+                            streaming={message.status === "streaming"}
+                          />
+                        ) : message.status === "streaming" ? (
+                          <div className="text-sm leading-relaxed text-text-secondary">
+                            Thinking…
+                          </div>
+                        ) : null}
+                      </div>
                     ) : (
                       <div className="whitespace-pre-wrap break-words text-sm leading-relaxed sm:text-[0.9375rem]">
                         {message.text ||
@@ -398,7 +415,7 @@ export function ChatBubbleFeed({
         </Button>
       )}
 
-      <div className="shrink-0 border-t border-current/15 bg-background-base/95 p-2.5 backdrop-blur sm:p-3">
+      <div className="shrink-0 border-t border-current/15 bg-background-base/95 p-2.5 backdrop-blur sm:p-3 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] sm:pb-3">
         <div className="relative mx-auto max-w-5xl">
           <SlashPopover
             ref={slashRef}

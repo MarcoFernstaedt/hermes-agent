@@ -2,10 +2,13 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { imperatorBrand } from "@/lib/imperator-branding";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description ? String(schema.description) : "";
+  const description = schema.description
+    ? imperatorBrand(String(schema.description))
+    : "";
 
   if (!keyPath && !description) return null;
 

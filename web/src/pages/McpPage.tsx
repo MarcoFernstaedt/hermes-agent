@@ -23,6 +23,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { imperatorBrand } from "@/lib/imperator-branding";
 
 type Transport = "http" | "stdio";
 
@@ -683,7 +684,7 @@ export default function McpPage() {
         </div>
 
         <p className="text-xs text-muted-foreground">
-          Browse Nous-approved MCP servers and install them with one click.
+          Browse curated MCP servers and install them with one click.
         </p>
 
         {catalog.length === 0 && (
@@ -735,7 +736,7 @@ export default function McpPage() {
                   </div>
                   {entry.description && (
                     <p className="text-xs text-muted-foreground">
-                      {entry.description}
+                      {imperatorBrand(entry.description)}
                     </p>
                   )}
                   {/* Connection detail: what the agent actually talks to. */}

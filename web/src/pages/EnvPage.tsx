@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { imperatorBrand } from "@/lib/imperator-branding";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -140,7 +141,7 @@ function EnvVarRow({
             {varKey}
           </span>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
+            {imperatorBrand(info.description)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -176,7 +177,7 @@ function EnvVarRow({
             {varKey}
           </Label>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
+            {imperatorBrand(info.description)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -225,7 +226,7 @@ function EnvVarRow({
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground">{info.description}</p>
+      <p className="text-xs text-muted-foreground">{imperatorBrand(info.description)}</p>
 
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">

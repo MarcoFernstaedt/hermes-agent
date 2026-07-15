@@ -35,6 +35,7 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { imperatorBrand } from "@/lib/imperator-branding";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -383,7 +384,7 @@ export default function ChannelsPage() {
 
             <div className="grid gap-4 overflow-y-auto overscroll-contain p-4 sm:p-5">
               <p className="text-xs text-muted-foreground">
-                {editing.description}
+                {imperatorBrand(editing.description)}
               </p>
               {editing.env_vars.map((field: MessagingPlatformEnvVar) => (
                 <div className="grid gap-1.5" key={field.key}>
@@ -405,7 +406,7 @@ export default function ChannelsPage() {
                   </div>
                   {field.description && (
                     <span className="text-xs text-muted-foreground">
-                      {field.description}
+                      {imperatorBrand(field.description)}
                     </span>
                   )}
                   <Input
@@ -497,7 +498,7 @@ export default function ChannelsPage() {
                         <Badge tone={badge.tone}>{badge.label}</Badge>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {platform.description}
+                        {imperatorBrand(platform.description)}
                       </span>
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
@@ -781,7 +782,7 @@ function WhatsAppOnboardingPanel({
         : "waiting";
   const setupHelp =
     phase === "connected" || phase === "applying"
-      ? "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
+      ? "WhatsApp is linked but Imperator is not listening yet. Save and restart the gateway to finish setup."
       : setup?.status === "installing"
         ? "Preparing the WhatsApp bridge. The QR code will appear here when it is ready."
         : setup?.status === "starting"
@@ -792,24 +793,24 @@ function WhatsAppOnboardingPanel({
     : setup?.account_name || setup?.account_id || "";
   const linkedAccountDetail =
     setup?.account_phone || setup?.account_id
-      ? "This is the WhatsApp account Hermes is now logged into."
-      : "Hermes is logged into the WhatsApp account that scanned the QR code.";
+      ? "This is the WhatsApp account Imperator is now logged into."
+      : "Imperator is logged into the WhatsApp account that scanned the QR code.";
   const linkedAccountChatUrl = setup?.account_phone
     ? `https://wa.me/${setup.account_phone}`
     : "";
   const messageInstruction =
     mode === "self-chat"
-      ? "After the restart, open Message Yourself on the linked account and send Hermes a message."
-      : "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.";
+      ? "After the restart, open Message Yourself on the linked account and send Imperator a message."
+      : "After the restart, start a chat from another WhatsApp account with the linked account and send Imperator a message.";
   const hasSavedAllowedUsers = Boolean(platform.whatsapp_setup?.allowed_users_set);
   const pairingInstruction =
     mode === "self-chat" && !allowedUsers.trim()
       ? hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
+        ? "Imperator will keep the saved WhatsApp allowlist."
         : "Self-chat mode will allow the linked account automatically when you save."
       : !allowedUsers.trim() && hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
-        : "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.";
+        ? "Imperator will keep the saved WhatsApp allowlist."
+        : "If no allowed numbers were entered, Imperator replies with a pairing code. Approve it from the dashboard Pairing page.";
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -891,7 +892,7 @@ function WhatsAppOnboardingPanel({
 
               {phase === "waiting" && (
                 <div className="text-xs text-muted-foreground">
-                  After saving, unknown DMs use Hermes pairing codes unless their
+                  After saving, unknown DMs use Imperator pairing codes unless their
                   number is already allowed.
                 </div>
               )}
@@ -1080,7 +1081,7 @@ function TelegramOnboardingPanel({
     setDetectedOwnerId(null);
     setNewAllowedId("");
     try {
-      const res = await api.startTelegramOnboarding({ bot_name: "Hermes Agent" });
+      const res = await api.startTelegramOnboarding({ bot_name: "Imperator" });
       const dataUrl = await QRCode.toDataURL(res.qr_payload, {
         errorCorrectionLevel: "M",
         margin: 1,
