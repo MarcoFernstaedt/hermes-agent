@@ -5,10 +5,13 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 
-// Documentation home — served from the Imperator Systems domain. The Docs
-// page iframes this URL and offers it as an open-in-new-tab link, so the
-// host must allow embedding; adjust the path here if the docs move.
-export const HERMES_DOCS_URL = "https://imperatorsystems.tech/docs/";
+// The Docs page iframes this URL and offers it as an open-in-new-tab
+// link, so it must point at the host that actually serves the upstream
+// documentation — that content lives on the hermes-agent docs site
+// today. Brand links (sidebar footer, System page) point at
+// imperatorsystems.tech instead; switch this constant only once the
+// docs are hosted there and the host allows iframe embedding.
+export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
 
 const DS_BUTTON_OUTLINED_LINK_CN = cn(
   "group relative inline-grid grid-cols-[auto_1fr_auto] items-center",
