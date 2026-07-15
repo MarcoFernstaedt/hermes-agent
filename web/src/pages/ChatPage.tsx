@@ -63,10 +63,7 @@ import {
   type ChatFeedState,
 } from "@/lib/chat-feed-model";
 import { normalizeSessionTitle } from "@/lib/chat-title";
-import {
-  connectResilientEventSocket,
-  isTerminalDashboardEventFailure,
-} from "@/lib/resilient-event-socket";
+import { subscribeDashboardEvents } from "@/lib/event-channel-hub";
 import {
   createCurrentPtySocket,
   PTY_CONNECTING_TIMEOUT_MS,
@@ -543,8 +540,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         });
     };
 
-    const stopEventSocket = connectResilientEventSocket({
-      buildUrl: () => api.buildWsUrl("/api/events", { channel }),
+    // Shared per-channel hub — one resilient socket multiplexed with the
+    // ChatSidebar subscription instead of a second parallel WebSocket.
+    const stopEventSocket = subscribeDashboardEvents(channel, {
       onMessage: (raw) => {
         if (
           !shouldHandleChannelEvent(
@@ -625,7 +623,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           hydrateStoredSession(sessionId);
         }
       },
-      isTerminalFailure: isTerminalDashboardEventFailure,
       onTerminalFailure: ({ code, error }) => {
         if (
           !shouldHandleChannelEvent(

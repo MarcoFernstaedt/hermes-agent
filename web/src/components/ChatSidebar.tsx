@@ -31,11 +31,11 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, buildWsUrl } from "@/lib/api";
+import { api } from "@/lib/api";
 import {
-  connectResilientEventSocket,
-  isTerminalDashboardEventFailure,
-} from "@/lib/resilient-event-socket";
+  restartDashboardEvents,
+  subscribeDashboardEvents,
+} from "@/lib/event-channel-hub";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -216,24 +216,23 @@ export function ChatSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw]);
 
-  // Event subscriber WebSocket — receives the rebroadcast of every
-  // dispatcher emit from the PTY child's gateway.  See /api/pub +
-  // /api/events in hermes_cli/web_server.py for the broadcast hop.
+  // Event subscription — receives the rebroadcast of every dispatcher
+  // emit from the PTY child's gateway.  See /api/pub + /api/events in
+  // hermes_cli/web_server.py for the broadcast hop.
   //
-  // Runs on the same resilient reconnect loop as ChatPage's feed
-  // subscription: transient drops (browser sleep, gateway restart, idle
-  // proxies) retry with backoff and clear the banner on recovery, so the
-  // red "events feed disconnected" state is reserved for auth-terminal
-  // failures instead of any momentary blip. The manual reconnect button
-  // (version bump) still tears down and rebuilds the whole socket.
+  // Rides the shared per-channel hub (one resilient socket multiplexed
+  // with ChatPage's feed projection): transient drops retry with backoff
+  // and clear the banner on recovery, so the red "events feed
+  // disconnected" state is reserved for auth-terminal failures. The
+  // manual reconnect button restarts the shared socket via
+  // restartDashboardEvents.
   useEffect(() => {
     if (!channel) {
       return;
     }
     const DISCONNECTED = "events feed disconnected — tool calls may not appear";
 
-    const stop = connectResilientEventSocket({
-      buildUrl: () => buildWsUrl("/api/events", { channel }),
+    const unsubscribe = subscribeDashboardEvents(channel, {
       onMessage: (ev) => {
         let frame: RpcEnvelope;
 
@@ -266,12 +265,11 @@ export function ChatSidebar({
         );
       },
       onDisconnected: () => setError(DISCONNECTED),
-      isTerminalFailure: isTerminalDashboardEventFailure,
       onTerminalFailure: ({ code }) =>
         setError(`events feed rejected (${code ?? "auth"}) — reload the page`),
     });
 
-    return stop;
+    return unsubscribe;
   }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
@@ -284,8 +282,12 @@ export function ChatSidebar({
     setError(null);
     setModelNotice(null);
     setPendingReloadModel(null);
+    // After a terminal failure the shared events socket stops retrying on
+    // purpose; a user-initiated reconnect forces a fresh socket cycle for
+    // every subscriber on the channel (this panel + the chat feed).
+    if (channel) restartDashboardEvents(channel);
     setVersion((v) => v + 1);
-  }, []);
+  }, [channel]);
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.

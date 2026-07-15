@@ -14785,19 +14785,68 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     return f"ws://{netloc}/api/pub?{qs}"
 
 
+# Bound each subscriber send during fanout. A half-open peer (dead mobile
+# radio, no TCP RST) accepts writes into kernel buffers until they fill,
+# after which ``send_text`` blocks forever — and ``pub_ws`` awaits the
+# broadcast inline in its receive loop, so one such subscriber would stall
+# event delivery for the whole channel and back-pressure the PTY-side
+# publisher into dropping frames.
+_EVENT_SEND_TIMEOUT_SECONDS = 5.0
+
+
+async def _evict_event_subscriber(app: Any, channel: str, sub: Any) -> None:
+    """Drop a dead subscriber from the registry and close it best-effort."""
+    event_channels, event_lock = _get_event_state(app)
+    async with event_lock:
+        subs = event_channels.get(channel)
+        if subs is not None:
+            subs.discard(sub)
+            if not subs:
+                event_channels.pop(channel, None)
+    try:
+        await asyncio.wait_for(sub.close(code=1011), timeout=1.0)
+    except Exception:
+        # Closing a dead socket is best-effort; the registry removal above
+        # is what stops future broadcasts from touching it.
+        pass
+
+
+async def _send_event_or_evict(
+    app: Any, channel: str, sub: Any, payload: str
+) -> None:
+    try:
+        await asyncio.wait_for(
+            sub.send_text(payload), timeout=_EVENT_SEND_TIMEOUT_SECONDS
+        )
+    except Exception:
+        # Failed or stalled subscriber: evict immediately instead of waiting
+        # for the /api/events finally clause — a half-open socket never
+        # raises from its own receive loop, so that cleanup may never run.
+        _log.warning(
+            "broadcast send failed for subscriber on %s; evicting",
+            channel,
+            exc_info=True,
+        )
+        await _evict_event_subscriber(app, channel, sub)
+
+
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan out one publisher frame to every subscriber on `channel`.
+
+    Sends run concurrently and individually time-bounded so a single slow
+    or half-open subscriber delays the fanout by at most
+    ``_EVENT_SEND_TIMEOUT_SECONDS`` (once — it is evicted on failure)
+    instead of serially blocking every other subscriber on the channel.
+    """
     event_channels, event_lock = _get_event_state(app)
     async with event_lock:
         subs = list(event_channels.get(channel, ()))
+    if not subs:
+        return
 
-    for sub in subs:
-        try:
-            await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+    await asyncio.gather(
+        *(_send_event_or_evict(app, channel, sub, payload) for sub in subs)
+    )
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -15677,7 +15726,15 @@ async def _receive_event_subscriber_or_heartbeat(
     try:
         await asyncio.wait_for(ws.receive_text(), timeout=timeout)
     except asyncio.TimeoutError:
-        await ws.send_text(_EVENT_HEARTBEAT_FRAME)
+        # Bound the heartbeat send too: a half-open peer accepts writes into
+        # dead kernel buffers until they fill, and an unbounded send here
+        # would pin the subscription loop forever — the finally clause in
+        # events_ws (the registry eviction) would never run. A TimeoutError
+        # from this send propagates and tears the subscription down.
+        await asyncio.wait_for(
+            ws.send_text(_EVENT_HEARTBEAT_FRAME),
+            timeout=_EVENT_SEND_TIMEOUT_SECONDS,
+        )
 
 
 @app.websocket("/api/events")
@@ -15709,8 +15766,10 @@ async def events_ws(ws: WebSocket) -> None:
         while True:
             # Idle subscribers receive an application heartbeat. The browser
             # uses it to distinguish a healthy quiet chat from a half-open WS.
+            # TimeoutError = the heartbeat send itself stalled on a half-open
+            # socket; treat it like a disconnect so the finally clause evicts.
             await _receive_event_subscriber_or_heartbeat(ws)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     finally:
         async with event_lock:

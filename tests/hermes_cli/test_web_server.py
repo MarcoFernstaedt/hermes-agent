@@ -42,6 +42,31 @@ async def test_event_subscriber_emits_heartbeat_while_idle():
     ]
 
 
+@pytest.mark.asyncio
+async def test_event_heartbeat_send_is_bounded_on_half_open_socket(monkeypatch):
+    """A half-open subscriber that stalls the heartbeat *send* must raise
+    (bounded) instead of pinning the subscription loop forever — events_ws
+    treats the TimeoutError like a disconnect and evicts the socket."""
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server, "_EVENT_SEND_TIMEOUT_SECONDS", 0.01)
+
+    class HalfOpenSubscriber:
+        async def receive_text(self):
+            await asyncio.Event().wait()
+
+        async def send_text(self, payload):
+            await asyncio.Event().wait()  # kernel buffer full; never returns
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            web_server._receive_event_subscriber_or_heartbeat(
+                HalfOpenSubscriber(), timeout=0.001
+            ),
+            timeout=2.0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -6940,6 +6965,77 @@ class TestPtyWebSocket:
         assert sub_a2.sent == [frame]
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
+
+    def test_broadcast_evicts_stalled_subscriber(self, monkeypatch):
+        """A half-open subscriber (send_text never returns) must not stall
+        the channel fanout: healthy subscribers still receive the frame,
+        and the stalled socket is evicted from the registry and closed so
+        subsequent broadcasts never touch it again.
+
+        Before the bounded fanout, one such subscriber blocked
+        _broadcast_event forever — and pub_ws awaits the broadcast inline
+        in its receive loop, so the PTY-side publisher backed up and
+        dropped frames for every subscriber on the channel.
+        """
+        import asyncio
+        from hermes_cli import web_server as ws_mod
+
+        monkeypatch.setattr(ws_mod, "_EVENT_SEND_TIMEOUT_SECONDS", 0.05)
+
+        class _HealthySub:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        class _StalledSub:
+            def __init__(self):
+                self.closed_with: int | None = None
+
+            async def send_text(self, payload: str) -> None:
+                await asyncio.Event().wait()  # never returns
+
+            async def close(self, code: int = 1000) -> None:
+                self.closed_with = code
+
+        app = ws_mod.app
+        channel = "broadcast-evict-test"
+
+        async def _run():
+            healthy = _HealthySub()
+            stalled = _StalledSub()
+            frame = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            async with event_lock:
+                event_channels.setdefault(channel, set()).update(
+                    {healthy, stalled}
+                )
+            try:
+                # Bounded: must finish promptly despite the stalled peer.
+                await asyncio.wait_for(
+                    ws_mod._broadcast_event(app, channel, frame), timeout=2.0
+                )
+                async with event_lock:
+                    remaining = set(event_channels.get(channel, ()))
+
+                # Second broadcast only reaches the healthy subscriber and
+                # returns immediately (no stalled peer left to wait on).
+                await asyncio.wait_for(
+                    ws_mod._broadcast_event(app, channel, frame), timeout=0.5
+                )
+            finally:
+                async with event_lock:
+                    event_channels.pop(channel, None)
+
+            return healthy, stalled, remaining, frame
+
+        healthy, stalled, remaining, frame = asyncio.run(_run())
+
+        assert healthy.sent == [frame, frame]
+        assert stalled.closed_with == 1011
+        assert remaining == {healthy}
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
