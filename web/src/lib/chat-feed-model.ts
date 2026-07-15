@@ -6,6 +6,7 @@ export type ChatFeedRole =
   | "system"
   | "tool"
   | "approval"
+  | "write_approval"
   | "clarify";
 
 export type ChatFeedStatus =
@@ -24,10 +25,15 @@ export interface ChatFeedMessage {
   status: ChatFeedStatus;
   timestamp: number;
   raw?: unknown;
+  rawText?: string;
   allowPermanent?: boolean;
   resolution?: string;
   choices?: string[];
   requestId?: string;
+  pendingId?: string;
+  subsystem?: "memory" | "skills";
+  profile?: string;
+  eventId?: string;
 }
 
 export interface ChatFeedState {
@@ -41,6 +47,7 @@ export interface ChatFeedEvent {
   type: string;
   payload?: Record<string, unknown>;
   sessionId?: string | null;
+  eventId?: string;
   now?: number;
 }
 
@@ -61,6 +68,19 @@ const firstText = (...values: unknown[]): string => {
   }
   return "";
 };
+
+export const writeApprovalKey = (
+  profile: string,
+  subsystem: "memory" | "skills",
+  pendingId: string,
+): string => `${profile}:${subsystem}:${pendingId}`;
+
+const withoutMediaDeliveryPaths = (text: string): string =>
+  text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*MEDIA\s*:/i.test(line))
+    .join("\n")
+    .trimEnd();
 
 const replaceMessage = (
   messages: ChatFeedMessage[],
@@ -102,7 +122,10 @@ export function hydrateSessionMessages(messages: SessionMessage[]): ChatFeedMess
   return messages.map((message, index) => ({
     id: `history-${message.timestamp ?? "untimed"}-${index}`,
     role: message.role,
-    text: message.content ?? "",
+    text:
+      message.role === "assistant"
+        ? withoutMediaDeliveryPaths(message.content ?? "")
+        : message.content ?? "",
     title:
       message.role === "tool"
         ? message.tool_name || "tool output"
@@ -352,6 +375,7 @@ export function parseDashboardEventFrame(
         type?: unknown;
         payload?: unknown;
         session_id?: unknown;
+        event_id?: unknown;
       };
     };
     if (frame.method !== "event" || typeof frame.params?.type !== "string") {
@@ -365,6 +389,8 @@ export function parseDashboardEventFrame(
     return {
       type: frame.params.type,
       sessionId: typeof rawSessionId === "string" ? rawSessionId : null,
+      eventId:
+        typeof frame.params.event_id === "string" ? frame.params.event_id : undefined,
       payload,
       now,
     };
@@ -412,17 +438,22 @@ export function chatFeedReducer(
     const id = state.activeAssistantId ?? `assistant-${now}`;
     const existing = state.messages.some((message) => message.id === id);
     const messages = existing
-      ? replaceMessage(state.messages, id, (message) => ({
-          ...message,
-          text: message.text + delta,
-          status: "streaming",
-        }))
+      ? replaceMessage(state.messages, id, (message) => {
+          const rawText = (message.rawText ?? message.text) + delta;
+          return {
+            ...message,
+            text: withoutMediaDeliveryPaths(rawText),
+            rawText,
+            status: "streaming",
+          };
+        })
       : [
           ...acknowledgeLatestUser(state.messages),
           {
             id,
             role: "assistant" as const,
-            text: delta,
+            text: withoutMediaDeliveryPaths(delta),
+            rawText: delta,
             status: "streaming" as const,
             timestamp: now,
           },
@@ -432,31 +463,32 @@ export function chatFeedReducer(
 
   if (event.type === "message.complete") {
     const finalText = firstText(payload.text, payload.rendered);
+    const visibleFinalText = withoutMediaDeliveryPaths(finalText);
     const id = state.activeAssistantId;
-    if (!id && finalText) {
-      for (let index = state.messages.length - 1; index >= 0; index -= 1) {
-        const message = state.messages[index];
-        if (message.role === "user") break;
-        if (message.role !== "assistant") continue;
-        if (message.status === "sent" && message.text === finalText) return state;
-        break;
-      }
+    if (
+      event.eventId &&
+      state.messages.some((message) => message.eventId === event.eventId)
+    ) {
+      return state;
     }
     const messages = id
       ? replaceMessage(state.messages, id, (message) => ({
           ...message,
-          text: finalText || message.text,
+          text: withoutMediaDeliveryPaths(finalText || message.rawText || message.text),
+          rawText: undefined,
           status: "sent",
+          eventId: event.eventId,
         }))
       : finalText
         ? [
             ...acknowledgeLatestUser(state.messages),
             {
-              id: `assistant-${now}`,
+              id: `assistant-${event.eventId ?? now}`,
               role: "assistant" as const,
-              text: finalText,
+              text: visibleFinalText,
               status: "sent" as const,
               timestamp: now,
+              eventId: event.eventId,
             },
           ]
         : acknowledgeLatestUser(state.messages);
@@ -536,6 +568,86 @@ export function chatFeedReducer(
         (message) => ({ ...message, status: "sent", resolution }),
       ),
       activeApprovalId: null,
+    };
+  }
+
+  if (event.type === "write_approval.request") {
+    const pendingId = firstText(payload.pending_id);
+    if (!pendingId) return state;
+    if (payload.subsystem !== "memory" && payload.subsystem !== "skills") return state;
+    const subsystem = payload.subsystem;
+    const profile = firstText(payload.profile, "current");
+    const key = writeApprovalKey(profile, subsystem, pendingId);
+    const id = `write-approval-${encodeURIComponent(key)}`;
+    const next: ChatFeedMessage = {
+      id,
+      role: "write_approval",
+      title: "Approval required",
+      text:
+        firstText(payload.summary) ||
+        `${subsystem === "memory" ? "Memory" : "Skill"} change staged for review`,
+      status: "waiting",
+      timestamp: now,
+      pendingId,
+      subsystem,
+      profile,
+    };
+    const messages = state.messages.some((message) => message.id === id)
+      ? replaceMessage(state.messages, id, (message) => ({
+          ...message,
+          ...next,
+          status: message.status,
+          resolution: message.resolution,
+          timestamp: message.timestamp,
+        }))
+      : [...state.messages, next];
+    return { ...state, messages };
+  }
+
+  if (event.type === "write_approval.resolved") {
+    const pendingId = firstText(payload.pending_id);
+    if (
+      !pendingId ||
+      (payload.subsystem !== "memory" && payload.subsystem !== "skills")
+    ) return state;
+    const profile = firstText(payload.profile, "current");
+    const key = writeApprovalKey(profile, payload.subsystem, pendingId);
+    return {
+      ...state,
+      messages: state.messages.map((message) =>
+        message.pendingId && message.subsystem && message.profile &&
+        writeApprovalKey(message.profile, message.subsystem, message.pendingId) === key
+          ? {
+              ...message,
+              status: "sent" as const,
+              resolution: firstText(payload.decision, "resolved"),
+            }
+          : message,
+      ),
+    };
+  }
+
+  if (event.type === "write_approval.submitting" || event.type === "write_approval.failed") {
+    const pendingId = firstText(payload.pending_id);
+    if (
+      !pendingId ||
+      (payload.subsystem !== "memory" && payload.subsystem !== "skills")
+    ) return state;
+    const profile = firstText(payload.profile, "current");
+    const key = writeApprovalKey(profile, payload.subsystem, pendingId);
+    const failed = event.type === "write_approval.failed";
+    return {
+      ...state,
+      messages: state.messages.map((message) =>
+        message.pendingId && message.subsystem && message.profile &&
+        writeApprovalKey(message.profile, message.subsystem, message.pendingId) === key &&
+        (failed ? message.status === "running" : message.status === "waiting")
+          ? {
+              ...message,
+              status: failed ? ("waiting" as const) : ("running" as const),
+            }
+          : message,
+      ),
     };
   }
 

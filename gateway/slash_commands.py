@@ -39,7 +39,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials, set_config_value_typed
 from utils import (
     atomic_json_write,
     base_url_host_matches,
@@ -2115,10 +2115,9 @@ class GatewaySlashCommandsMixin:
 
         if args in {"none", "default", "neutral"}:
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
-                atomic_config_write(config_path, config)
+                set_config_value_typed(
+                    "agent.system_prompt", "", config_path=config_path
+                )
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
             self._ephemeral_system_prompt = ""
@@ -2128,10 +2127,9 @@ class GatewaySlashCommandsMixin:
 
             # Write to config.yaml, same pattern as CLI save_config_value.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
-                atomic_config_write(config_path, config)
+                set_config_value_typed(
+                    "agent.system_prompt", new_prompt, config_path=config_path
+                )
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
 
@@ -2666,18 +2664,9 @@ class GatewaySlashCommandsMixin:
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
             try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_config_write(config_path, user_config)
+                set_config_value_typed(
+                    key_path, value, config_path=config_path
+                )
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -2755,6 +2744,36 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
         return t("gateway.reasoning.set_session", effort=effort)
 
+    async def _send_pending_write_buttons(
+        self,
+        event: MessageEvent,
+        subsystem: str,
+        records: list,
+        content: str,
+    ) -> bool:
+        """Use Telegram's exact-snapshot approval UI when available."""
+        if event.source.platform != Platform.TELEGRAM:
+            return False
+        try:
+            if not records:
+                return False
+            adapter = self._adapter_for_source(event.source)
+            sender = getattr(adapter, "send_pending_write_approval", None) if adapter else None
+            if not callable(sender):
+                return False
+            metadata = self._thread_metadata_for_source(event.source)
+            result = await sender(
+                str(event.source.chat_id),
+                subsystem,
+                records,
+                content,
+                metadata=metadata,
+            )
+            return bool(getattr(result, "success", False))
+        except Exception:
+            logger.debug("pending-write approval buttons unavailable", exc_info=True)
+            return False
+
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate.
 
@@ -2774,13 +2793,9 @@ class GatewaySlashCommandsMixin:
         config_path = _hermes_home / "config.yaml"
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
-            atomic_config_write(config_path, user_config)
+            set_config_value_typed(
+                "memory.write_approval", enabled, config_path=config_path
+            )
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
@@ -2789,12 +2804,22 @@ class GatewaySlashCommandsMixin:
         # load_on_disk_store() honors the user's configured char limits.
         store = load_on_disk_store()
 
+        shows_pending = not args or args[0].lower() == "pending"
+        pending_records = wa.list_pending(wa.MEMORY) if shows_pending else None
         out = handle_pending_subcommand(
-            wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
+            wa.MEMORY,
+            args,
+            memory_store=store,
+            set_mode_fn=_set_approval,
+            pending_records=pending_records,
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
                    "reject <id>, approval <on|off>.")
+        if shows_pending and await self._send_pending_write_buttons(
+            event, wa.MEMORY, pending_records, out
+        ):
+            return ""
         return out
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
@@ -2830,18 +2855,19 @@ class GatewaySlashCommandsMixin:
                     "writes here with /skills pending.")
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
-            atomic_config_write(config_path, user_config)
+            set_config_value_typed(
+                "skills.write_approval", enabled, config_path=config_path
+            )
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
+        shows_pending = not args or args[0].lower() == "pending"
+        pending_records = wa.list_pending(wa.SKILLS) if shows_pending else None
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=_set_approval,
+            wa.SKILLS,
+            args,
+            set_mode_fn=_set_approval,
+            pending_records=pending_records,
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
@@ -2857,6 +2883,10 @@ class GatewaySlashCommandsMixin:
             out = (out[:3000]
                    + "\n… (truncated — full diff in "
                      f"~/.hermes/pending/skills/{pending_id}.json)")
+        if shows_pending and await self._send_pending_write_buttons(
+            event, wa.SKILLS, pending_records, out
+        ):
+            return ""
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
@@ -2877,18 +2907,9 @@ class GatewaySlashCommandsMixin:
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
             try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_config_write(config_path, user_config)
+                set_config_value_typed(
+                    key_path, value, config_path=config_path
+                )
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -2977,15 +2998,11 @@ class GatewaySlashCommandsMixin:
 
         # Save to display.platforms.<platform>.tool_progress
         try:
-            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
-                user_config["display"] = {}
-            display = user_config["display"]
-            if "platforms" not in display or not isinstance(display.get("platforms"), dict):
-                display["platforms"] = {}
-            if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
-                display["platforms"][platform_key] = {}
-            display["platforms"][platform_key]["tool_progress"] = new_mode
-            atomic_config_write(config_path, user_config)
+            set_config_value_typed(
+                f"display.platforms.{platform_key}.tool_progress",
+                new_mode,
+                config_path=config_path,
+            )
             return (
                 f"{descriptions[new_mode]}\n"
                 + t("gateway.verbose.saved_suffix", platform=platform_key)
@@ -3054,13 +3071,11 @@ class GatewaySlashCommandsMixin:
 
         # --- write global flag ---------------------------------------------
         try:
-            if not isinstance(user_config.get("display"), dict):
-                user_config["display"] = {}
-            display = user_config["display"]
-            if not isinstance(display.get("runtime_footer"), dict):
-                display["runtime_footer"] = {}
-            display["runtime_footer"]["enabled"] = new_state
-            atomic_config_write(config_path, user_config)
+            set_config_value_typed(
+                "display.runtime_footer.enabled",
+                new_state,
+                config_path=config_path,
+            )
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)

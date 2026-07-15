@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -48,6 +49,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
+from gateway.slash_commands import GatewaySlashCommandsMixin
 
 
 def _make_adapter(extra=None):
@@ -235,15 +237,107 @@ class TestTelegramExecApproval:
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 
+class TestPendingWriteGatewayEmitter:
+    @pytest.mark.asyncio
+    async def test_gateway_routes_telegram_pending_list_to_button_emitter(self):
+        runner = object.__new__(GatewaySlashCommandsMixin)
+        sender = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter = SimpleNamespace(send_pending_write_approval=sender)
+        runner._adapter_for_source = lambda _source: adapter
+        runner._thread_metadata_for_source = lambda _source: {"thread_id": "7"}
+        event = SimpleNamespace(
+            source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="12345")
+        )
+        records = [{"id": "m1", "summary": "test"}]
+
+        sent = await runner._send_pending_write_buttons(
+            event, "memory", records, "Pending memory writes (1)"
+        )
+
+        assert sent is True
+        sender.assert_awaited_once_with(
+            "12345",
+            "memory",
+            records,
+            "Pending memory writes (1)",
+            metadata={"thread_id": "7"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_production_snapshot_excludes_write_staged_after_render(self):
+        runner = object.__new__(GatewaySlashCommandsMixin)
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=88)
+        )
+        runner._adapter_for_source = lambda _source: adapter
+        runner._thread_metadata_for_source = lambda _source: {}
+        runner._session_key_for_source = lambda _source: "telegram:12345"
+        runner._evict_cached_agent = lambda _key: None
+        event = SimpleNamespace(
+            source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="12345"),
+            get_command_args=lambda: "pending",
+        )
+        pending = [{"id": "m1", "summary": "reviewed"}]
+
+        def capture_then_stage(_subsystem):
+            snapshot = [dict(record) for record in pending]
+            pending.append({"id": "m2", "summary": "staged after render"})
+            return snapshot
+
+        with (
+            patch("tools.write_approval.list_pending", side_effect=capture_then_stage) as listed,
+            patch("tools.memory_tool.load_on_disk_store", return_value=object()),
+        ):
+            response = await runner._handle_memory_command(event)
+
+        assert response == ""
+        listed.assert_called_once_with("memory")
+        assert [record["id"] for record in pending] == ["m1", "m2"]
+        token, state = next(iter(adapter._pending_write_approval_state.items()))
+        assert state["pending_ids"] == ("m1",)
+        sent_text = adapter._bot.send_message.await_args.kwargs["text"]
+        assert "m1" in sent_text
+        assert "m2" not in sent_text
+
+        query = AsyncMock()
+        query.data = f"pw:a:{token}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.text = sent_text
+        query.from_user = MagicMock(id="12345", first_name="Marco")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        def resolve(_subsystem, pending_id, _choice, **_kwargs):
+            pending[:] = [record for record in pending if record["id"] != pending_id]
+            return {"success": True}
+
+        with (
+            patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False),
+            patch(
+                "hermes_cli.write_approval_commands.resolve_pending_write",
+                side_effect=resolve,
+            ),
+            patch("tools.memory_tool.load_on_disk_store", return_value=object()),
+        ):
+            await adapter._handle_callback_query(update, None)
+
+        assert [record["id"] for record in pending] == ["m2"]
+
+
 class TestTelegramPendingWriteApprovalCallback:
-    """Persistent write approvals can be resolved from notifier buttons."""
+    """Persistent write approvals use exact, one-use rendered snapshots."""
 
     @staticmethod
-    def _query(data):
+    def _query(data, *, chat_id=12345):
         query = AsyncMock()
         query.data = data
         query.message = MagicMock()
-        query.message.chat_id = 12345
+        query.message.chat_id = chat_id
+        query.message.message_thread_id = None
         query.message.text = "Approval needed"
         query.from_user = MagicMock()
         query.from_user.id = "12345"
@@ -255,53 +349,120 @@ class TestTelegramPendingWriteApprovalCallback:
         return query, update
 
     @pytest.mark.asyncio
-    async def test_approve_all_applies_memory_and_skill_pending_writes(self):
+    async def test_emitter_stores_exact_snapshot_and_sends_keyboard(self):
         adapter = _make_adapter()
-        query, update = self._query("pw:approve:all")
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=77))
+
+        result = await adapter.send_pending_write_approval(
+            "12345",
+            "memory",
+            [{"id": "m1"}, {"id": "m2"}],
+            "Pending memory writes (2)",
+        )
+
+        assert result.success is True
+        assert len(adapter._pending_write_approval_state) == 1
+        state = next(iter(adapter._pending_write_approval_state.values()))
+        assert state["chat_id"] == "12345"
+        assert state["thread_id"] is None
+        assert state["subsystem"] == "memory"
+        assert state["pending_ids"] == ("m1", "m2")
+        kwargs = adapter._bot.send_message.await_args.kwargs
+        assert kwargs["reply_markup"] is not None
+        assert kwargs["text"] == "Pending memory writes (2)"
+
+    @pytest.mark.asyncio
+    async def test_emitter_refuses_to_truncate_approval_snapshot(self):
+        adapter = _make_adapter()
+
+        result = await adapter.send_pending_write_approval(
+            "12345", "memory", [{"id": "m1"}], "x" * 3801
+        )
+
+        assert result.success is False
+        assert "too long" in result.error
+        adapter._bot.send_message.assert_not_awaited()
+        assert adapter._pending_write_approval_state == {}
+
+    @pytest.mark.asyncio
+    async def test_approve_resolves_only_ids_in_rendered_snapshot(self):
+        adapter = _make_adapter()
+        adapter._pending_write_approval_state["token"] = {
+            "chat_id": "12345",
+            "thread_id": None,
+            "subsystem": "memory",
+            "pending_ids": ("m1", "m2"),
+            "created_at": time.monotonic(),
+        }
+        query, update = self._query("pw:a:token")
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
-             patch("hermes_cli.write_approval_commands.handle_pending_subcommand", side_effect=[
-                 "Approved 2 memory write(s).", "Approved 3 skills write(s)."
-             ]) as handle, \
-             patch("tools.memory_tool.MemoryStore", return_value=object()):
+             patch("tools.memory_tool.load_on_disk_store", return_value=object()), \
+             patch(
+                 "hermes_cli.write_approval_commands.resolve_pending_write",
+                 return_value={"success": True},
+             ) as resolve:
             await adapter._handle_callback_query(update, MagicMock())
 
-        assert handle.call_count == 2
-        assert handle.call_args_list[0].args[:2] == ("memory", ["approve", "all"])
-        assert handle.call_args_list[1].args[:2] == ("skills", ["approve", "all"])
-        query.answer.assert_awaited_once()
+        assert [call.args[1] for call in resolve.call_args_list] == ["m1", "m2"]
+        assert all(call.args[:1] == ("memory",) for call in resolve.call_args_list)
+        assert all(call.args[2] == "approve" for call in resolve.call_args_list)
+        assert "token" not in adapter._pending_write_approval_state
+        assert "Approved 2 memory" in query.edit_message_text.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_wrong_chat_cannot_consume_token(self):
+        adapter = _make_adapter()
+        adapter._pending_write_approval_state["token"] = {
+            "chat_id": "999",
+            "thread_id": None,
+            "subsystem": "skills",
+            "pending_ids": ("s1",),
+            "created_at": time.monotonic(),
+        }
+        query, update = self._query("pw:r:token")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.resolve_pending_write") as resolve:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        resolve.assert_not_called()
+        assert "token" in adapter._pending_write_approval_state
+        assert "different chat or thread" in query.answer.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_replayed_token_is_inert(self):
+        adapter = _make_adapter()
+        query, update = self._query("pw:a:already-used")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.resolve_pending_write") as resolve:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        resolve.assert_not_called()
+        assert "expired or already resolved" in query.answer.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_request_changes_consumes_token_without_mutating(self):
+        adapter = _make_adapter()
+        adapter._pending_write_approval_state["token"] = {
+            "chat_id": "12345",
+            "thread_id": None,
+            "subsystem": "skills",
+            "pending_ids": ("s1",),
+            "created_at": time.monotonic(),
+        }
+        query, update = self._query("pw:c:token")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
+             patch("hermes_cli.write_approval_commands.resolve_pending_write") as resolve:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        resolve.assert_not_called()
+        assert "token" not in adapter._pending_write_approval_state
         edited = query.edit_message_text.await_args.kwargs
-        assert "Approved 2 memory" in edited["text"]
-        assert "Approved 3 skills" in edited["text"]
+        assert "No changes applied" in edited["text"]
         assert edited["reply_markup"] is None
-
-    @pytest.mark.asyncio
-    async def test_deny_all_discards_both_pending_queues(self):
-        adapter = _make_adapter()
-        query, update = self._query("pw:reject:all")
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
-             patch("hermes_cli.write_approval_commands.handle_pending_subcommand", side_effect=[
-                 "Rejected 2 pending memory write(s).", "Rejected 3 pending skills write(s)."
-             ]) as handle:
-            await adapter._handle_callback_query(update, MagicMock())
-
-        assert handle.call_args_list[0].args[:2] == ("memory", ["reject", "all"])
-        assert handle.call_args_list[1].args[:2] == ("skills", ["reject", "all"])
-        assert "Rejected 3 pending skills" in query.edit_message_text.await_args.kwargs["text"]
-
-    @pytest.mark.asyncio
-    async def test_request_changes_prompts_for_chat_reply_without_mutating(self):
-        adapter = _make_adapter()
-        query, update = self._query("pw:change:all")
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False), \
-             patch("hermes_cli.write_approval_commands.handle_pending_subcommand") as handle:
-            await adapter._handle_callback_query(update, MagicMock())
-
-        handle.assert_not_called()
-        assert "Reply with the exact changes" in query.edit_message_text.await_args.kwargs["text"]
-        assert query.edit_message_text.await_args.kwargs["reply_markup"] is None
 
 
 class TestTelegramApprovalCallback:

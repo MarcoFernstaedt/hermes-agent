@@ -16,6 +16,7 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
+import re
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -30,8 +31,9 @@ def _fmt_state(subsystem: str) -> str:
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_pending_list(subsystem: str) -> str:
-    records = wa.list_pending(subsystem)
+def _fmt_pending_list(subsystem: str, records=None) -> str:
+    if records is None:
+        records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
@@ -57,6 +59,7 @@ def handle_pending_subcommand(
     *,
     memory_store=None,
     set_mode_fn=None,
+    pending_records=None,
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
 
@@ -76,13 +79,15 @@ def handle_pending_subcommand(
     """
     if not args:
         # Bare /memory or /skills with no sub → show pending + gate state.
-        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
+        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(
+            subsystem, pending_records
+        )
 
     sub = args[0].lower()
     rest = args[1:]
 
     if sub == "pending":
-        return _fmt_pending_list(subsystem)
+        return _fmt_pending_list(subsystem, pending_records)
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
@@ -110,26 +115,25 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} approve <id>"
 
-    records = wa.list_pending(subsystem)
-    if not records:
-        return f"No pending {subsystem} writes."
-
     if target.lower() == "all":
-        targets = list(records)
+        target_ids = [rec["id"] for rec in wa.list_pending(subsystem)]
+        if not target_ids:
+            return f"No pending {subsystem} writes."
     else:
-        rec = wa.get_pending(subsystem, target)
-        if not rec:
-            return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+        target_ids = [target]
 
     applied, failed = 0, []
-    for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
+    for pending_id in target_ids:
+        result = resolve_pending_write(
+            subsystem,
+            pending_id,
+            "approve",
+            memory_store=memory_store,
+        )
+        if result.get("success") is True:
             applied += 1
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            failed.append(f"{pending_id}: {result.get('error', 'apply_failed')}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if failed:
@@ -140,19 +144,94 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 def _apply_one(subsystem: str, rec, memory_store):
     payload = rec.get("payload", {})
+    from tools.skill_provenance import (
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    origin_token = set_current_write_origin(rec["origin"])
     try:
         if subsystem == wa.MEMORY:
             if memory_store is None:
-                return False, "memory store unavailable"
+                return False, "memory store unavailable", True
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
+            return bool(result.get("success")), result.get("error", ""), True
         else:
             from tools.skill_manager_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
-    except Exception as e:
-        return False, str(e)
+            return bool(result.get("success")), result.get("error", ""), True
+    except Exception:
+        # The side effect may have committed before the exception. Never
+        # automatically restore/replay an ambiguous apply.
+        return False, "apply raised", False
+    finally:
+        reset_current_write_origin(origin_token)
+
+
+_PENDING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def resolve_pending_write(
+    subsystem: str,
+    pending_id: str,
+    decision: str,
+    *,
+    memory_store=None,
+) -> dict:
+    """Atomically apply/reject one write and return only UI-safe fields."""
+    if (
+        subsystem not in {wa.MEMORY, wa.SKILLS}
+        or decision not in {"approve", "reject"}
+        or not isinstance(pending_id, str)
+        or not _PENDING_ID_RE.fullmatch(pending_id)
+    ):
+        return {"success": False, "error": "invalid_request"}
+
+    status, rec = wa.claim_pending(subsystem, pending_id, decision)
+    if status == "resolved":
+        return {
+            "success": True,
+            "subsystem": subsystem,
+            "pending_id": pending_id,
+            "decision": decision,
+        }
+    if status == "conflict":
+        return {"success": False, "error": "decision_conflict"}
+    if status == "in_progress":
+        return {"success": False, "error": "in_progress"}
+    if status != "claimed" or rec is None:
+        return {"success": False, "error": "not_found"}
+
+    nonce = rec.get("_claim_nonce")
+    if not isinstance(nonce, str) or not nonce:
+        return {"success": False, "error": "in_progress"}
+
+    if rec.get("origin") not in {"foreground", "background_review"}:
+        if not wa.reject_invalid_pending_claim(subsystem, pending_id, nonce):
+            return {"success": False, "error": "in_progress"}
+        return {"success": False, "error": "invalid_origin"}
+
+    if decision == "approve":
+        if not wa.mark_claim_applying(subsystem, pending_id, decision, nonce):
+            return {"success": False, "error": "in_progress"}
+        ok, _, safe_to_retry = _apply_one(subsystem, rec, memory_store)
+        if not ok:
+            if safe_to_retry:
+                wa.restore_pending_claim(subsystem, pending_id, nonce)
+            return {"success": False, "error": "apply_failed"}
+
+    if not wa.finish_pending_claim(subsystem, pending_id, decision, nonce):
+        # The claim remains in place, preventing duplicate application. A retry
+        # reports in_progress rather than risking a second persistent write.
+        return {"success": False, "error": "resolution_persist_failed"}
+
+    return {
+        "success": True,
+        "subsystem": subsystem,
+        "pending_id": pending_id,
+        "decision": decision,
+    }
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:
@@ -160,12 +239,15 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} reject <id>"
     if target.lower() == "all":
-        n = 0
-        for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
-                n += 1
+        target_ids = [rec["id"] for rec in wa.list_pending(subsystem)]
+        n = sum(
+            1
+            for pending_id in target_ids
+            if resolve_pending_write(subsystem, pending_id, "reject").get("success") is True
+        )
         return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
+    result = resolve_pending_write(subsystem, target, "reject")
+    if result.get("success") is True:
         return f"Rejected pending {subsystem} write '{target}'."
     return f"No pending {subsystem} write with id '{target}'."
 

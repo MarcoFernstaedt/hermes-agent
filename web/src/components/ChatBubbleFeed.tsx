@@ -34,6 +34,7 @@ interface ChatBubbleFeedProps {
   messages: ChatFeedMessage[];
   composer: string;
   disabled?: boolean;
+  writeApprovalDisabled?: boolean;
   isWorking: boolean;
   rawConsoleOpen: boolean;
   focusSignal: number;
@@ -45,6 +46,7 @@ interface ChatBubbleFeedProps {
     choice: "once" | "session" | "always" | "deny",
     message: ChatFeedMessage,
   ): void;
+  onWriteApproval(choice: "approve" | "reject", message: ChatFeedMessage): void;
   onClarify(answer: string, message: ChatFeedMessage): void;
   onImages(files: File[]): void;
   onToggleRawConsole(): void;
@@ -54,6 +56,7 @@ const roleLabel = (message: ChatFeedMessage): string => {
   if (message.role === "user") return "You";
   if (message.role === "assistant") return "Imperator";
   if (message.role === "approval") return "Approval required";
+  if (message.role === "write_approval") return "Change approval required";
   if (message.role === "clarify") return "Input requested";
   return message.title || message.role;
 };
@@ -97,6 +100,7 @@ export function ChatBubbleFeed({
   messages,
   composer,
   disabled = false,
+  writeApprovalDisabled = disabled,
   isWorking,
   rawConsoleOpen,
   focusSignal,
@@ -105,6 +109,7 @@ export function ChatBubbleFeed({
   onStop,
   onRetry,
   onApproval,
+  onWriteApproval,
   onClarify,
   onImages,
   onToggleRawConsole,
@@ -244,7 +249,9 @@ export function ChatBubbleFeed({
               const operational =
                 message.role === "tool" || message.role === "system";
               const interactive =
-                message.role === "approval" || message.role === "clarify";
+                message.role === "approval" ||
+                message.role === "write_approval" ||
+                message.role === "clarify";
 
               return (
                 <article
@@ -355,6 +362,30 @@ export function ChatBubbleFeed({
                         </Button>
                       </div>
                     )}
+
+                    {message.role === "write_approval" &&
+                      (message.status === "waiting" || message.status === "running") && (
+                        <div className="mt-3 flex flex-wrap gap-2 border-t border-warning/25 pt-3">
+                          <Button
+                            size="sm"
+                            disabled={writeApprovalDisabled || message.status === "running"}
+                            onClick={() => onWriteApproval("approve", message)}
+                          >
+                            {message.status === "running"
+                              ? "Submitting decision"
+                              : "Approve change"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            outlined
+                            disabled={writeApprovalDisabled || message.status === "running"}
+                            onClick={() => onWriteApproval("reject", message)}
+                            className="text-destructive"
+                          >
+                            Reject change
+                          </Button>
+                        </div>
+                      )}
 
                     {message.role === "clarify" && message.status === "waiting" && (
                       <div className="mt-3 flex flex-wrap gap-2 border-t border-warning/25 pt-3">

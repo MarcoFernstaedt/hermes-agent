@@ -44,7 +44,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -94,7 +94,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, constr
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -110,7 +110,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, constr
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -15474,6 +15474,81 @@ async def console_ws(ws: WebSocket) -> None:
                 await active_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+class WriteApprovalRequest(BaseModel):
+    subsystem: Literal["memory", "skills"]
+    pending_id: constr(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    decision: Literal["approve", "reject"]
+
+
+def _resolve_dashboard_write_approval(
+    request: WriteApprovalRequest,
+    profile: Optional[str],
+) -> dict:
+    """Resolve inside the selected profile on a worker thread."""
+    from hermes_cli.write_approval_commands import resolve_pending_write
+    from tools import write_approval as wa
+
+    with _profile_scope(profile):
+        memory_store = None
+        if request.subsystem == wa.MEMORY and request.decision == "approve":
+            from tools.memory_tool import load_on_disk_store
+
+            memory_store = load_on_disk_store()
+        return resolve_pending_write(
+            request.subsystem,
+            request.pending_id,
+            request.decision,
+            memory_store=memory_store,
+        )
+
+
+_WRITE_APPROVAL_SAFE_ERRORS = frozenset(
+    {
+        "apply_failed",
+        "decision_conflict",
+        "in_progress",
+        "invalid_request",
+        "not_found",
+        "resolution_persist_failed",
+    }
+)
+
+
+@app.post("/api/write-approval")
+async def resolve_dashboard_write_approval(
+    request: WriteApprovalRequest,
+    profile: Optional[str] = None,
+) -> dict:
+    """Resolve a staged write without returning staged data or exceptions."""
+    try:
+        result = await asyncio.to_thread(
+            _resolve_dashboard_write_approval,
+            request,
+            profile,
+        )
+    except Exception:
+        # Resolution exceptions can contain staged write data. Keep both the
+        # client response and server logs payload-free.
+        _log.error("Dashboard write approval failed")
+        result = {"success": False, "error": "apply_failed"}
+
+    if result.get("success") is True:
+        return {
+            "success": True,
+            "subsystem": request.subsystem,
+            "pending_id": request.pending_id,
+            "decision": request.decision,
+        }
+    error = result.get("error")
+    return {
+        "success": False,
+        "subsystem": request.subsystem,
+        "pending_id": request.pending_id,
+        "decision": request.decision,
+        "error": error if error in _WRITE_APPROVAL_SAFE_ERRORS else "apply_failed",
+    }
 
 
 @app.websocket("/api/pty")

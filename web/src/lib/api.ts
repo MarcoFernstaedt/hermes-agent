@@ -304,6 +304,17 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+export type WriteApprovalSubsystem = "memory" | "skills";
+export type WriteApprovalDecision = "approve" | "reject";
+
+export interface WriteApprovalResponse {
+  success: boolean;
+  pending_id: string;
+  decision: WriteApprovalDecision;
+  subsystem: WriteApprovalSubsystem;
+  error?: string;
+}
+
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
@@ -339,6 +350,20 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
+  resolveWriteApproval: (
+    subsystem: WriteApprovalSubsystem,
+    pendingId: string,
+    decision: WriteApprovalDecision,
+    profile?: string,
+  ) =>
+    fetchJSON<WriteApprovalResponse>(
+      appendProfileParam("/api/write-approval", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subsystem, pending_id: pendingId, decision }),
+      },
+    ),
   getSessions: (
     limit = 20,
     offset = 0,

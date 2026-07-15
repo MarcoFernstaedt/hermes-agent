@@ -62,6 +62,7 @@ import {
   type ChatFeedMessage,
   type ChatFeedState,
 } from "@/lib/chat-feed-model";
+import { submitWriteApproval } from "@/lib/write-approval-flow";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { subscribeDashboardEvents } from "@/lib/event-channel-hub";
 import {
@@ -205,6 +206,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const imageAttachRef = useRef<(files: File[]) => void>(() => undefined);
+  const writeApprovalsInFlightRef = useRef(new Set<string>());
   const [feedState, setFeedState] = useState<ChatFeedState>(EMPTY_CHAT_FEED);
   const [composer, setComposer] = useState("");
   const [rawConsoleOpen, setRawConsoleOpen] = useState(false);
@@ -600,7 +602,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
         }
 
-        setFeedState((state) => chatFeedReducer(state, event));
+        const feedEvent =
+          event.type === "write_approval.request"
+            ? {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  profile: scopedProfile ?? "current",
+                },
+              }
+            : event;
+        setFeedState((state) => chatFeedReducer(state, feedEvent));
         if (event.type === "message.start") setAgentRunning(true);
         if (event.type === "message.complete" || event.type === "error") {
           setAgentRunning(false);
@@ -853,6 +865,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       );
     },
     [],
+  );
+
+  const answerWriteApproval = useCallback(
+    (choice: "approve" | "reject", message: ChatFeedMessage) => {
+      void submitWriteApproval({
+        choice,
+        dispatch: (event) => {
+          setFeedState((state) => chatFeedReducer(state, event));
+        },
+        inFlight: writeApprovalsInFlightRef.current,
+        message,
+        profile: scopedProfile ?? undefined,
+        resolve: api.resolveWriteApproval,
+      });
+    },
+    [scopedProfile],
   );
 
   const answerClarify = useCallback((answer: string, message: ChatFeedMessage) => {
@@ -1953,6 +1981,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 messages={feedState.messages}
                 composer={composer}
                 disabled={ptyState !== "open"}
+                writeApprovalDisabled={false}
                 isWorking={agentRunning}
                 rawConsoleOpen={rawConsoleOpen}
                 focusSignal={reconnectNonce}
@@ -1961,6 +1990,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 onStop={stopAgent}
                 onRetry={retryMessage}
                 onApproval={answerApproval}
+                onWriteApproval={answerWriteApproval}
                 onClarify={answerClarify}
                 onImages={(files) => imageAttachRef.current(files)}
                 onToggleRawConsole={() => setRawConsoleOpen(true)}

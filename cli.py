@@ -3652,15 +3652,19 @@ def save_config_value(key_path: str, value: any) -> bool:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
+        # readable Unicode in user-edited config.yaml. Hold the authoritative
+        # config transaction lock across the full update so this legacy CLI
+        # path cannot race with hermes_cli.config writers in another process.
+        from hermes_cli.config import _config_transaction_lock
         from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
-        try:
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
+        with _config_transaction_lock(config_path):
+            atomic_roundtrip_yaml_update(config_path, key_path, value)
+
+            # Enforce owner-only permissions on config files (contain API keys)
+            try:
+                os.chmod(config_path, 0o600)
+            except (OSError, NotImplementedError):
+                pass
         
         return True
     except Exception as e:
