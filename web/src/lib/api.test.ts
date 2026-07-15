@@ -104,3 +104,71 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.resolveWriteApproval", () => {
+  it("posts structured JSON with explicit profile and loopback session auth", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({
+      success: true,
+      subsystem: "memory",
+      pending_id: "mem12345",
+      decision: "approve",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.resolveWriteApproval(
+      "memory",
+      "mem12345",
+      "approve",
+      "client profile",
+    );
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/write-approval?profile=client%20profile",
+      expect.objectContaining({
+        body: JSON.stringify({
+          subsystem: "memory",
+          pending_id: "mem12345",
+          decision: "approve",
+        }),
+        credentials: "include",
+        method: "POST",
+      }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("uses cookie auth in gated mode", async () => {
+    vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
+    const fetchMock = jsonFetchMock({
+      success: true,
+      subsystem: "skills",
+      pending_id: "skill123",
+      decision: "reject",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.resolveWriteApproval("skills", "skill123", "reject");
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe("include");
+    expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
+  });
+
+  it("rejects when the protected endpoint fails", async () => {
+    vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(
+        async () => new Response("safe failure", { status: 409 }),
+      ),
+    );
+
+    await expect(
+      api.resolveWriteApproval("memory", "mem12345", "approve"),
+    ).rejects.toThrow("409: safe failure");
+  });
+});

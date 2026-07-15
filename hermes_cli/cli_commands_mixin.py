@@ -1590,9 +1590,10 @@ class CLICommandsMixin:
         print(out)
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
-        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
-        from cli import save_config_value
-        save_config_value(f"{subsystem}.write_approval", bool(enabled))
+        """Persist <subsystem>.write_approval through the security-aware writer."""
+        from hermes_cli.config import set_config_value_typed
+
+        set_config_value_typed(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

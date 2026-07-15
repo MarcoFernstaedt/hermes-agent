@@ -215,6 +215,25 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         ]
 
 
+_PRIVATE_DELEGATED_WRITE_TOOLS = {"memory", "skill_manage"}
+
+
+def _result_has_private_write(result: Dict[str, Any]) -> bool:
+    """Return whether child history contains a private persistent-write tool."""
+    messages = result.get("messages") if isinstance(result, dict) else None
+    if not isinstance(messages, list):
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if name in _PRIVATE_DELEGATED_WRITE_TOOLS:
+                return True
+    return False
+
+
 def _extract_output_tail(
     result: Dict[str, Any],
     *,
@@ -260,6 +279,8 @@ def _extract_output_tail(
         content = _stringify_tool_content(msg.get("content") or "")
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
+        if tool_name in _PRIVATE_DELEGATED_WRITE_TOOLS:
+            continue
         # Preserve line structure so the overlay's wrapped scroll region can
         # show real output rather than a whitespace-collapsed blob. We still
         # cap the payload size to keep events bounded.
@@ -2229,7 +2250,15 @@ def _run_single_child(
             }
         )[:40]
 
-        _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+        _private_write_activity = _result_has_private_write(result)
+        _output_tail = (
+            []
+            if _private_write_activity
+            else _extract_output_tail(result, max_entries=8, max_chars=600)
+        )
+        if _private_write_activity:
+            _files_read = []
+            _files_written = []
 
         complete_kwargs: Dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
@@ -2251,7 +2280,11 @@ def _run_single_child(
             "files_read": _files_read,
             "files_written": _files_written,
             "output_tail": _output_tail,
+            "private_write_activity": _private_write_activity,
         }
+        if _private_write_activity:
+            complete_kwargs["preview"] = "Private delegated write completed"
+            complete_kwargs["summary"] = "Private delegated write completed"
         if _cost_usd is not None:
             try:
                 complete_kwargs["cost_usd"] = float(_cost_usd)

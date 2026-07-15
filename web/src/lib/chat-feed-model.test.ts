@@ -102,6 +102,7 @@ describe("chat feed model", () => {
   it("treats a replayed completion frame as idempotent", () => {
     const completed = chatFeedReducer(empty, {
       type: "message.complete",
+      eventId: "completion-replay",
       sessionId: "runtime-1",
       payload: { text: "final answer" },
       now: 220,
@@ -113,6 +114,7 @@ describe("chat feed model", () => {
     });
     const replayed = chatFeedReducer(withTool, {
       type: "message.complete",
+      eventId: "completion-replay",
       sessionId: "runtime-1",
       payload: { text: "final answer" },
       now: 230,
@@ -195,6 +197,162 @@ describe("chat feed model", () => {
     });
     expect(state.messages[0]).toMatchObject({ status: "sent", resolution: "session" });
     expect(state.activeApprovalId).toBeNull();
+  });
+
+  it("keeps write approvals retryable until a success acknowledgment resolves them", () => {
+    let state = chatFeedReducer(empty, {
+      type: "write_approval.request",
+      payload: {
+        subsystem: "skills",
+        pending_id: "skill123",
+        summary: "Skill change staged for review",
+      },
+      now: 230,
+    });
+    expect(state.messages[0]).toMatchObject({
+      role: "write_approval",
+      status: "waiting",
+      pendingId: "skill123",
+      subsystem: "skills",
+    });
+    state = chatFeedReducer(state, {
+      type: "write_approval.request",
+      payload: {
+        subsystem: "memory",
+        pending_id: "memory456",
+        summary: "Memory change staged for review",
+      },
+      now: 230.5,
+    });
+
+    state = chatFeedReducer(state, {
+      type: "write_approval.submitting",
+      payload: { profile: "current", subsystem: "skills", pending_id: "skill123" },
+      now: 231,
+    });
+    expect(state.messages[0].status).toBe("running");
+    expect(state.messages[1]).toMatchObject({
+      pendingId: "memory456",
+      status: "waiting",
+    });
+
+    state = chatFeedReducer(state, {
+      type: "write_approval.failed",
+      payload: { profile: "current", subsystem: "skills", pending_id: "skill123" },
+      now: 232,
+    });
+    expect(state.messages[0]).toMatchObject({ status: "waiting" });
+
+    state = chatFeedReducer(state, {
+      type: "write_approval.resolved",
+      payload: {
+        profile: "current",
+        subsystem: "skills",
+        pending_id: "skill123",
+        decision: "approved",
+      },
+      now: 233,
+    });
+    expect(state.messages[0]).toMatchObject({
+      status: "sent",
+      resolution: "approved",
+    });
+  });
+
+  it("keys write cards by profile and subsystem and keeps replay monotonic", () => {
+    let state = chatFeedReducer(empty, {
+      type: "write_approval.request",
+      payload: { profile: "client-a", subsystem: "memory", pending_id: "same" },
+      now: 240,
+    });
+    state = chatFeedReducer(state, {
+      type: "write_approval.request",
+      payload: { profile: "client-a", subsystem: "skills", pending_id: "same" },
+      now: 241,
+    });
+    expect(state.messages).toHaveLength(2);
+
+    state = chatFeedReducer(state, {
+      type: "write_approval.resolved",
+      payload: {
+        profile: "client-a",
+        subsystem: "memory",
+        pending_id: "same",
+        decision: "approved",
+      },
+      now: 242,
+    });
+    state = chatFeedReducer(state, {
+      type: "write_approval.request",
+      payload: { profile: "client-a", subsystem: "memory", pending_id: "same" },
+      now: 243,
+    });
+
+    expect(state.messages[0]).toMatchObject({
+      profile: "client-a",
+      subsystem: "memory",
+      status: "sent",
+      resolution: "approved",
+    });
+    expect(state.messages[1]).toMatchObject({
+      profile: "client-a",
+      subsystem: "skills",
+      status: "waiting",
+    });
+  });
+
+  it("never renders MEDIA delivery paths and deduplicates sanitized completion replays", () => {
+    let state = chatFeedReducer(empty, {
+      type: "message.start",
+      payload: {},
+      now: 300,
+    });
+    state = chatFeedReducer(state, {
+      type: "message.delta",
+      payload: { text: "Done.\nMEDIA:" },
+      now: 301,
+    });
+    state = chatFeedReducer(state, {
+      type: "message.delta",
+      payload: { text: "/home/marco/private/audio.mp3" },
+      now: 302,
+    });
+    state = chatFeedReducer(state, {
+      type: "message.complete",
+      eventId: "completion-1",
+      payload: { text: "Done.\nMEDIA:/home/marco/private/audio.mp3" },
+      now: 303,
+    });
+    const replayed = chatFeedReducer(state, {
+      type: "message.complete",
+      eventId: "completion-1",
+      payload: { text: "Done.\nMEDIA:/home/marco/private/audio.mp3" },
+      now: 304,
+    });
+    const distinct = chatFeedReducer(replayed, {
+      type: "message.complete",
+      eventId: "completion-2",
+      payload: { text: "Done.\nMEDIA:/different/private/audio.mp3" },
+      now: 305,
+    });
+
+    expect(replayed.messages).toHaveLength(1);
+    expect(distinct.messages).toHaveLength(2);
+    expect(distinct.messages.map((message) => message.text)).toEqual(["Done.", "Done."]);
+    expect(distinct.messages.map((message) => message.text).join("\n")).not.toContain(
+      "/home/marco",
+    );
+    expect(distinct.messages.map((message) => message.text).join("\n")).not.toContain(
+      "/different/private",
+    );
+
+    const hydrated = hydrateSessionMessages([
+      { role: "assistant", content: "Ready\nMEDIA:C:\\private\\voice.wav" },
+    ]);
+    expect(hydrated[0].text).toBe("Ready");
+    expect(hydrated.map((message) => message.text).join("\n")).not.toContain(
+      "C:\\private",
+    );
   });
 
   it("keeps stored user, assistant, system, and tool output during hydration", () => {
@@ -449,6 +607,7 @@ describe("chat feed model", () => {
           params: {
             type: "message.delta",
             session_id: "runtime-1",
+            event_id: "event-1",
             payload: { text: "hello" },
           },
         }),
@@ -457,6 +616,7 @@ describe("chat feed model", () => {
     ).toEqual({
       type: "message.delta",
       sessionId: "runtime-1",
+      eventId: "event-1",
       payload: { text: "hello" },
       now: 99,
     });

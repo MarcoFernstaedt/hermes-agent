@@ -820,6 +820,15 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
+def _load_write_approval_module():
+    try:
+        from tools import write_approval
+
+        return write_approval
+    except Exception:
+        return None
+
+
 def _apply_write_gate(action: str, target: str, content: Optional[str],
                       old_text: Optional[str]) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
@@ -831,12 +840,12 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     if action not in {"add", "replace", "remove"}:
         return None
 
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
+    wa = _load_write_approval_module()
+    if wa is None:
+        return tool_error(
+            "Memory write approval is unavailable; write blocked safely.",
+            success=False,
+        )
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
@@ -865,11 +874,14 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except wa.StagingError:
+        return tool_error("Memory write could not be staged for approval.", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -884,10 +896,12 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     (blocked or staged), or None when the caller should perform the real
     batch write. The whole batch is gated as a single unit.
     """
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        return None
+    wa = _load_write_approval_module()
+    if wa is None:
+        return tool_error(
+            "Memory write approval is unavailable; write blocked safely.",
+            success=False,
+        )
 
     label = "user profile" if target == "user" else "memory"
     summary = f"apply {len(operations)} op(s) to {label}"
@@ -912,11 +926,14 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except wa.StagingError:
+        return tool_error("Memory write could not be staged for approval.", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},

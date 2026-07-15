@@ -424,6 +424,205 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+@pytest.mark.parametrize("mode", ["off", "default", "all", "verbose"])
+@pytest.mark.parametrize(
+    ("tool_name", "subsystem"),
+    [("memory", "memory"), ("skill_manage", "skills")],
+)
+def test_staged_write_events_never_expose_private_tool_data(
+    monkeypatch, mode, tool_name, subsystem
+):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    session = {
+        "tool_started_at": {},
+        "profile_home": "/tmp/hermes/profiles/client",
+    }
+    if mode != "default":
+        session["tool_progress_mode"] = mode
+    monkeypatch.setitem(server._sessions, "write-privacy-test", session)
+    args = {
+        "action": "add" if tool_name == "memory" else "create",
+        "content": "PRIVATE-STAGED-CONTENT",
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "staged": True,
+            "pending_id": "safe_id-123",
+            "message": "PRIVATE-STAGED-RESULT",
+            "diff": "PRIVATE-INLINE-DIFF",
+        }
+    )
+
+    server._on_tool_start("write-privacy-test", "tool-write-1", tool_name, args)
+    server._on_tool_complete(
+        "write-privacy-test", "tool-write-1", tool_name, args, result
+    )
+
+    assert [event for event, _, _ in events].count("write_approval.request") == 1
+    approval = next(payload for event, _, payload in events if event == "write_approval.request")
+    assert approval == {
+        "subsystem": subsystem,
+        "pending_id": "safe_id-123",
+        "profile": "client",
+        "summary": f"{'Memory' if subsystem == 'memory' else 'Skill'} change staged for review",
+    }
+    serialized = json.dumps(events)
+    assert "PRIVATE-STAGED-CONTENT" not in serialized
+    assert "PRIVATE-STAGED-RESULT" not in serialized
+    assert "PRIVATE-INLINE-DIFF" not in serialized
+
+    for event, _, payload in events:
+        if event == "tool.start":
+            assert "args" not in payload
+            assert "args_text" not in payload
+            assert payload["context"] == "Persistent write"
+        if event == "tool.complete":
+            assert "args" not in payload
+            assert "result" not in payload
+            assert "result_text" not in payload
+            assert "inline_diff" not in payload
+            assert payload.get("summary") == "Persistent write staged for review"
+
+
+@pytest.mark.parametrize("mode", ["off", "default", "all", "verbose"])
+@pytest.mark.parametrize("tool_name", ["memory", "skill_manage"])
+def test_delegated_private_write_previews_are_suppressed_for_parent_and_child(
+    monkeypatch, mode, tool_name
+):
+    """Delegated writes must not leak previews to parent events or child mirrors."""
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        )
+    )
+    parent = {"tool_started_at": {}}
+    if mode != "default":
+        parent["tool_progress_mode"] = mode
+    monkeypatch.setitem(server._sessions, "delegated-private-parent", parent)
+    monkeypatch.setattr(
+        server,
+        "_find_live_session_by_key",
+        lambda key: (
+            ("delegated-private-child-live", {"agent": None})
+            if key == "delegated-private-child"
+            else None
+        ),
+    )
+    server._child_mirrors.pop("delegated-private-child", None)
+
+    secret = "PRIVATE-DELEGATED-WRITE-CONTENT"
+    server._on_tool_progress(
+        "delegated-private-parent",
+        "subagent.tool",
+        name=tool_name,
+        preview=f"write preview: {secret}",
+        args={"content": secret, "old_text": secret},
+        child_session_id="delegated-private-child",
+        status="running",
+        goal=secret,
+        summary=secret,
+        output_tail=[{"text": secret}],
+        files_read=[secret],
+    )
+
+    serialized = json.dumps(events)
+    assert secret not in serialized
+    if mode == "off":
+        assert events == []
+        return
+    parent_event = next(
+        payload for event, sid, payload in events
+        if event == "subagent.tool" and sid == "delegated-private-parent"
+    )
+    assert parent_event["tool_name"] == tool_name
+    assert parent_event["status"] == "running"
+    assert "text" not in parent_event
+    assert "tool_preview" not in parent_event
+    child_event = next(
+        payload for event, sid, payload in events
+        if event == "tool.start" and sid == "delegated-private-child-live"
+    )
+    assert child_event["name"] == tool_name
+    assert child_event["args"] == {}
+    assert "preview" not in child_event
+
+
+def test_delegated_private_write_completion_telemetry_is_content_free(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setitem(server._sessions, "private-complete-parent", {"tool_started_at": {}})
+    secret = "PRIVATE-COMPLETION-CONTENT"
+
+    server._on_tool_progress(
+        "private-complete-parent",
+        "subagent.complete",
+        preview=secret,
+        summary=secret,
+        status="completed",
+        private_write_activity=True,
+        files_read=[f"/private/{secret}"],
+        files_written=[f"/private/{secret}"],
+        output_tail=[{"tool": "memory", "preview": secret}],
+        goal=secret,
+    )
+
+    serialized = json.dumps(events)
+    assert secret not in serialized
+    payload = next(payload for event, _, payload in events if event == "subagent.complete")
+    assert payload["status"] == "completed"
+    assert "files_read" not in payload
+    assert "files_written" not in payload
+    assert "output_tail" not in payload
+    assert "summary" not in payload
+    assert "text" not in payload
+
+
+@pytest.mark.parametrize("mode", ["default", "all", "verbose"])
+@pytest.mark.parametrize("tool_name", ["memory", "skill_manage"])
+def test_private_write_events_fail_closed_when_result_is_malformed(
+    monkeypatch, mode, tool_name
+):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    session = {"tool_started_at": {}}
+    if mode != "default":
+        session["tool_progress_mode"] = mode
+    monkeypatch.setitem(server._sessions, "write-fail-closed", session)
+    args = {"content": "PRIVATE-ARGUMENT-CONTENT"}
+
+    server._on_tool_start("write-fail-closed", "tool-private", tool_name, args)
+    server._on_tool_complete(
+        "write-fail-closed",
+        "tool-private",
+        tool_name,
+        args,
+        "PRIVATE-MALFORMED-RESULT",
+    )
+
+    serialized = json.dumps(events)
+    assert "PRIVATE-ARGUMENT-CONTENT" not in serialized
+    assert "PRIVATE-MALFORMED-RESULT" not in serialized
+    assert not any(event == "write_approval.request" for event, _, _ in events)
+    complete = next(payload for event, _, payload in events if event == "tool.complete")
+    assert "args" not in complete
+    assert "result" not in complete
+    assert "result_text" not in complete
+    assert "inline_diff" not in complete
+
+
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(

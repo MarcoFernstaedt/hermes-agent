@@ -31,6 +31,7 @@ from tools.delegate_tool import (
     _build_child_progress_callback,
     _build_child_system_prompt,
     _extract_output_tail,
+    _result_has_private_write,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -754,6 +755,26 @@ class TestDelegateObservability(unittest.TestCase):
         # No raw content-block repr leaked into any preview.
         for entry in tail:
             self.assertNotIn("'type'", entry["preview"])
+
+    def test_private_write_history_is_tainted_and_omitted_from_output_tail(self):
+        secret = "PRIVATE-DELEGATE-TOOL-OUTPUT"
+        result = {
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "function": {"name": "memory", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": secret},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t2", "function": {"name": "terminal", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t2", "content": "public output"},
+            ]
+        }
+
+        self.assertTrue(_result_has_private_write(result))
+        tail = _extract_output_tail(result)
+        self.assertNotIn(secret, json.dumps(tail))
+        self.assertEqual([entry["tool"] for entry in tail], ["terminal"])
 
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""

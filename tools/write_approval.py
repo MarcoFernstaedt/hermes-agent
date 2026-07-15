@@ -45,19 +45,33 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+try:  # POSIX advisory locks
+    import fcntl
+except ImportError:  # pragma: no cover - exercised by Windows
+    fcntl = None
+
+try:  # Windows byte-range locks
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised by POSIX
+    msvcrt = None
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+_WINDOWS = os.name == "nt"
 
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+_ORIGINS = ("foreground", "background_review")
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -65,6 +79,23 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # "block all writes" state — to disable a subsystem entirely use its own
 # enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
+
+# A claimant normally resolves in milliseconds. Five minutes is deliberately
+# conservative for the pre-apply phase: a crashed resolver may release a stale
+# claim only before any side effect can have started. Once marked ``applying``,
+# a claim is never replayed automatically and requires manual reconciliation.
+CLAIM_STALE_AFTER_SECONDS = 300.0
+
+
+class ConfigGateError(RuntimeError):
+    """Approval policy could not be evaluated safely."""
+
+
+class StagingError(RuntimeError):
+    """A pending write could not be durably published without exposing payload."""
+
+    def __init__(self) -> None:
+        super().__init__("pending write could not be staged")
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +112,12 @@ def write_approval_enabled(subsystem: str) -> bool:
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
-        from hermes_cli.config import load_config, cfg_get
-        cfg = load_config()
+        from hermes_cli.config import cfg_get, load_config_for_security_gate
+
+        cfg = load_config_for_security_gate()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
-    except Exception:
-        return False
+    except Exception as exc:
+        raise ConfigGateError("write approval policy unavailable") from exc
     return _normalize_enabled(raw)
 
 
@@ -111,6 +143,619 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _claim_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / "claims" / subsystem
+
+
+def _receipt_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / "resolved" / subsystem
+
+
+def _lock_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / "locks" / subsystem
+
+
+@contextmanager
+def _pending_lock(subsystem: str, pending_id: str):
+    """Serialize one approval's state transitions across processes."""
+    path = _lock_dir(subsystem) / f"{pending_id}.lock"
+    _ensure_dir(path.parent)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        _secure_state_path(path, 0o600)
+        if not _WINDOWS and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        elif msvcrt is not None:
+            # msvcrt locks a byte range from the current file position. Keep a
+            # stable byte in every lock file so all processes lock byte zero.
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+                os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            raise RuntimeError("no supported file-locking backend")
+        yield
+    finally:
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """Persist directory entries where the platform exposes directory fsync.
+
+    Windows CPython cannot open directory paths through ``os.open``. File data
+    is still fsynced before atomic link/replace publication, and real file or
+    publication failures still propagate fail-closed; only the unsupported
+    directory-handle flush is skipped there.
+    """
+    if _WINDOWS:
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _restrict_windows_acl(path: Path) -> None:
+    """Apply/verify owner-only ACL through a non-following Windows handle."""
+    if not _WINDOWS:
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    get_file_info = kernel32.GetFileInformationByHandleEx
+    get_file_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    get_file_info.restype = wintypes.BOOL
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    convert_from = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert_from.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    convert_from.restype = wintypes.BOOL
+    set_security = advapi32.SetKernelObjectSecurity
+    set_security.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    get_security = advapi32.GetKernelObjectSecurity
+    get_security.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    get_security.restype = wintypes.BOOL
+    convert_to = advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    convert_to.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    convert_to.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    read_control = 0x00020000
+    write_dac = 0x00040000
+    share_all = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    backup_semantics = 0x02000000
+    open_reparse_point = 0x00200000
+    reparse_attribute = 0x00000400
+    file_attribute_tag_info = 9
+    dacl_info = 0x00000004
+    protected_dacl_info = 0x80000000
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        str(path),
+        read_control | write_dac,
+        share_all,
+        None,
+        open_existing,
+        backup_semantics | open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        required = get_final_path(handle, None, 0, 0)
+        if not required:
+            raise ctypes.WinError(ctypes.get_last_error())
+        final_buffer = ctypes.create_unicode_buffer(required + 1)
+        written = get_final_path(handle, final_buffer, len(final_buffer), 0)
+        if not written or written >= len(final_buffer):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        def normalize_windows_path(value: str) -> str:
+            if value.startswith("\\\\?\\UNC\\"):
+                value = "\\\\" + value[8:]
+            elif value.startswith("\\\\?\\"):
+                value = value[4:]
+            return os.path.normcase(os.path.normpath(value))
+
+        expected_path = normalize_windows_path(os.path.abspath(path))
+        actual_path = normalize_windows_path(final_buffer.value)
+        if actual_path != expected_path:
+            raise RuntimeError(f"approval-state path redirected: {path}")
+
+        attributes = FileAttributeTagInfo()
+        if not get_file_info(
+            handle,
+            file_attribute_tag_info,
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if attributes.FileAttributes & reparse_attribute:
+            raise RuntimeError(f"unsafe approval-state reparse point: {path}")
+
+        descriptor = ctypes.c_void_p()
+        if not convert_from("D:P(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not set_security(
+                handle, dacl_info | protected_dacl_info, descriptor
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.LocalFree(descriptor)
+
+        needed = wintypes.DWORD()
+        get_security(handle, dacl_info, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not get_security(
+            handle, dacl_info, buffer, needed.value, ctypes.byref(needed)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        rendered = wintypes.LPWSTR()
+        if not convert_to(buffer, 1, dacl_info, ctypes.byref(rendered), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            sddl = rendered.value or ""
+        finally:
+            kernel32.LocalFree(rendered)
+        if not sddl.startswith("D:P") or ";;;OW)" not in sddl:
+            raise RuntimeError("owner-only Windows DACL verification failed")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _secure_state_path(path: Path, mode: int) -> None:
+    if _WINDOWS:
+        _restrict_windows_acl(path)
+    else:
+        path.chmod(mode)
+
+
+def _is_path_redirect(path: Path) -> bool:
+    try:
+        return path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        )
+    except OSError:
+        # An indeterminate redirect check is not safe for private state.
+        raise RuntimeError(f"could not validate approval-state path: {path}")
+
+
+def _ensure_dir(path: Path) -> None:
+    """Create a private state directory without traversing redirects."""
+    pending_root = get_hermes_home() / "pending"
+    try:
+        relative = path.relative_to(pending_root)
+    except ValueError as exc:
+        raise RuntimeError("approval-state directory escaped pending root") from exc
+
+    candidates = [pending_root]
+    current = pending_root
+    for part in relative.parts:
+        current = current / part
+        candidates.append(current)
+
+    for directory in candidates:
+        created = False
+        try:
+            status = directory.lstat()
+        except FileNotFoundError:
+            try:
+                directory.mkdir(mode=0o700)
+                created = True
+                status = directory.lstat()
+            except FileExistsError:
+                # It was absent at lstat, so a concurrent creator won. Validate
+                # it as private state and still sync the observed parent entry.
+                created = True
+                status = directory.lstat()
+        if _is_path_redirect(directory) or not stat.S_ISDIR(status.st_mode):
+            raise RuntimeError(f"unsafe approval-state directory: {directory}")
+        _secure_state_path(directory, 0o700)
+        if created:
+            _fsync_dir(directory.parent)
+
+
+def _secure_existing_posix_path(path: Path, *, directory: bool) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if directory and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        current = os.fstat(fd)
+        expected = stat.S_ISDIR(current.st_mode) if directory else stat.S_ISREG(current.st_mode)
+        if not expected:
+            raise RuntimeError(f"unsafe approval-state path type: {path}")
+        os.fchmod(fd, 0o700 if directory else 0o600)
+    finally:
+        os.close(fd)
+
+
+def _secure_existing_approval_state() -> None:
+    """Fail-closed migration for state created by pre-private-store versions."""
+    root = get_hermes_home() / "pending"
+    try:
+        root_status = root.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(root_status.st_mode) or _is_path_redirect(root):
+        raise RuntimeError("unsafe approval-state root")
+
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        if _WINDOWS:
+            _restrict_windows_acl(directory)
+        else:
+            _secure_existing_posix_path(directory, directory=True)
+        try:
+            entries = list(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if _is_path_redirect(path):
+                    raise RuntimeError(f"unsafe approval-state redirect: {path}")
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    if _WINDOWS:
+                        _restrict_windows_acl(path)
+                    else:
+                        _secure_existing_posix_path(path, directory=False)
+                else:
+                    raise RuntimeError(f"unsafe approval-state path type: {path}")
+            except FileNotFoundError:
+                # A concurrent resolver may remove a private record after the
+                # directory scan. No path remains to expose or consume.
+                continue
+
+
+def _private_text_writer(path: Path):
+    """Open a brand-new owner-only UTF-8 file without a permissive-mode window."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        _secure_state_path(path, 0o600)
+        if not _WINDOWS and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    _ensure_dir(destination.parent)
+    os.replace(source, destination)
+    _fsync_dir(destination.parent)
+    if source.parent != destination.parent:
+        _fsync_dir(source.parent)
+
+
+def _durable_unlink(path: Path) -> None:
+    path.unlink()
+    _fsync_dir(path.parent)
+
+
+def _atomic_json_write(path: Path, value: Dict[str, Any]) -> None:
+    _ensure_dir(path.parent)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with _private_text_writer(tmp) as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _durable_replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            # Publication already succeeded and was durably fsynced. Cleanup is
+            # best-effort and must not make callers report the committed state
+            # transition as failed.
+            pass
+
+
+def _exclusive_json_create(path: Path, value: Dict[str, Any]) -> None:
+    """Durably publish JSON without replacing an existing destination."""
+    _ensure_dir(path.parent)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    published = False
+    try:
+        with _private_text_writer(tmp) as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(tmp, path)
+        published = True
+        _fsync_dir(path.parent)
+    except Exception:
+        if published:
+            try:
+                path.unlink()
+                _fsync_dir(path.parent)
+            except OSError:
+                pass
+        raise
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def get_resolution_receipt(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
+    """Return the sanitized resolution receipt, if this write was resolved."""
+    _secure_existing_approval_state()
+    path = _receipt_dir(subsystem) / f"{pending_id}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return None
+
+
+def claim_pending(
+    subsystem: str,
+    pending_id: str,
+    decision: str,
+    *,
+    now: Optional[float] = None,
+) -> tuple[str, Optional[Dict[str, Any]]]:
+    """Claim a pending write with locked, fail-closed stale recovery."""
+    _secure_existing_approval_state()
+    claimed_at = time.time() if now is None else float(now)
+    pending_path = _pending_dir(subsystem) / f"{pending_id}.json"
+    claim_path = _claim_dir(subsystem) / f"{pending_id}.json"
+    _ensure_dir(claim_path.parent)
+
+    with _pending_lock(subsystem, pending_id):
+        receipt = get_resolution_receipt(subsystem, pending_id)
+        if receipt is not None:
+            status = "resolved" if receipt.get("decision") == decision else "conflict"
+            return status, receipt
+
+        if claim_path.exists():
+            try:
+                active = json.loads(claim_path.read_text(encoding="utf-8"))
+                if not isinstance(active, dict):
+                    return "not_found", None
+                claim_mtime = claim_path.stat().st_mtime
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                return "not_found", None
+            active_decision = active.get("_resolution_decision")
+            if active_decision and active_decision != decision:
+                # An active opposing claim may still fail safely and restore the
+                # pending write. Only a durable receipt makes opposition terminal.
+                return "in_progress", None
+            if active.get("_claim_phase") != "claimed":
+                return "in_progress", None
+            active_claimed_at = active.get("_claimed_at")
+            claim_time = (
+                float(active_claimed_at)
+                if isinstance(active_claimed_at, (int, float))
+                else claim_mtime
+            )
+            if claimed_at - claim_time <= CLAIM_STALE_AFTER_SECONDS:
+                return "in_progress", None
+            if pending_path.exists():
+                return "in_progress", None
+            _durable_replace(claim_path, pending_path)
+
+        if not pending_path.exists():
+            receipt = get_resolution_receipt(subsystem, pending_id)
+            if receipt is not None:
+                status = "resolved" if receipt.get("decision") == decision else "conflict"
+                return status, receipt
+            return "not_found", None
+
+        _durable_replace(pending_path, claim_path)
+        try:
+            record = json.loads(claim_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError("pending record is not an object")
+            record["_resolution_decision"] = decision
+            record["_claimed_at"] = claimed_at
+            record["_claim_nonce"] = uuid.uuid4().hex
+            record["_claim_phase"] = "claimed"
+            _atomic_json_write(claim_path, record)
+            return "claimed", record
+        except Exception:
+            try:
+                if not pending_path.exists():
+                    _durable_replace(claim_path, pending_path)
+            except OSError:
+                pass
+            return "not_found", None
+
+
+def mark_claim_applying(
+    subsystem: str,
+    pending_id: str,
+    decision: str,
+    nonce: str,
+) -> bool:
+    """Durably mark a claim ambiguous before starting its side effect."""
+    _secure_existing_approval_state()
+    claim_path = _claim_dir(subsystem) / f"{pending_id}.json"
+    with _pending_lock(subsystem, pending_id):
+        try:
+            record = json.loads(claim_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                return False
+            if (
+                record.get("_resolution_decision") != decision
+                or record.get("_claim_nonce") != nonce
+                or record.get("_claim_phase") != "claimed"
+            ):
+                return False
+            record["_claim_phase"] = "applying"
+            _atomic_json_write(claim_path, record)
+            return True
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            return False
+
+
+def restore_pending_claim(subsystem: str, pending_id: str, nonce: str) -> bool:
+    """Restore a known-safe failed apply for retry by the user."""
+    _secure_existing_approval_state()
+    claim_path = _claim_dir(subsystem) / f"{pending_id}.json"
+    pending_path = _pending_dir(subsystem) / f"{pending_id}.json"
+    with _pending_lock(subsystem, pending_id):
+        try:
+            record = json.loads(claim_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or record.get("_claim_nonce") != nonce:
+                return False
+            if pending_path.exists():
+                return False
+            for key in (
+                "_resolution_decision",
+                "_claimed_at",
+                "_claim_nonce",
+                "_claim_phase",
+            ):
+                record.pop(key, None)
+            _atomic_json_write(claim_path, record)
+            _ensure_dir(pending_path.parent)
+            _durable_replace(claim_path, pending_path)
+            return True
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            return False
+
+
+def reject_invalid_pending_claim(
+    subsystem: str,
+    pending_id: str,
+    nonce: str,
+) -> bool:
+    """Quarantine a malformed claimed record without applying its payload."""
+    _secure_existing_approval_state()
+    claim_path = _claim_dir(subsystem) / f"{pending_id}.json"
+    receipt = {
+        "subsystem": subsystem,
+        "pending_id": pending_id,
+        "decision": "reject",
+        "reason": "invalid_origin",
+    }
+    with _pending_lock(subsystem, pending_id):
+        try:
+            record = json.loads(claim_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or record.get("_claim_nonce") != nonce:
+                return False
+            _atomic_json_write(_receipt_dir(subsystem) / f"{pending_id}.json", receipt)
+            _durable_unlink(claim_path)
+            return True
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            return False
+
+
+def finish_pending_claim(
+    subsystem: str,
+    pending_id: str,
+    decision: str,
+    nonce: str,
+) -> bool:
+    """Write a payload-free receipt before deleting the private claimed data."""
+    _secure_existing_approval_state()
+    claim_path = _claim_dir(subsystem) / f"{pending_id}.json"
+    receipt = {
+        "subsystem": subsystem,
+        "pending_id": pending_id,
+        "decision": decision,
+    }
+    with _pending_lock(subsystem, pending_id):
+        try:
+            if not claim_path.exists():
+                existing = get_resolution_receipt(subsystem, pending_id)
+                return bool(existing and existing.get("decision") == decision)
+            record = json.loads(claim_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(record, dict)
+                or record.get("_claim_nonce") != nonce
+                or record.get("_resolution_decision") != decision
+            ):
+                return False
+            _atomic_json_write(_receipt_dir(subsystem) / f"{pending_id}.json", receipt)
+            _durable_unlink(claim_path)
+            return True
+        except (OSError, ValueError, TypeError):
+            return False
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -125,34 +770,51 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
-    Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    Returns a dict with a collision-resistant ``id`` and metadata. Publishing
+    never overwrites pending, claim, or receipt state with the same identifier.
     """
-    pid = uuid.uuid4().hex[:8]
+    if subsystem not in _SUBSYSTEMS or origin not in _ORIGINS:
+        raise StagingError()
+    try:
+        _secure_existing_approval_state()
+    except Exception as e:
+        logger.error("Failed to secure existing approval state: %s", e, exc_info=True)
+        raise StagingError() from e
     record = {
-        "id": pid,
+        "id": "",
         "subsystem": subsystem,
         "action": payload.get("action", ""),
         "summary": (summary or "").strip(),
-        "origin": origin or "foreground",
+        "origin": origin,
         "created_at": time.time(),
         "payload": payload,
     }
     try:
-        d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as e:  # pragma: no cover - disk failure path
+        for _ in range(100):
+            pid = uuid.uuid4().hex
+            record["id"] = pid
+            with _pending_lock(subsystem, pid):
+                paths = (
+                    _pending_dir(subsystem) / f"{pid}.json",
+                    _claim_dir(subsystem) / f"{pid}.json",
+                    _receipt_dir(subsystem) / f"{pid}.json",
+                )
+                if any(path.exists() for path in paths):
+                    continue
+                try:
+                    _exclusive_json_create(paths[0], record)
+                    return record
+                except FileExistsError:
+                    continue
+        raise RuntimeError("could not allocate a unique pending id")
+    except Exception as e:
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
-    return record
+        raise StagingError() from e
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     """Return all pending records for ``subsystem``, oldest first."""
+    _secure_existing_approval_state()
     d = _pending_dir(subsystem)
     if not d.exists():
         return []
@@ -168,6 +830,7 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     """Return a single pending record by id, or None."""
+    _secure_existing_approval_state()
     path = _pending_dir(subsystem) / f"{pending_id}.json"
     if not path.exists():
         return None
@@ -179,6 +842,7 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
+    _secure_existing_approval_state()
     path = _pending_dir(subsystem) / f"{pending_id}.json"
     try:
         if path.exists():
@@ -191,6 +855,7 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
+    _secure_existing_approval_state()
     d = _pending_dir(subsystem)
     if not d.exists():
         return 0
@@ -213,8 +878,13 @@ def current_origin() -> str:
     the default ``foreground``.
     """
     try:
-        from tools.skill_provenance import get_current_write_origin
-        return get_current_write_origin()
+        from tools.skill_provenance import BACKGROUND_REVIEW, get_current_write_origin
+
+        return (
+            BACKGROUND_REVIEW
+            if get_current_write_origin() == BACKGROUND_REVIEW
+            else "foreground"
+        )
     except Exception:
         return "foreground"
 
@@ -271,7 +941,14 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    try:
+        enabled = write_approval_enabled(subsystem)
+    except ConfigGateError:
+        return GateDecision(
+            blocked=True,
+            message="Write approval policy is unavailable; write blocked safely.",
+        )
+    if not enabled:
         return GateDecision(allow=True)
 
     background = is_background()

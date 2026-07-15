@@ -54,6 +54,20 @@ def capture(server):
 # ── JSON-RPC envelope ────────────────────────────────────────────────
 
 
+def test_emit_adds_stable_event_identity(server, monkeypatch):
+    frames = []
+    monkeypatch.setattr(server, "write_json", frames.append)
+
+    server._emit("message.complete", "session-1", {"text": "same"})
+
+    params = frames[0]["params"]
+    assert params["type"] == "message.complete"
+    assert params["session_id"] == "session-1"
+    assert isinstance(params["event_id"], str)
+    assert len(params["event_id"]) == 32
+
+
+
 def test_unknown_method(server):
     resp = server.handle_request({"id": "1", "method": "bogus"})
     assert resp["error"]["code"] == -32601

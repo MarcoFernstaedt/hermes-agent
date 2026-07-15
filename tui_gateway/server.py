@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1138,7 +1139,11 @@ def write_json(obj: dict) -> bool:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
-    params = {"type": event, "session_id": sid}
+    params = {
+        "type": event,
+        "session_id": sid,
+        "event_id": uuid.uuid4().hex,
+    }
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
@@ -3592,25 +3597,36 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+_PENDING_WRITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PRIVATE_WRITE_TOOLS = {"memory": "memory", "skill_manage": "skills"}
+
+
+def _safe_pending_write_id(value: object) -> str:
+    pending_id = str(value or "")
+    return pending_id if _PENDING_WRITE_ID_RE.fullmatch(pending_id) else ""
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
+    private_write = name in _PRIVATE_WRITE_TOOLS
     session = _sessions.get(sid)
     if session is not None:
-        try:
-            from agent.display import capture_local_edit_snapshot
+        if not private_write:
+            try:
+                from agent.display import capture_local_edit_snapshot
 
-            snapshot = capture_local_edit_snapshot(name, args)
-            if snapshot is not None:
-                session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
-        except Exception:
-            pass
+                snapshot = capture_local_edit_snapshot(name, args)
+                if snapshot is not None:
+                    session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
+            except Exception:
+                pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
         payload = {
             "tool_id": tool_call_id,
             "name": name,
-            "context": _tool_ctx(name, args),
+            "context": "Persistent write" if private_write else _tool_ctx(name, args),
         }
-        if _session_verbose(sid):
+        if _session_verbose(sid) and not private_write:
             args_text = _tool_args_text(args)
             if args_text:
                 payload["args_text"] = args_text
@@ -3620,7 +3636,10 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+    private_write = name in _PRIVATE_WRITE_TOOLS
+    payload: dict[str, object] = {"tool_id": tool_call_id, "name": name}
+    if not private_write:
+        payload["args"] = args
     session = _sessions.get(sid)
     snapshot = None
     started_at = None
@@ -3631,13 +3650,53 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if duration_s is not None:
         payload["duration_s"] = duration_s
     try:
-        payload["result"] = json.loads(result)
+        result_data = json.loads(result)
     except Exception:
-        payload["result"] = result
-    summary = _tool_summary(name, result, duration_s)
+        result_data = result
+    if not private_write:
+        payload["result"] = result_data
+    pending_id = (
+        _safe_pending_write_id(result_data.get("pending_id"))
+        if isinstance(result_data, dict)
+        else ""
+    )
+    staged_write = bool(
+        private_write
+        and isinstance(result_data, dict)
+        and result_data.get("success") is True
+        and result_data.get("staged") is True
+        and pending_id
+    )
+    if staged_write:
+        subsystem = _PRIVATE_WRITE_TOOLS[name]
+        session_profile_home = (_sessions.get(sid) or {}).get("profile_home")
+        event_profile = (
+            Path(str(session_profile_home)).name
+            if session_profile_home
+            else "current"
+        )
+        _emit(
+            "write_approval.request",
+            sid,
+            {
+                "subsystem": subsystem,
+                "pending_id": pending_id,
+                "profile": event_profile,
+                "summary": (
+                    "Memory change staged for review"
+                    if subsystem == "memory"
+                    else "Skill change staged for review"
+                ),
+            },
+        )
+    summary = (
+        ("Persistent write staged for review" if staged_write else "Persistent write processed")
+        if private_write
+        else _tool_summary(name, result, duration_s)
+    )
     if summary:
         payload["summary"] = summary
-    if _session_verbose(sid):
+    if _session_verbose(sid) and not private_write:
         result_text = _tool_result_text(result)
         if result_text:
             payload["result_text"] = result_text
@@ -3652,7 +3711,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         from agent.display import render_edit_diff_with_delta
 
         rendered: list[str] = []
-        if render_edit_diff_with_delta(
+        if not private_write and render_edit_diff_with_delta(
             name,
             result,
             function_args=args,
@@ -3719,6 +3778,16 @@ def _on_tool_progress(
         _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
         return
     if event_type.startswith("subagent."):
+        private_delegated_write = (
+            (event_type == "subagent.tool" and name in _PRIVATE_WRITE_TOOLS)
+            or bool(_kwargs.get("private_write_activity"))
+        )
+        if private_delegated_write:
+            # Delegated previews are built from child tool arguments. Clear them
+            # before constructing the canonical parent payload; it also feeds
+            # child mirrors, persistence, reconnect, and replay.
+            preview = None
+            args = None
         payload = {
             "goal": str(_kwargs.get("goal") or ""),
             "task_count": int(_kwargs.get("task_count") or 1),
@@ -3772,6 +3841,16 @@ def _on_tool_progress(
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
+        if private_delegated_write:
+            # Keep only non-content identity/status fields. Fail closed if a
+            # malformed/future emitter puts write data in other fields.
+            safe_keys = {
+                "task_count", "task_index", "subagent_id", "parent_id",
+                "child_session_id", "depth", "model", "tool_count",
+                "toolsets", "input_tokens", "output_tokens",
+                "reasoning_tokens", "api_calls", "tool_name", "status",
+            }
+            payload = {key: value for key, value in payload.items() if key in safe_keys}
         # subagent.text is the child's per-token reply, relayed solely to feed a
         # watch window's live mirror. It is meaningless on the parent session
         # (which shows the child via the spawn tree, not its reply body), so
@@ -14035,7 +14114,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, "names required")
 
     try:
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import load_config, mutate_config
         from hermes_cli.tools_config import (
             CONFIGURABLE_TOOLSETS,
             _apply_mcp_change,
@@ -14044,7 +14123,6 @@ def _(rid, params: dict) -> dict:
             _get_plugin_toolset_keys,
         )
 
-        cfg = load_config()
         valid_toolsets = {
             ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS
         } | _get_plugin_toolset_keys()
@@ -14053,13 +14131,12 @@ def _(rid, params: dict) -> dict:
         unknown = [name for name in toolset_targets if name not in valid_toolsets]
         toolset_targets = [name for name in toolset_targets if name in valid_toolsets]
 
-        if toolset_targets:
-            _apply_toolset_change(cfg, "cli", toolset_targets, action)
+        def apply_tools_change(cfg: dict) -> set[str]:
+            if toolset_targets:
+                _apply_toolset_change(cfg, "cli", toolset_targets, action)
+            return _apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
 
-        missing_servers = (
-            _apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
-        )
-        save_config(cfg)
+        missing_servers = mutate_config(apply_tools_change)
 
         session = _sessions.get(params.get("session_id", ""))
         info = (

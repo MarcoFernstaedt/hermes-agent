@@ -1256,6 +1256,15 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+def _load_write_approval_module():
+    try:
+        from tools import write_approval
+
+        return write_approval
+    except Exception:
+        return None
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
@@ -1266,10 +1275,12 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     if _skill_gate_bypass.get():
         return None
 
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        return None  # fail open
+    wa = _load_write_approval_module()
+    if wa is None:
+        return tool_error(
+            "Skill write approval is unavailable; write blocked safely.",
+            success=False,
+        )
 
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:
@@ -1287,7 +1298,12 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         old_string=payload_kwargs.get("old_string") or "",
         new_string=payload_kwargs.get("new_string") or "",
     )
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    try:
+        record = wa.stage_write(
+            wa.SKILLS, payload, summary=gist, origin=wa.current_origin()
+        )
+    except wa.StagingError:
+        return tool_error("Skill write could not be staged for approval.", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "gist": gist, "message": decision.message},
