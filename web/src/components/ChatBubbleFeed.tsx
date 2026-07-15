@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Copy,
   LoaderCircle,
+  Paperclip,
   RotateCcw,
   SendHorizontal,
   Square,
@@ -110,6 +111,7 @@ export function ChatBubbleFeed({
 }: ChatBubbleFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const slashRef = useRef<SlashPopoverHandle | null>(null);
   const nearBottomRef = useRef(true);
   const [unread, setUnread] = useState(false);
@@ -221,7 +223,9 @@ export function ChatBubbleFeed({
         {messages.length === 0 ? (
           <ChatEmptyState greeting={welcome.greeting} prompt={welcome.prompt} />
         ) : (
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 sm:gap-4">
+          // max-w-3xl keeps the transcript at a readable measure on wide
+          // screens — the column width ChatGPT/Claude converge on.
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 sm:gap-4">
             {messages.map((message) => {
               const user = message.role === "user";
               const assistant = message.role === "assistant";
@@ -416,7 +420,7 @@ export function ChatBubbleFeed({
       )}
 
       <div className="shrink-0 border-t border-current/15 bg-background-base/95 p-2.5 backdrop-blur sm:p-3 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] sm:pb-3">
-        <div className="relative mx-auto max-w-5xl">
+        <div className="relative mx-auto max-w-3xl">
           <SlashPopover
             ref={slashRef}
             input={composer}
@@ -428,6 +432,36 @@ export function ChatBubbleFeed({
           />
 
           <div className="flex items-end gap-2 rounded-xl border border-current/20 bg-foreground/5 p-2 focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/30">
+            {/* Explicit attach affordance — paste and drag-drop don't exist
+                on touch devices, so the paperclip is the only image path
+                on phones. */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              aria-hidden
+              tabIndex={-1}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []).filter(
+                  (file) => file.type.startsWith("image/"),
+                );
+                if (files.length) onImages(files);
+                event.target.value = "";
+              }}
+            />
+            <Button
+              ghost
+              size="icon"
+              disabled={disabled}
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach images"
+              title="Attach images"
+              className="mb-0.5 shrink-0 text-text-secondary hover:text-foreground"
+            >
+              <Paperclip className="size-4" />
+            </Button>
             <textarea
               ref={composerRef}
               value={composer}

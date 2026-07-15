@@ -32,6 +32,10 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import {
+  connectResilientEventSocket,
+  isTerminalDashboardEventFailure,
+} from "@/lib/resilient-event-socket";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -216,49 +220,25 @@ export function ChatSidebar({
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
   // /api/events in hermes_cli/web_server.py for the broadcast hop.
   //
-  // Failures (auth/loopback rejection, server too old to expose the
-  // endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort
-  // UX and the user always has a reconnect affordance.
+  // Runs on the same resilient reconnect loop as ChatPage's feed
+  // subscription: transient drops (browser sleep, gateway restart, idle
+  // proxies) retry with backoff and clear the banner on recovery, so the
+  // red "events feed disconnected" state is reserved for auth-terminal
+  // failures instead of any momentary blip. The manual reconnect button
+  // (version bump) still tears down and rebuilds the whole socket.
   useEffect(() => {
     if (!channel) {
       return;
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
-    let unmounting = false;
-    let ws: WebSocket | null = null;
-    void (async () => {
-      const url = await buildWsUrl("/api/events", { channel });
-      if (unmounting) {
-        return;
-      }
-      ws = new WebSocket(url);
+    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
-
-      ws.addEventListener("error", () => surface(DISCONNECTED));
-
-      ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
-        }
-      });
-
-      ws.addEventListener("message", (ev) => {
+    const stop = connectResilientEventSocket({
+      buildUrl: () => buildWsUrl("/api/events", { channel }),
+      onMessage: (ev) => {
         let frame: RpcEnvelope;
 
         try {
-          frame = JSON.parse(ev.data);
+          frame = JSON.parse(String(ev.data));
         } catch {
           return;
         }
@@ -277,13 +257,21 @@ export function ChatSidebar({
         } else if (type === "dashboard.new_session_requested") {
           onDashboardNewSessionRequest?.();
         }
-      });
-    })();
+      },
+      onConnected: () => {
+        // Only clear our own banner — a credential warning or RPC-sidecar
+        // error from the other socket must survive an events-feed recovery.
+        setError((current) =>
+          current && current.startsWith("events feed") ? null : current,
+        );
+      },
+      onDisconnected: () => setError(DISCONNECTED),
+      isTerminalFailure: isTerminalDashboardEventFailure,
+      onTerminalFailure: ({ code }) =>
+        setError(`events feed rejected (${code ?? "auth"}) — reload the page`),
+    });
 
-    return () => {
-      unmounting = true;
-      ws?.close();
-    };
+    return stop;
   }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
