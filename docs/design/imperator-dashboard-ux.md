@@ -174,7 +174,19 @@ bugs):
 - Touch targets ≥44px on interactive chrome (nav links, tab bar, form
   buttons).
 
-## 4. Extending the dashboard
+## 4. Install & performance
+
+- The dashboard is **installable as an app** (PWA manifest + Imperator
+  icon set — gold laurel "I" on imperial night): Add to Home Screen on
+  phones/tablets launches it standalone with on-brand splash and status
+  bar (`theme-color #0f0b1e`).
+- Every management page is **code-split** into its own chunk; only the
+  shell and the persistent chat host load up front (ChatPage stays a
+  static import because the persistent host mounts it on app load).
+  Keep new pages behind `lazy()` in `App.tsx` so the phone's first
+  paint stays lean.
+
+## 5. Extending the dashboard
 
 When adding a page or feature:
 
