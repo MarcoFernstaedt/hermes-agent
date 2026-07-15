@@ -83,6 +83,7 @@ export const en: Translations = {
       sessions: "Sessions",
       skills: "Skills",
     },
+    searchLabel: "Search",
     navSections: {
       operate: "Operate",
       automate: "Automate",

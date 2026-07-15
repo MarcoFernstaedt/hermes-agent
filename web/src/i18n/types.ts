@@ -100,6 +100,9 @@ export interface Translations {
       sessions: string;
       skills: string;
     };
+    // Optional: command-palette search affordance label. Non-English locales
+    // fall back to the English literal until translated.
+    searchLabel?: string;
     // Optional: sidebar section headings + the mobile bottom-bar Menu tab.
     // Non-English locales fall back to the English literals until translated.
     navSections?: {

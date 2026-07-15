@@ -221,7 +221,19 @@ export function ChatBubbleFeed({
         aria-relevant="additions text"
       >
         {messages.length === 0 ? (
-          <ChatEmptyState greeting={welcome.greeting} prompt={welcome.prompt} />
+          <ChatEmptyState
+            greeting={welcome.greeting}
+            prompt={welcome.prompt}
+            suggestions={[
+              "What can you do for me?",
+              "Give me a status report",
+              "Help me plan my day",
+            ]}
+            onSuggestion={(suggestion) => {
+              onComposerChange(suggestion);
+              requestAnimationFrame(() => composerRef.current?.focus());
+            }}
+          />
         ) : (
           // max-w-3xl keeps the transcript at a readable measure on wide
           // screens — the column width ChatGPT/Claude converge on.

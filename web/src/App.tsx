@@ -44,6 +44,7 @@ import {
   Puzzle,
   Radio,
   RotateCw,
+  Search,
   Settings,
   Shield,
   ShieldCheck,
@@ -62,6 +63,10 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import {
+  CommandPalette,
+  type CommandPaletteItem,
+} from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
@@ -397,9 +402,28 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the app.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "k"
+      ) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -501,6 +525,44 @@ export default function App() {
     [manifests],
   );
 
+  // Every navigation destination becomes a palette item; the section name
+  // doubles as a hint and extra fuzzy-matchable text.
+  const paletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const sectionOf = (path: string): string | undefined => {
+      for (const section of NAV_SECTIONS) {
+        if (section.paths.includes(path)) {
+          return section.labelKey
+            ? (t.app.navSections?.[section.labelKey] ?? section.label)
+            : section.label;
+        }
+      }
+      return undefined;
+    };
+    const navLabel = (item: NavItem) =>
+      item.labelKey
+        ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+        : item.label;
+    const toItem = (item: NavItem, hint?: string): CommandPaletteItem => ({
+      id: item.path,
+      label: navLabel(item),
+      hint,
+      keywords: hint,
+      icon: item.icon,
+      run: () => {
+        navigate(item.path);
+        closeMobile();
+      },
+    });
+    return [
+      ...sidebarNav.coreItems.map((item) =>
+        toItem(item, item.path === "/chat" ? undefined : sectionOf(item.path)),
+      ),
+      ...sidebarNav.pluginItems.map((item) =>
+        toItem(item, t.app.pluginNavSection),
+      ),
+    ];
+  }, [sidebarNav, t, navigate, closeMobile]);
+
   useEffect(() => {
     if (!mobileOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -532,6 +594,12 @@ export default function App() {
     >
       <SelectionSwitcher />
 
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        items={paletteItems}
+      />
+
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0"
@@ -562,6 +630,16 @@ export default function App() {
         <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
           {t.app.brand}
         </Typography>
+
+        <Button
+          ghost
+          size="icon"
+          onClick={() => setPaletteOpen(true)}
+          aria-label="Search pages"
+          className="ml-auto text-text-secondary hover:text-midground"
+        >
+          <Search />
+        </Button>
       </header>
 
       {mobileOpen && (
@@ -643,6 +721,37 @@ export default function App() {
             </div>
 
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
+
+            <button
+              type="button"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Search pages (Ctrl+K)"
+              className={cn(
+                "mx-3 my-2 flex shrink-0 items-center gap-2 rounded border border-current/15 px-2.5 py-1.5",
+                "text-xs text-text-tertiary transition-colors cursor-pointer",
+                "hover:border-current/30 hover:text-midground",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                isDesktopCollapsed && "lg:mx-auto lg:border-transparent lg:px-1.5",
+              )}
+            >
+              <Search className="h-3.5 w-3.5 shrink-0" />
+              <span
+                className={cn(
+                  "flex-1 text-left",
+                  isDesktopCollapsed && "lg:hidden",
+                )}
+              >
+                {t.app.searchLabel ?? "Search"}
+              </span>
+              <kbd
+                className={cn(
+                  "rounded border border-current/20 px-1 text-xs",
+                  isDesktopCollapsed && "lg:hidden",
+                )}
+              >
+                ⌘K
+              </kbd>
+            </button>
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
