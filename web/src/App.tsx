@@ -623,7 +623,7 @@ export default function App() {
     <ProfileProvider>
     <div
       data-layout-variant="standard"
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      className="imperator-canvas flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
       style={{
         height: "var(--app-vvh, 100dvh)",
         maxHeight: "var(--app-vvh, 100dvh)",
@@ -654,17 +654,22 @@ export default function App() {
           "bg-background-base supports-[backdrop-filter]:bg-background-base/75 supports-[backdrop-filter]:backdrop-blur-xl",
         )}
       >
-        <Button
-          ghost
-          size="icon"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
-          aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
-        >
-          <Menu />
-        </Button>
+        {/* One drawer affordance per screen: the bottom tab bar's Menu is
+            it everywhere except /chat, where the bar is hidden and this
+            hamburger takes over. */}
+        {isChatRoute && (
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
+        )}
 
         <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
           {t.app.brand}

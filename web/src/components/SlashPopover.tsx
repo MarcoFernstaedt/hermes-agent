@@ -145,7 +145,10 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
     return (
       <div
         ref={listRef}
-        className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
+        // Phone-first sizing (Telegram-style command sheet): tall panel,
+        // comfortable tap rows, readable text. Tightens back to the compact
+        // desktop popover at ≥sm.
+        className="absolute bottom-full left-0 right-0 mb-2 max-h-[45vh] overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-md sm:max-h-64 sm:rounded-md"
         role="listbox"
       >
         {items.map((it, i) => {
@@ -162,16 +165,16 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               onClick={() => apply(it)}
               className={
                 active
-                  ? "px-3 py-1.5 bg-primary/15 text-primary ring-1 ring-inset ring-primary/35"
-                  : "px-3 py-1.5"
+                  ? "min-h-[44px] px-4 py-2.5 sm:min-h-0 sm:px-3 sm:py-1.5 bg-primary/15 text-primary ring-1 ring-inset ring-primary/35"
+                  : "min-h-[44px] px-4 py-2.5 sm:min-h-0 sm:px-3 sm:py-1.5"
               }
             >
-              <span className="font-mono text-xs shrink-0 truncate">
+              <span className="font-mono text-sm sm:text-xs shrink-0 truncate">
                 {it.display}
               </span>
 
               {it.meta && (
-                <span className="text-xs text-text-tertiary truncate ml-auto">
+                <span className="text-xs text-text-tertiary truncate ml-auto pl-3">
                   {it.meta}
                 </span>
               )}

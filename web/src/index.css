@@ -249,6 +249,31 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+/* Imperial canvas — the same subtle top glow + dot-grid idiom the /login
+   page uses, tuned faint enough to read as texture, not decoration. Applied
+   to the app shell root so login → dashboard feels like one continuous
+   surface. */
+.imperator-canvas {
+  background-image:
+    radial-gradient(
+      ellipse at top,
+      color-mix(in srgb, var(--midground-base) 5%, transparent) 0%,
+      transparent 55%
+    ),
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--midground-base) 2.5%, transparent) 0% 25%,
+      transparent 0% 50%
+    );
+  background-size: auto, 3px 3px;
+}
+
+/* Anchor jumps and programmatic scrolls glide instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;
