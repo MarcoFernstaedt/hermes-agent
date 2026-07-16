@@ -1345,35 +1345,37 @@ export default function SessionsPage() {
       </Dialog>
 
       {stats && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
-          <div className="flex flex-col">
+        // Phones get a single horizontally-scrollable stat strip (no tall
+        // wrapped stack eating the viewport); desktop keeps the wrapping row.
+        <div className="scrollbar-none flex items-center gap-x-6 gap-y-2 overflow-x-auto rounded-lg border border-border bg-background-base/40 px-4 py-3 sm:flex-wrap sm:overflow-visible">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
             <span className="text-xs text-muted-foreground">Total</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
             <span className="text-xs text-muted-foreground">Active in store</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
             <span className="text-xs text-muted-foreground">Archived</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
             <span className="text-xs text-muted-foreground">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <div className="flex min-w-0 flex-none items-center gap-1.5 sm:flex-1 sm:flex-wrap">
               {Object.entries(stats.by_source).map(([src, count]) => (
-                <Badge key={src} tone="outline" className="text-xs">
+                <Badge key={src} tone="outline" className="shrink-0 text-xs">
                   {src}: {count}
                 </Badge>
               ))}

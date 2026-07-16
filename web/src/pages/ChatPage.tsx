@@ -216,6 +216,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [composer, setComposer] = useState("");
   const [rawConsoleOpen, setRawConsoleOpen] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
+  // Count of in-flight history fetches — drives the feed's "Loading
+  // conversation…" state while a selected session hydrates.
+  const [hydrationsInFlight, setHydrationsInFlight] = useState(0);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetTokenRef = useRef(0);
   const optimisticCounterRef = useRef(0);
@@ -517,6 +520,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (!sessionId || hydratedSessionIdsRef.current.has(sessionId)) return;
       hydratedSessionIdsRef.current.add(sessionId);
       const requestGeneration = hydrationGenerationRef.current;
+      setHydrationsInFlight((count) => count + 1);
       void api
         .getSessionMessages(sessionId, scopedProfile)
         .then((response) => {
@@ -545,6 +549,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ) {
             hydratedSessionIdsRef.current.delete(sessionId);
           }
+        })
+        .finally(() => {
+          setHydrationsInFlight((count) => Math.max(0, count - 1));
         });
     };
 
@@ -703,6 +710,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     hydratedSessionIdsRef.current.add(resumeParam);
     const requestGeneration = hydrationGenerationRef.current;
     let cancelled = false;
+    setHydrationsInFlight((count) => count + 1);
     void api
       .getSessionMessages(resumeParam, scopedProfile)
       .then((response) => {
@@ -732,6 +740,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           hydratedSessionIdsRef.current.delete(resumeParam);
         }
         // The live event stream and lossless raw console remain usable.
+      })
+      .finally(() => {
+        setHydrationsInFlight((count) => Math.max(0, count - 1));
       });
     return () => {
       cancelled = true;
@@ -2024,6 +2035,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 composer={composer}
                 disabled={ptyState !== "open"}
                 writeApprovalDisabled={false}
+                hydrating={hydrationsInFlight > 0}
                 isWorking={agentRunning}
                 rawConsoleOpen={rawConsoleOpen}
                 focusSignal={reconnectNonce}

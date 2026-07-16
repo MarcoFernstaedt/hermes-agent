@@ -35,6 +35,8 @@ interface ChatBubbleFeedProps {
   composer: string;
   disabled?: boolean;
   writeApprovalDisabled?: boolean;
+  /** A selected session's history is being fetched into the feed. */
+  hydrating?: boolean;
   isWorking: boolean;
   rawConsoleOpen: boolean;
   focusSignal: number;
@@ -60,6 +62,42 @@ const roleLabel = (message: ChatFeedMessage): string => {
   if (message.role === "clarify") return "Input requested";
   return message.title || message.role;
 };
+
+/** Render a bubble timestamp; null for index-fallback pseudo-timestamps. */
+export function formatMessageTime(
+  timestamp: number,
+  now = new Date(),
+): string | null {
+  const ms = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
+  // Hydration uses the row index when a stored message has no timestamp —
+  // anything before ~2001 can't be a real message time.
+  if (ms < 1_000_000_000_000) return null;
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return time;
+  return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${time}`;
+}
+
+function MessageTime({ message }: { message: ChatFeedMessage }) {
+  const label = formatMessageTime(message.timestamp);
+  if (!label) return null;
+  return (
+    <time
+      dateTime={new Date(
+        message.timestamp < 10_000_000_000
+          ? message.timestamp * 1000
+          : message.timestamp,
+      ).toISOString()}
+      className="shrink-0 text-xs tracking-wide text-text-tertiary"
+    >
+      {label}
+    </time>
+  );
+}
 
 function statusLabel(message: ChatFeedMessage): string | null {
   if (message.status === "sending") return "Sending";
@@ -101,6 +139,7 @@ export function ChatBubbleFeed({
   composer,
   disabled = false,
   writeApprovalDisabled = disabled,
+  hydrating = false,
   isWorking,
   rawConsoleOpen,
   focusSignal,
@@ -135,15 +174,39 @@ export function ChatBubbleFeed({
     return () => cancelAnimationFrame(frame);
   }, [disabled, focusSignal]);
 
+  const prevMessageCountRef = useRef(0);
   useEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const previousCount = prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+
+    if (previousCount === 0 && messages.length > 0) {
+      // A session just hydrated: land near the latest exchange instantly,
+      // then glide the final stretch — the transcript arrives at the newest
+      // message instead of opening at the top of the history.
+      node.scrollTop = Math.max(
+        0,
+        node.scrollHeight - node.clientHeight * 2,
+      );
+      requestAnimationFrame(() => {
+        node.scrollTo({
+          top: node.scrollHeight,
+          behavior: reducedMotion ? "auto" : "smooth",
+        });
+      });
+      nearBottomRef.current = true;
+      setUnread(false);
+      return;
+    }
+
     if (nearBottomRef.current) {
       node.scrollTo({
         top: node.scrollHeight,
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
+        behavior: reducedMotion ? "auto" : "smooth",
       });
       setUnread(false);
     } else {
@@ -225,7 +288,16 @@ export function ChatBubbleFeed({
         aria-live="polite"
         aria-relevant="additions text"
       >
-        {messages.length === 0 ? (
+        {messages.length === 0 && hydrating ? (
+          <div
+            className="flex h-full min-h-40 flex-col items-center justify-center gap-3 text-text-tertiary"
+            aria-busy="true"
+            aria-live="polite"
+          >
+            <LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" />
+            <p className="text-sm text-text-secondary">Loading conversation…</p>
+          </div>
+        ) : messages.length === 0 ? (
           <ChatEmptyState
             greeting={welcome.greeting}
             prompt={welcome.prompt}
@@ -291,7 +363,10 @@ export function ChatBubbleFeed({
                       >
                         {roleLabel(message)}
                       </span>
-                      <MessageStatus message={message} />
+                      <span className="flex shrink-0 items-center gap-2">
+                        <MessageStatus message={message} />
+                        <MessageTime message={message} />
+                      </span>
                     </div>
 
                     {operational ? (
@@ -544,14 +619,37 @@ export function ChatBubbleFeed({
             </Button>
           </div>
 
-          <div className="mt-1.5 flex items-center justify-end px-1 text-[0.6875rem] text-text-tertiary">
+          <div className="mt-1.5 flex items-center justify-between gap-2 px-1 text-xs text-text-tertiary">
+            {/* Always-on agent state: the user can tell at a glance whether
+                Imperator is mid-run, idle, or the link is down. */}
+            <span className="inline-flex min-w-0 items-center gap-1.5" role="status">
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  disabled
+                    ? "bg-destructive"
+                    : isWorking
+                      ? "bg-warning animate-pulse motion-reduce:animate-none"
+                      : "bg-success",
+                )}
+              />
+              <span className="truncate">
+                {disabled
+                  ? "Reconnecting…"
+                  : isWorking
+                    ? "Imperator is working…"
+                    : "Idle — ready"}
+              </span>
+            </span>
+
             <Button
               ghost
               size="sm"
               onClick={onToggleRawConsole}
               aria-expanded={rawConsoleOpen}
               prefix={<TerminalSquare className="size-3" />}
-              className="h-7 px-1.5 text-[0.6875rem] normal-case tracking-normal"
+              className="h-7 shrink-0 px-1.5 text-xs normal-case tracking-normal"
             >
               {rawConsoleOpen ? "Hide raw console" : "Raw console"}
             </Button>

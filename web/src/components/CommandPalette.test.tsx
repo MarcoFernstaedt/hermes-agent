@@ -57,3 +57,30 @@ describe("CommandPalette", () => {
     expect(html).toBe("");
   });
 });
+
+// --- chat timestamp formatting -------------------------------------------
+import { formatMessageTime } from "./ChatBubbleFeed";
+
+describe("formatMessageTime", () => {
+  const now = new Date("2026-07-16T15:00:00");
+
+  it("renders time-only for same-day messages", () => {
+    const label = formatMessageTime(new Date("2026-07-16T14:32:00").getTime(), now);
+    expect(label).toMatch(/14:32|2:32/);
+  });
+
+  it("adds the date for older messages", () => {
+    const label = formatMessageTime(new Date("2026-07-14T09:05:00").getTime(), now);
+    expect(label).toMatch(/Jul 14/);
+  });
+
+  it("normalizes second-precision timestamps", () => {
+    const seconds = Math.floor(new Date("2026-07-16T14:32:00").getTime() / 1000);
+    expect(formatMessageTime(seconds, now)).toMatch(/14:32|2:32/);
+  });
+
+  it("returns null for index-fallback pseudo-timestamps", () => {
+    expect(formatMessageTime(3, now)).toBeNull();
+    expect(formatMessageTime(0, now)).toBeNull();
+  });
+});

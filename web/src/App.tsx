@@ -408,6 +408,65 @@ export default function App() {
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // Native-style touch gestures: swipe in from the left edge to open the
+  // navigation drawer; swipe left while it's open to close it. Vertical
+  // movement cancels the gesture so list scrolling never fights it, and
+  // touches inside a terminal pane are ignored entirely.
+  const mobileOpenRef = useRef(mobileOpen);
+  useEffect(() => {
+    mobileOpenRef.current = mobileOpen;
+  }, [mobileOpen]);
+  useEffect(() => {
+    let startX = 0;
+    let startY = 0;
+    let tracking: "open" | "close" | null = null;
+
+    const onTouchStart = (event: TouchEvent) => {
+      tracking = null;
+      if (window.innerWidth >= 1024) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".xterm, .hermes-chat-xterm-host")) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      if (mobileOpenRef.current) tracking = "close";
+      else if (touch.clientX <= 24) tracking = "open";
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (Math.abs(dy) > 60) {
+        tracking = null;
+        return;
+      }
+      if (tracking === "open" && dx > 56) {
+        setMobileOpen(true);
+        tracking = null;
+      } else if (tracking === "close" && dx < -56) {
+        setMobileOpen(false);
+        tracking = null;
+      }
+    };
+
+    const onTouchEnd = () => {
+      tracking = null;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, []);
+
   // Keyboard-aware app height. iOS Safari overlays the software keyboard
   // instead of resizing the layout viewport, hiding anything anchored to
   // the bottom (the chat composer, the tab bar). Track the visual
