@@ -43,7 +43,7 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Imperator — the dashboard's single color scheme: imperial gold
+/* Imperator — the dashboard's single color scheme: Imperator gold
    (aurum #e8c87a) chrome on a deep obsidian-violet canvas (#0f0b1e).
    These static :root values make the very first paint on-brand;
    ThemeProvider re-asserts the same values (see src/themes/presets.ts —
@@ -249,7 +249,7 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
-/* Imperial canvas — the same subtle top glow + dot-grid idiom the /login
+/* Imperator canvas — the same subtle top glow + dot-grid idiom the /login
    page uses, tuned faint enough to read as texture, not decoration. Applied
    to the app shell root so login → dashboard feels like one continuous
    surface. */

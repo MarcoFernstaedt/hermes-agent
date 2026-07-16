@@ -5,12 +5,12 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
  *
  * The dashboard intentionally ships a single color scheme — theme switching
  * was removed so the whole product carries one brand identity. The palette
- * is derived from the name "Imperator": imperial gold (aurum) chrome on a
+ * is derived from the name "Imperator": Imperator gold (aurum) chrome on a
  * deep obsidian-violet canvas — the Tyrian purple + gold of a Roman
  * imperator, tuned for WCAG-comfortable contrast on dark UI.
  *
- *   canvas   #0f0b1e — "imperial night" (near-black violet)
- *   accent   #e8c87a — "aurum" (imperial gold; primary text + chrome)
+ *   canvas   #0f0b1e — "Imperator night" (near-black violet)
+ *   accent   #e8c87a — "aurum" (Imperator gold; primary text + chrome)
  *
  * Contrast: #e8c87a on #0f0b1e ≈ 11:1; the DS derives text-secondary /
  * text-tertiary from midground alpha, both staying above 4.5:1.
@@ -42,7 +42,7 @@ const IMPERATOR_LAYOUT: ThemeLayout = {
 export const imperatorTheme: DashboardTheme = {
   name: "imperator",
   label: "Imperator",
-  description: "Imperial gold on deep violet — the Imperator scheme",
+  description: "Imperator gold on deep violet — the Imperator scheme",
   palette: {
     background: { hex: "#0f0b1e", alpha: 1 },
     midground: { hex: "#e8c87a", alpha: 1 },

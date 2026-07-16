@@ -14,8 +14,8 @@ login, dashboard, terminal:
 
 | Token | Value | Role |
 |-------|-------|------|
-| Canvas | `#0f0b1e` | "Imperial night" — deep obsidian violet |
-| Accent / primary text | `#e8c87a` | "Aurum" — imperial gold |
+| Canvas | `#0f0b1e` | "Imperator night" — deep obsidian violet |
+| Accent / primary text | `#e8c87a` | "Aurum" — Imperator gold |
 | Ivory foreground (login) | `#f6f1e4` | Headings / body on the login card |
 | Destructive | `#f0523f` | Errors, deletes |
 | Success | `#3dd68c` | Healthy states |
@@ -24,7 +24,7 @@ login, dashboard, terminal:
 | Terminal | `#0a0716` bg / `#f0e2c0` fg | Embedded TUI pane |
 
 Rationale: the name *Imperator* is Roman — the palette is Tyrian purple
-darkened to a near-black canvas with imperial gold chrome. Gold on deep
+darkened to a near-black canvas with Imperator gold chrome. Gold on deep
 violet holds ≈11:1 contrast (WCAG AAA for normal text); the DS derives
 `text-secondary` / `text-tertiary` from the accent and both stay above
 4.5:1.
@@ -177,7 +177,7 @@ bugs):
 ## 4. Install & performance
 
 - The dashboard is **installable as an app** (PWA manifest + Imperator
-  icon set — gold laurel "I" on imperial night): Add to Home Screen on
+  icon set — gold laurel "I" on Imperator night): Add to Home Screen on
   phones/tablets launches it standalone with on-brand splash and status
   bar (`theme-color #0f0b1e`).
 - Every management page is **code-split** into its own chunk; only the

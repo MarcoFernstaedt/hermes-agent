@@ -8,7 +8,7 @@ Visual styling builds on the Nous Research design system (the
 ``@nous-research/ui`` package the React dashboard uses): the same
 ``Collapse`` / ``Rules Compressed`` typeface, uppercase + wide-tracking
 brand chrome, and the inset-bevel button shadow, with the Imperator
-scheme: imperial gold on a deep obsidian-violet canvas (the same palette
+scheme: Imperator gold on a deep obsidian-violet canvas (the same palette
 the SPA applies — see ``web/src/themes/presets.ts``). Fonts are served
 out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
 already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
@@ -72,7 +72,7 @@ _LOGIN_HTML_TEMPLATE = """\
   }}
 
   :root {{
-    /* Imperator scheme — imperial gold on deep obsidian violet. Keep in
+    /* Imperator scheme — Imperator gold on deep obsidian violet. Keep in
        sync with the SPA (web/src/index.css + web/src/themes/presets.ts)
        so login → dashboard reads as one product. */
     --background-base: #0f0b1e;
