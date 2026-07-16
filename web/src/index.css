@@ -101,6 +101,9 @@ html {
      phone" causes. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* No gray tap flash on touch — interactive elements carry their own
+     active-state feedback instead. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -141,6 +144,9 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
     max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
+    /* Keep scrolls inside the app: no rubber-band chaining into the
+       browser chrome or accidental pull-to-refresh mid-list. */
+    overscroll-behavior-y: contain;
   }
 
   /* iOS Safari auto-zooms the whole page when a focused form control's

@@ -64,6 +64,11 @@ import {
 } from "@/lib/chat-feed-model";
 import { submitWriteApproval } from "@/lib/write-approval-flow";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import {
+  shouldQueueSend,
+  takeNextQueuedSend,
+  type QueuedSend,
+} from "@/lib/chat-send-queue";
 import { subscribeDashboardEvents } from "@/lib/event-channel-hub";
 import {
   createCurrentPtySocket,
@@ -500,6 +505,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     hydratedSessionIdsRef.current.clear();
     activeRuntimeSessionIdRef.current = null;
     activeStoredSessionIdRef.current = null;
+    queuedSendsRef.current = [];
     queueMicrotask(() => {
       if (!unmounting) {
         setFeedState(EMPTY_CHAT_FEED);
@@ -747,6 +753,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return true;
   }, []);
 
+  // Messages composed while the agent was mid-run, waiting to start their
+  // own turn. Flushed one per run-completion by the effect below.
+  const queuedSendsRef = useRef<QueuedSend[]>([]);
+
   const markOptimisticFailed = useCallback((id: string) => {
     setFeedState((state) => ({
       ...state,
@@ -789,6 +799,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         window.setTimeout(() => sendPtyText(text), 50);
         sent = true;
       }
+    } else if (
+      shouldQueueSend({
+        agentRunning,
+        isSlashCommand,
+        answeringClarify: Boolean(activeClarify),
+      })
+    ) {
+      // Mid-run: hold the message locally (bubble shows "Waiting to send")
+      // and let the flush effect below deliver it when this run completes.
+      // Writing it to the PTY now would steer the active turn instead of
+      // starting a new one.
+      queuedSendsRef.current.push({ id, text });
+      sent = true;
     } else {
       sent = sendPtyText(text);
     }
@@ -813,6 +836,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     }
   }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, sendPtyText]);
+
+  // Flush the send queue one message per idle transition: the first queued
+  // message goes out when the current run completes; its own completion
+  // re-fires this effect for the next one, preserving order and keeping
+  // each message a fresh turn rather than a steer.
+  useEffect(() => {
+    const next = takeNextQueuedSend(queuedSendsRef.current, agentRunning);
+    if (!next) return;
+    if (sendPtyText(next.text)) {
+      setFeedState((state) => ({
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === next.id ? { ...message, status: "sending" } : message,
+        ),
+      }));
+    } else {
+      markOptimisticFailed(next.id);
+    }
+  }, [agentRunning, markOptimisticFailed, sendPtyText]);
 
   const stopAgent = useCallback(() => {
     const ws = wsRef.current;

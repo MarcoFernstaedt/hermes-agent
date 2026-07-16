@@ -408,6 +408,35 @@ export default function App() {
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // Keyboard-aware app height. iOS Safari overlays the software keyboard
+  // instead of resizing the layout viewport, hiding anything anchored to
+  // the bottom (the chat composer, the tab bar). Track the visual
+  // viewport and pin the shell to its height while a keyboard is up so
+  // bottom chrome stays visible above it. Android/Chrome resizes the
+  // viewport itself (interactive-widget=resizes-content), so the
+  // threshold keeps this a no-op there.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const root = document.documentElement;
+    const update = () => {
+      const keyboardHeight = window.innerHeight - viewport.height;
+      if (keyboardHeight > 80) {
+        root.style.setProperty("--app-vvh", `${viewport.height}px`);
+      } else {
+        root.style.removeProperty("--app-vvh");
+      }
+    };
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    update();
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+      root.style.removeProperty("--app-vvh");
+    };
+  }, []);
+
   // ⌘K / Ctrl+K opens the command palette from anywhere in the app —
   // except inside a terminal pane, where Ctrl+K is a real shell binding
   // (kill-line) that must reach the PTY, not the palette.
@@ -595,6 +624,10 @@ export default function App() {
     <div
       data-layout-variant="standard"
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      style={{
+        height: "var(--app-vvh, 100dvh)",
+        maxHeight: "var(--app-vvh, 100dvh)",
+      }}
     >
       <SelectionSwitcher />
 
@@ -616,7 +649,9 @@ export default function App() {
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
-          "bg-background-base",
+          // Translucent blurred chrome — the native mobile-app bar look.
+          // Solid fallback where backdrop-filter is unsupported.
+          "bg-background-base supports-[backdrop-filter]:bg-background-base/75 supports-[backdrop-filter]:backdrop-blur-xl",
         )}
       >
         <Button
@@ -975,7 +1010,9 @@ function MobileBottomNav({
     cn(
       "relative flex min-h-[3.25rem] w-full flex-col items-center justify-center gap-0.5 px-1 py-1.5",
       "font-sans text-display text-xs tracking-[0.06em]",
-      "transition-colors cursor-pointer",
+      "transition-[color,opacity] cursor-pointer",
+      // Instant tactile feedback on tap, like a native tab bar.
+      "active:opacity-60",
       "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
       isActive ? "text-midground" : "text-text-secondary",
     );
@@ -985,7 +1022,9 @@ function MobileBottomNav({
       aria-label={t.app.navigation}
       className={cn(
         "lg:hidden fixed bottom-0 left-0 right-0 z-40",
-        "border-t border-current/20 bg-background-base",
+        "border-t border-current/20",
+        // Translucent blurred tab bar (iOS-style); solid fallback.
+        "bg-background-base supports-[backdrop-filter]:bg-background-base/75 supports-[backdrop-filter]:backdrop-blur-xl",
         "pb-[env(safe-area-inset-bottom,0px)]",
       )}
     >

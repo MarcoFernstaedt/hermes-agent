@@ -1,5 +1,6 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ const DS_BUTTON_OUTLINED_LINK_CN = cn(
 export default function DocsPage() {
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const [docsLoaded, setDocsLoaded] = useState(false);
 
   useLayoutEffect(() => {
     setEnd(
@@ -45,14 +47,24 @@ export default function DocsPage() {
   return (
     <div
       className={cn(
-        "flex min-h-0 w-full min-w-0 flex-1 flex-col",
+        "relative flex min-h-0 w-full min-w-0 flex-1 flex-col",
         "pt-1 sm:pt-2",
       )}
     >
       <PluginSlot name="docs:top" />
+      {!docsLoaded && (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center"
+          aria-busy="true"
+          aria-live="polite"
+        >
+          <Spinner className="text-2xl text-primary" />
+        </div>
+      )}
       <iframe
         title={t.app.nav.documentation}
         src={HERMES_DOCS_URL}
+        onLoad={() => setDocsLoaded(true)}
         className={cn(
           "min-h-0 w-full min-w-0 flex-1",
           "rounded-sm border border-current/20",
