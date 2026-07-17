@@ -219,7 +219,11 @@ function Block({
   switch (block.type) {
     case "code":
       return (
-        <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+        // tabIndex lets keyboard users focus and scroll wide code blocks.
+        <pre
+          tabIndex={0}
+          className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+        >
           <code>
             {block.content}
             {caret}

@@ -9,7 +9,6 @@ import {
   RotateCcw,
   SendHorizontal,
   Square,
-  TerminalSquare,
 } from "lucide-react";
 import {
   useCallback,
@@ -47,7 +46,6 @@ interface ChatBubbleFeedProps {
   historyWindowed?: boolean;
   onLoadOlderHistory?(): void;
   isWorking: boolean;
-  rawConsoleOpen: boolean;
   focusSignal: number;
   onComposerChange(value: string): void;
   onSubmit(): void;
@@ -60,7 +58,6 @@ interface ChatBubbleFeedProps {
   onWriteApproval(choice: "approve" | "reject", message: ChatFeedMessage): void;
   onClarify(answer: string, message: ChatFeedMessage): void;
   onImages(files: File[]): void;
-  onToggleRawConsole(): void;
 }
 
 const roleLabel = (message: ChatFeedMessage): string => {
@@ -135,7 +132,6 @@ export function ChatBubbleFeed({
   historyWindowed = false,
   onLoadOlderHistory,
   isWorking,
-  rawConsoleOpen,
   focusSignal,
   onComposerChange,
   onSubmit,
@@ -145,7 +141,6 @@ export function ChatBubbleFeed({
   onWriteApproval,
   onClarify,
   onImages,
-  onToggleRawConsole,
 }: ChatBubbleFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -710,16 +705,6 @@ export function ChatBubbleFeed({
               </span>
             </span>
 
-            <Button
-              ghost
-              size="sm"
-              onClick={onToggleRawConsole}
-              aria-expanded={rawConsoleOpen}
-              prefix={<TerminalSquare className="size-3" />}
-              className="h-7 shrink-0 px-1.5 text-xs normal-case tracking-normal"
-            >
-              {rawConsoleOpen ? "Hide raw console" : "Raw console"}
-            </Button>
           </div>
         </div>
       </div>

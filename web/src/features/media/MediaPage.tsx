@@ -52,7 +52,7 @@ function SpotifyPanel() {
           <CardContent className="space-y-5 py-6">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold">Spotify playback</h3>
+                <h2 className="text-lg font-semibold">Spotify playback</h2>
                 <p
                   className="text-sm text-muted-foreground"
                   role={status.status === "error" ? "alert" : "status"}
@@ -115,7 +115,7 @@ function SpotifyPanel() {
 
         <Card>
           <CardContent className="space-y-4 py-6">
-            <h3 className="font-semibold">Search Spotify</h3>
+            <h2 className="font-semibold">Search Spotify</h2>
             <form className="flex gap-2" role="search" onSubmit={submitSearch}>
               <label className="min-w-0 flex-1">
                 <span className="sr-only">Search tracks</span>
@@ -159,7 +159,7 @@ function SpotifyPanel() {
       <div className="space-y-4">
         <Card>
           <CardContent className="space-y-3 py-5">
-            <h3 className="font-semibold">Devices</h3>
+            <h2 className="font-semibold">Devices</h2>
             {spotify?.devices.length ? (
               <ul className="space-y-2">
                 {spotify.devices.map((device) => (
@@ -185,7 +185,7 @@ function SpotifyPanel() {
         </Card>
         <Card>
           <CardContent className="space-y-3 py-5">
-            <h3 className="font-semibold">Queue</h3>
+            <h2 className="font-semibold">Queue</h2>
             {spotify?.queue.length ? (
               <ol className="space-y-2">
                 {spotify.queue.map((item, index) => (
@@ -221,7 +221,7 @@ function AudiobookPanel() {
           <div className="flex items-center gap-3">
             <Headphones className="h-5 w-5" />
             <div>
-              <h3 className="font-semibold">{audiobook?.book ?? "Audiobook library"}</h3>
+              <h2 className="font-semibold">{audiobook?.book ?? "Audiobook library"}</h2>
               <p className="text-sm text-muted-foreground" role={state.audiobook.status === "error" ? "alert" : "status"} aria-live="polite">
                 {state.audiobook.message}
               </p>
@@ -255,7 +255,7 @@ function AudiobookPanel() {
 
       <Card>
         <CardContent className="py-4">
-          <h3 className="mb-3 font-semibold">Chapters</h3>
+          <h2 className="mb-3 font-semibold">Chapters</h2>
           <ol className="max-h-[28rem] space-y-1 overflow-y-auto">
             {audiobook?.chapters.map((chapter) => (
               <li key={chapter.id}>
@@ -285,7 +285,7 @@ function AppleMusicPanel() {
       <CardContent className="space-y-2 py-6">
         <div className="flex items-center gap-3">
           <Music className="h-5 w-5" />
-          <h3 className="font-semibold">Apple Music</h3>
+          <h2 className="font-semibold">Apple Music</h2>
         </div>
         <p className="text-sm text-muted-foreground" role="status">
           Planned and disabled. No Apple Music authorization, catalog, or playback requests are made.

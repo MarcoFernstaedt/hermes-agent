@@ -10,7 +10,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   MessageSquare,
   Search,
@@ -40,6 +39,7 @@ import type {
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { LoadMoreSentinel } from "@/components/LoadMoreSentinel";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
@@ -47,7 +47,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Card, CardContent, CardHeader } from "@nous-research/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -664,53 +664,6 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
-function SessionsPagination({
-  className,
-  compact = false,
-  onPageChange,
-  page,
-  total,
-}: SessionsPaginationProps) {
-  const { t } = useI18n();
-  const pageCount = Math.ceil(total / PAGE_SIZE);
-
-  return (
-    <div
-      className={`flex items-center ${compact ? "gap-1" : "justify-between pt-2"}${className ? ` ${className}` : ""}`}
-    >
-      {!compact && (
-        <span className="text-xs text-muted-foreground">
-          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-          {t.common.of} {total}
-        </span>
-      )}
-
-      <div className="flex items-center gap-1">
-        <Button
-          outlined
-          size="icon"
-          disabled={page === 0}
-          onClick={() => onPageChange(page - 1)}
-          aria-label={t.sessions.previousPage}
-        >
-          <ChevronLeft />
-        </Button>
-        <span className="px-2 text-xs text-muted-foreground">
-          {t.common.page} {page + 1} {t.common.of} {pageCount}
-        </span>
-        <Button
-          outlined
-          size="icon"
-          disabled={(page + 1) * PAGE_SIZE >= total}
-          onClick={() => onPageChange(page + 1)}
-          aria-label={t.sessions.nextPage}
-        >
-          <ChevronRight />
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 export default function SessionsPage() {
   const navigate = useNavigate();
@@ -718,6 +671,7 @@ export default function SessionsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<
@@ -807,20 +761,32 @@ export default function SessionsPage() {
   }, [setEnd]);
 
   const loadSessions = useCallback((p: number, silent = false) => {
-    // ``silent`` skips the loading spinner so background refreshes
+    // ``silent`` skips the loading spinners so background refreshes
     // (triggered when the overview poll detects a new session from
     // another process) don't flicker the whole page or drop the user's
-    // scroll position.
-    if (!silent) setLoading(true);
+    // scroll position. Silent refreshes re-fetch the WHOLE loaded window
+    // (pages 0..p) in one request so the accumulated infinite-scroll
+    // list stays consistent; page fetches append.
+    if (!silent) {
+      if (p === 0) setLoading(true);
+      else setLoadingMore(true);
+    }
+    const limit = silent ? (p + 1) * PAGE_SIZE : PAGE_SIZE;
+    const offset = silent ? 0 : p * PAGE_SIZE;
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(limit, offset)
       .then((resp) => {
-        setSessions(resp.sessions);
+        setSessions((prev) =>
+          silent || p === 0 ? resp.sessions : [...prev, ...resp.sessions],
+        );
         setTotal(resp.total);
       })
       .catch(() => {})
       .finally(() => {
-        if (!silent) setLoading(false);
+        if (!silent) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       });
   }, []);
 
@@ -892,13 +858,6 @@ export default function SessionsPage() {
   // instead of in a ``useEffect`` keeps us out of the
   // react-hooks/set-state-in-effect lint trap and the cascading
   // re-render it warns about.
-  const goToPage = useCallback(
-    (p: number) => {
-      setPage(p);
-      clearSelection();
-    },
-    [clearSelection],
-  );
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
@@ -1208,7 +1167,6 @@ export default function SessionsPage() {
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
   useEffect(() => {
     if (isSearching) setView("list");
@@ -1531,15 +1489,6 @@ export default function SessionsPage() {
             )}
           </div>
 
-          {showPagination && (
-            <SessionsPagination
-              compact
-              className="shrink-0 sm:ml-auto"
-              page={page}
-              total={total}
-              onPageChange={goToPage}
-            />
-          )}
         </div>
       ) : null}
 
@@ -1646,11 +1595,12 @@ export default function SessionsPage() {
               ))}
             </div>
 
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
+            {!searchResults && total > PAGE_SIZE && (
+              <LoadMoreSentinel
+                hasMore={sessions.length < total}
+                loading={loadingMore}
+                onLoadMore={() => setPage((p) => p + 1)}
+                endLabel="No more sessions"
               />
             )}
           </>
@@ -1667,9 +1617,9 @@ export default function SessionsPage() {
                 <div className="flex min-w-0 items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                    <CardTitle className="min-w-0 truncate text-base">
+                    <h2 className="font-expanded min-w-0 truncate text-base font-bold tracking-[0.08em] uppercase">
                       {t.status.recentSessions}
-                    </CardTitle>
+                    </h2>
                   </div>
                   <Button
                     ghost
@@ -1760,10 +1710,3 @@ interface SessionRowProps {
   snippet?: string;
 }
 
-interface SessionsPaginationProps {
-  className?: string;
-  compact?: boolean;
-  onPageChange: (page: number) => void;
-  page: number;
-  total: number;
-}

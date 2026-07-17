@@ -36,6 +36,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { LoadMoreSentinel } from "@/components/LoadMoreSentinel";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -75,6 +76,9 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
+
+const FILES_WINDOW_STEP = 100;
+
 export default function FilesPage() {
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -83,6 +87,14 @@ export default function FilesPage() {
   const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
   const [pathInput, setPathInput] = useState("");
   const [listing, setListing] = useState<ManagedFilesResponse | null>(null);
+  // Client-side windowing for big directories: render the first chunk and
+  // grow as the user scrolls (LoadMoreSentinel below the table).
+  const [visibleCount, setVisibleCount] = useState(FILES_WINDOW_STEP);
+  const [prevListing, setPrevListing] = useState(listing);
+  if (prevListing !== listing) {
+    setPrevListing(listing);
+    setVisibleCount(FILES_WINDOW_STEP);
+  }
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -395,7 +407,7 @@ export default function FilesPage() {
           ) : listing && listing.entries.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
           ) : (
-            listing?.entries.map((entry) => (
+            listing?.entries.slice(0, visibleCount).map((entry) => (
               <div
                 key={entry.path}
                 className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-sm last:border-b-0 hover:bg-background/35"
@@ -454,6 +466,15 @@ export default function FilesPage() {
           )}
         </CardContent>
       </Card>
+
+      {listing && listing.entries.length > FILES_WINDOW_STEP && (
+        <LoadMoreSentinel
+          hasMore={visibleCount < listing.entries.length}
+          loading={false}
+          onLoadMore={() => setVisibleCount((count) => count + FILES_WINDOW_STEP)}
+          endLabel="No more files"
+        />
+      )}
 
       <PluginSlot name="files:bottom" />
 

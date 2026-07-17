@@ -2232,6 +2232,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                rawConsoleOpen={rawConsoleOpen}
+                onToggleRawConsole={() => setRawConsoleOpen((v) => !v)}
               />
             </div>
             <ChatSessionList
@@ -2273,7 +2275,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 historyWindowed={olderHistory.windowed}
                 onLoadOlderHistory={loadOlderHistory}
                 isWorking={agentRunning}
-                rawConsoleOpen={rawConsoleOpen}
                 focusSignal={reconnectNonce}
                 onComposerChange={setComposer}
                 onSubmit={submitComposer}
@@ -2283,7 +2284,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 onWriteApproval={answerWriteApproval}
                 onClarify={answerClarify}
                 onImages={(files) => imageAttachRef.current(files)}
-                onToggleRawConsole={() => setRawConsoleOpen(true)}
               />
             }
             console={
@@ -2394,6 +2394,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                rawConsoleOpen={rawConsoleOpen}
+                onToggleRawConsole={() => setRawConsoleOpen((v) => !v)}
               />
             </div>
 

@@ -205,7 +205,13 @@ export default function DocsPage() {
 
       {/* Desktop rail. */}
       <aside className="hidden w-64 shrink-0 lg:block">
-        <div className="sticky top-0 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
+        <div
+          // Keyboard users can focus and scroll the docs tree directly.
+          tabIndex={0}
+          role="region"
+          aria-label="Documentation navigation"
+          className="sticky top-0 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+        >
           {sidebar}
         </div>
       </aside>
