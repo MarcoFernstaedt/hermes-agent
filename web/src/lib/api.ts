@@ -80,6 +80,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/media",
 ];
 
 function withManagementProfile(url: string): string {
@@ -279,6 +280,24 @@ export async function authedFetch(
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */
+/** Build a browser-loadable URL for an authenticated media element.
+ *
+ * Remote dashboards authenticate audio requests with the existing session
+ * cookie. Local desktop mode has no cookie and media elements cannot set the
+ * dashboard header, so the backend accepts its ephemeral process token only
+ * on the narrow audiobook stream route.
+ */
+export function buildAuthedAssetUrl(path: string): string {
+  const url = `${BASE}${path}`;
+  if (typeof window === "undefined" || window.__HERMES_AUTH_REQUIRED__) {
+    return url;
+  }
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
 export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
@@ -315,9 +334,122 @@ export interface WriteApprovalResponse {
   error?: string;
 }
 
+export type MediaProviderStatus =
+  | "ready"
+  | "needs_auth"
+  | "needs_device"
+  | "degraded";
+
+export interface SpotifyPlaybackSummary {
+  is_playing: boolean;
+  progress_ms: number | null;
+  item: {
+    name: string | null;
+    uri: string | null;
+    duration_ms: number | null;
+    artists: string[];
+  } | null;
+  device: {
+    id: string | null;
+    name: string | null;
+    volume_percent: number | null;
+  } | null;
+}
+
+export interface SpotifyMediaDevice {
+  id: string;
+  name: string | null;
+  type: string | null;
+  is_active: boolean;
+  is_restricted: boolean;
+  volume_percent: number | null;
+}
+
+export interface SpotifyMediaItem {
+  name: string | null;
+  uri: string | null;
+  duration_ms: number | null;
+  artists: string[];
+  album?: string | null;
+  image_url?: string | null;
+}
+
+export interface SpotifyMediaCapabilities {
+  playback: boolean;
+  search: boolean;
+  queue: boolean;
+  devices: boolean;
+  transfer: boolean;
+  seek: boolean;
+  volume: boolean;
+}
+
+export interface SpotifyMediaState {
+  capabilities: Partial<SpotifyMediaCapabilities>;
+  devices: SpotifyMediaDevice[];
+  provider: "spotify";
+  queue: SpotifyMediaItem[];
+  status: MediaProviderStatus;
+  message: string;
+  playback: SpotifyPlaybackSummary | null;
+}
+
+export interface SpotifySearchResults {
+  provider: "spotify";
+  query: string;
+  items: SpotifyMediaItem[];
+}
+
+export type SpotifyMediaCommand =
+  | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
+  | { action: "seek"; position_ms: number; device_id?: string }
+  | { action: "volume"; volume_percent: number; device_id?: string }
+  | { action: "transfer"; device_id: string; play?: boolean }
+  | { action: "queue" | "play_uri"; uri: string; device_id?: string };
+
+export interface AudiobookChapter {
+  id: string;
+  title: string;
+  order: number;
+  stream_url: string;
+}
+
+export interface AudiobookIndex {
+  book: string;
+  chapters: AudiobookChapter[];
+  progress: AudiobookProgress | null;
+}
+
+export interface AudiobookProgress {
+  chapter_id: string;
+  position_seconds: number;
+  duration_seconds: number;
+  playback_rate: number;
+}
+
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getSpotifyMediaState: () =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
+  controlSpotifyMedia: (command: SpotifyMediaCommand) =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(command),
+    }),
+  searchSpotifyMedia: (query: string, limit = 10) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/search?q=${encodeURIComponent(query)}&limit=${Math.min(Math.max(limit, 1), 20)}`,
+    ),
+  getAudiobookIndex: () =>
+    fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
+  saveAudiobookProgress: (progress: AudiobookProgress) =>
+    fetchJSON<AudiobookProgress>("/api/media/audiobooks/progress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(progress),
+    }),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *

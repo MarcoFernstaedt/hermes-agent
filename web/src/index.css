@@ -288,3 +288,8 @@ code { font-size: 0.875rem; }
     2px 2px;
 }
 
+/* Keep native routed content and mobile chat controls above the persistent media dock. */
+html[data-media-dock="active"] .media-dock-inset {
+  padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
+}
+

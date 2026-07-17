@@ -37,6 +37,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  Music,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -105,6 +106,8 @@ const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 import ChatPage from "@/pages/ChatPage";
+const MediaPage = lazy(() => import("@/features/media/MediaPage"));
+import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
@@ -145,6 +148,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/media": MediaPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -180,6 +184,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/media", label: "Media", icon: Music },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
@@ -233,7 +238,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/files", "/analytics", "/logs"],
+    paths: ["/sessions", "/media", "/files", "/analytics", "/logs"],
   },
   {
     id: "automate",
@@ -684,6 +689,7 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <MediaProvider>
     <div
       data-layout-variant="standard"
       className="imperator-canvas flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -965,7 +971,7 @@ export default function App() {
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "w-full min-w-0",
+                  "media-dock-inset w-full min-w-0",
                   // Mobile keeps extra bottom inset so content scrolls clear
                   // of the fixed bottom tab bar; desktop has no bar.
                   !isChatRoute &&
@@ -1046,6 +1052,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </MediaProvider>
     </ProfileProvider>
   );
 }

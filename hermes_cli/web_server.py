@@ -5,8 +5,8 @@ Provides a FastAPI backend serving the Vite/React frontend and REST API
 endpoints for managing configuration, environment variables, and sessions.
 
 Usage:
-    python -m hermes_cli.main web          # Start on http://127.0.0.1:9119
-    python -m hermes_cli.main web --port 8080
+    python -m hermes_cli.main dashboard          # Start on http://127.0.0.1:9119
+    python -m hermes_cli.main dashboard --port 8080
 """
 
 from contextlib import asynccontextmanager, contextmanager
@@ -270,8 +270,10 @@ app = FastAPI(
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+from hermes_cli.dashboard.media import router as _media_router  # noqa: E402
 
 app.include_router(_memory_oauth_router)
+app.include_router(_media_router)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -352,8 +354,20 @@ def _has_valid_session_token(request: Request) -> bool:
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
+def _query_token_path_allowed(path: str) -> bool:
+    """Keep query-token authentication confined to browser-native assets.
+
+    ``audio`` elements cannot attach the desktop session header. Remote
+    dashboards continue to use their auth cookie; this narrow path exists for
+    the ephemeral loopback token only.
+    """
+    return path in _QUERY_TOKEN_API_PATHS or bool(
+        re.fullmatch(r"/api/media/audiobooks/[a-f0-9]{24}/stream", path)
+    )
+
+
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if path not in _QUERY_TOKEN_API_PATHS:
+    if not _query_token_path_allowed(path):
         return False
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())

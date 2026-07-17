@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, buildAuthedAssetUrl } from "./api";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
@@ -45,6 +45,97 @@ describe("api.getModelOptions", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
+describe("buildAuthedAssetUrl", () => {
+  it("uses the ephemeral loopback token for native audio elements", () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback token" });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe(
+      "/api/media/audiobooks/chapter/stream?token=loopback%20token",
+    );
+  });
+
+  it("relies on cookie auth in gated mode", () => {
+    vi.stubGlobal("window", {
+      __HERMES_AUTH_REQUIRED__: true,
+      __HERMES_SESSION_TOKEN__: "must-not-appear",
+    });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe("/api/media/audiobooks/chapter/stream");
+  });
+});
+
+describe("media API", () => {
+  it("keeps Spotify mutations typed and authenticated", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({ provider: "spotify", status: "ready" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.controlSpotifyMedia({
+      action: "volume",
+      device_id: "device-1",
+      volume_percent: 55,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/spotify/control",
+      expect.objectContaining({
+        body: JSON.stringify({
+          action: "volume",
+          device_id: "device-1",
+          volume_percent: 55,
+        }),
+        credentials: "include",
+        method: "POST",
+      }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("bounds and encodes Spotify search", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ provider: "spotify", query: "focus & calm", items: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.searchSpotifyMedia("focus & calm", 20);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/spotify/search?q=focus%20%26%20calm&limit=20",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("scopes audiobook progress to the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      chapter_id: "0123456789abcdef01234567",
+      position_seconds: 10,
+      duration_seconds: 100,
+      playback_rate: 1.25,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { setManagementProfile } = await import("./api");
+    setManagementProfile("reader profile");
+
+    await api.saveAudiobookProgress({
+      chapter_id: "0123456789abcdef01234567",
+      position_seconds: 10,
+      duration_seconds: 100,
+      playback_rate: 1.25,
+    });
+    setManagementProfile("");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/audiobooks/progress?profile=reader%20profile",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });
 });
