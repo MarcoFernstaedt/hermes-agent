@@ -25,6 +25,8 @@ interface JobsViewProps {
   summary: JobsSummary | null;
   roles: JobRole[];
   filters: JobsFilters;
+  availableStatuses?: string[];
+  availableLanes?: string[];
   announcement?: string;
   pendingJobId?: number | null;
   updateError?: string;
@@ -59,6 +61,8 @@ export function JobsView({
   summary,
   roles,
   filters,
+  availableStatuses = [...JOB_STATUSES],
+  availableLanes,
   announcement = "",
   pendingJobId = null,
   updateError,
@@ -128,14 +132,14 @@ export function JobsView({
               Status
               <select className="min-h-11 rounded border border-border bg-background px-3" value={filters.status} onChange={updateFilter("status")}>
                 <option value="">All statuses</option>
-                {JOB_STATUSES.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+                {availableStatuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
               </select>
             </label>
             <label className="grid gap-1 text-sm">
               Lane
               <select className="min-h-11 rounded border border-border bg-background px-3" value={filters.lane} onChange={updateFilter("lane")}>
                 <option value="">All lanes</option>
-                {[...new Set(roles.map((role) => role.lane))].sort().map((lane) => <option key={lane} value={lane}>{titleCase(lane)}</option>)}
+                {(availableLanes || [...new Set(roles.map((role) => role.lane))].sort()).map((lane) => <option key={lane} value={lane}>{titleCase(lane)}</option>)}
               </select>
             </label>
             <label className="grid gap-1 text-sm">
@@ -157,6 +161,7 @@ export function JobsView({
                   const label = `${role.role_title} at ${role.company}`;
                   const pending = pendingJobId === role.id;
                   const selectedStatus = selectedStatuses[role.id] || role.status;
+                  const trackable = JOB_STATUSES.includes(role.status as JobStatus);
                   return (
                     <article key={role.id} className="rounded border border-border p-4" aria-labelledby={`job-${role.id}-heading`}>
                       <header className="flex items-start justify-between gap-3">
@@ -195,11 +200,12 @@ export function JobsView({
                       <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
                         <label className="grid gap-1 text-sm">
                           Status for {label}
-                          <select aria-label={`Status for ${label}`} className="min-h-11 rounded border border-border bg-background px-3" value={selectedStatus} disabled={pending || role.status === "offer_accepted"} onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}>
+                          <select aria-label={`Status for ${label}`} className="min-h-11 rounded border border-border bg-background px-3" value={selectedStatus} disabled={pending || !trackable || role.status === "offer_accepted"} onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}>
+                            {!trackable && <option value={role.status}>{statusLabel(role.status)}</option>}
                             {JOB_STATUSES.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
                           </select>
                         </label>
-                        <button type="button" aria-label={`Update status for ${label}`} className="min-h-11 rounded bg-primary px-4 text-primary-foreground disabled:opacity-50" disabled={pending || role.status === "offer_accepted" || selectedStatus === role.status} onClick={() => onStatusUpdate(role.id)}>{pending ? "Updating…" : "Update status"}</button>
+                        <button type="button" aria-label={`Update status for ${label}`} className="min-h-11 rounded bg-primary px-4 text-primary-foreground disabled:opacity-50" disabled={pending || !trackable || role.status === "offer_accepted" || selectedStatus === role.status} onClick={() => onStatusUpdate(role.id)}>{pending ? "Updating…" : "Update status"}</button>
                       </div>
                       {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-destructive">{updateError}</p>}
                     </article>
@@ -221,6 +227,10 @@ export default function JobsPage() {
   const [error, setError] = useState("");
   const [summary, setSummary] = useState<JobsSummary | null>(null);
   const [roles, setRoles] = useState<JobRole[]>([]);
+  const [availableStatuses, setAvailableStatuses] = useState<string[]>([
+    ...JOB_STATUSES,
+  ]);
+  const [availableLanes, setAvailableLanes] = useState<string[]>([]);
   const [filters, setFilters] = useState<JobsFilters>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<Record<number, JobStatus>>({});
   const [pendingJobId, setPendingJobId] = useState<number | null>(null);
@@ -238,7 +248,15 @@ export default function JobsPage() {
       ]);
       setRoles(list.items);
       setSummary(nextSummary);
-      setSelected(Object.fromEntries(list.items.map((role) => [role.id, role.status])));
+      setAvailableStatuses(list.filters.statuses);
+      setAvailableLanes(list.filters.lanes);
+      setSelected(
+        Object.fromEntries(
+          list.items
+            .filter((role) => JOB_STATUSES.includes(role.status as JobStatus))
+            .map((role) => [role.id, role.status as JobStatus]),
+        ),
+      );
       setState("ready");
     } catch {
       setError("Jobs could not load.");
@@ -267,7 +285,10 @@ export default function JobsPage() {
       setSummary(nextSummary);
       requestAnimationFrame(() => headingRefs.current[jobId]?.focus());
     } catch {
-      setSelected((current) => ({ ...current, [jobId]: role.status }));
+      setSelected((current) => ({
+        ...current,
+        [jobId]: role.status as JobStatus,
+      }));
       setUpdateError("Status was not updated.");
       setUpdateErrorJobId(jobId);
       setAnnouncement("Status was not updated.");
@@ -301,6 +322,8 @@ export default function JobsPage() {
         summary={summary}
         roles={roles}
         filters={filters}
+        availableStatuses={availableStatuses}
+        availableLanes={availableLanes}
         announcement={announcement}
         pendingJobId={pendingJobId}
         updateError={updateError}

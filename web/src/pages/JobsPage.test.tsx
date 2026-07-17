@@ -131,4 +131,21 @@ describe("JobsView", () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).not.toContain("Stop campaign now");
   });
+
+  it("renders source pipeline statuses as read-only tracking facts", () => {
+    const html = renderToStaticMarkup(
+      <JobsView
+        state="ready"
+        summary={summary}
+        roles={[{ ...role, status: "ineligible" } as JobRole]}
+        filters={{ status: "", lane: "", freshness: "", query: "" }}
+        {...handlers}
+      />,
+    );
+
+    expect(html).toContain("Ineligible");
+    expect(html).toMatch(
+      /aria-label="Status for Support Engineer at Example Co"[^>]*disabled=""/,
+    );
+  });
 });

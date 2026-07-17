@@ -148,6 +148,23 @@ def test_summary_keeps_packet_ready_distinct_and_uses_utc_day_week_boundaries(jo
     assert summary["campaign_stop"] is False
 
 
+def test_source_pipeline_statuses_remain_filterable_and_closed_counts_as_expired(
+    jobs_db,
+):
+    from hermes_cli.jobs.repository import JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    with sqlite3.connect(jobs_db) as connection:
+        connection.execute("UPDATE jobs SET status = 'closed' WHERE id = 1")
+
+    roles = repository.list_jobs(status="closed")
+    summary = repository.summary()
+
+    assert [role["id"] for role in roles] == [1]
+    assert summary["counts"]["expired"] == 1
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [

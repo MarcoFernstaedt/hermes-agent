@@ -41,7 +41,7 @@ export interface JobRole {
   gaps: string[];
   blockers: string[];
   recommended_action: string;
-  status: JobStatus;
+  status: string;
   updated_at: string;
   applied_at: string | null;
   checked_at: string | null;
@@ -50,7 +50,7 @@ export interface JobRole {
 }
 
 export interface JobsFilters {
-  status: JobStatus | "";
+  status: string;
   lane: string;
   freshness: JobFreshness | "";
   query: string;
@@ -60,7 +60,7 @@ export interface JobsListResponse {
   items: JobRole[];
   total: number;
   filters: {
-    statuses: JobStatus[];
+    statuses: string[];
     lanes: string[];
     freshness: JobFreshness[];
   };
@@ -103,7 +103,7 @@ export function buildJobsQuery(filters: JobsFilters): string {
   return encoded ? `?${encoded}` : "";
 }
 
-export function statusLabel(status: JobStatus): string {
+export function statusLabel(status: string): string {
   if (status === "packet_ready_not_applied") return "Packet ready — not applied";
   return status
     .split("_")

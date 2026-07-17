@@ -109,7 +109,12 @@ class JobRepository:
         now: datetime | None = None,
     ) -> list[dict]:
         if status is not None and status not in JOB_STATUSES:
-            raise ValueError("invalid status")
+            with self._connect() as connection:
+                known = connection.execute(
+                    "SELECT 1 FROM jobs WHERE status = ? LIMIT 1", (status,)
+                ).fetchone()
+            if known is None:
+                raise ValueError("invalid status")
         if freshness is not None and freshness not in {"active", "stale", "unknown"}:
             raise ValueError("invalid freshness")
         current = _utc(now or datetime.now(timezone.utc))
@@ -232,7 +237,7 @@ class JobRepository:
             "pending": status_counts.get("pending", 0),
             "interviewing": status_counts.get("interviewing", 0),
             "rejected": status_counts.get("rejected", 0),
-            "expired": status_counts.get("expired", 0),
+            "expired": status_counts.get("expired", 0) + status_counts.get("closed", 0),
             "offer_received": status_counts.get("offer_received", 0),
             "offer_accepted": status_counts.get("offer_accepted", 0),
         }

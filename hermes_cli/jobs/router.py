@@ -84,11 +84,14 @@ def create_jobs_router(authorize: Authorize) -> APIRouter:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         for item in items:
             item["assets"] = assets.list_for_job(item["id"])
+        source_statuses = sorted(
+            {item["status"] for item in all_items}.difference(JOB_STATUSES)
+        )
         return {
             "items": items,
             "total": len(items),
             "filters": {
-                "statuses": list(JOB_STATUSES),
+                "statuses": [*JOB_STATUSES, *source_statuses],
                 "lanes": sorted({item["lane"] for item in all_items}),
                 "freshness": ["active", "stale", "unknown"],
             },

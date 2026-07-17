@@ -56,6 +56,21 @@ def test_jobs_list_summary_and_asset_contract(jobs_db, packet_root, monkeypatch)
     assert asset.headers["cache-control"] == "private, no-store"
 
 
+def test_jobs_filter_metadata_includes_authoritative_source_statuses(
+    jobs_db, packet_root, monkeypatch
+):
+    import sqlite3
+
+    with sqlite3.connect(jobs_db) as connection:
+        connection.execute("UPDATE jobs SET status = 'ineligible' WHERE id = 1")
+    client = _router_client(jobs_db, packet_root, monkeypatch)
+
+    response = client.get("/api/jobs", headers={"x-test-auth": "ok"})
+
+    assert response.status_code == 200
+    assert "ineligible" in response.json()["filters"]["statuses"]
+
+
 def test_status_write_requires_same_origin_in_cookie_gated_mode(
     jobs_db, packet_root, monkeypatch
 ):
