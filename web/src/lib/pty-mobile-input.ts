@@ -16,6 +16,9 @@ function removeLastChar(text: string): string {
 }
 
 function isPlainText(data: string): boolean {
+  // Control characters are exactly what this predicate exists to detect —
+  // PTY input containing them must take the escape-aware path.
+  // eslint-disable-next-line no-control-regex
   return !/[\x00-\x1f\x7f]/.test(data);
 }
 

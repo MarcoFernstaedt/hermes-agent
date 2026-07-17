@@ -7265,9 +7265,12 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    from hermes_cli.browser_connect import ChromeDebugLaunch
+
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(launched=True),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}

@@ -10,6 +10,22 @@ import pytest
 import tui_gateway.server as server
 
 
+@pytest.fixture(autouse=True)
+def _fresh_state_db():
+    """Reopen state.db under THIS test's HERMES_HOME.
+
+    The canonical runner isolates files per process, but a plain
+    multi-file ``pytest`` run shares the module: ``server._db`` caches
+    the first SessionDB ever opened, which points at another test's
+    (or the real) hermes home and poisons discovery assertions here.
+    """
+    server._db = None
+    server._db_error = None
+    yield
+    server._db = None
+    server._db_error = None
+
+
 def _call(method, params=None):
     handler = server._methods[method]
     resp = handler(1, params or {})

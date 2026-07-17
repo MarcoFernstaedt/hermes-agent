@@ -60,10 +60,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  });
 
-  const refresh = useCallback(() => {
-    setLoading(true);
+  // The fetch itself never sets loading synchronously — `loading` starts
+  // true, and manual refreshes (event handlers) set it before calling —
+  // so the mount effect below stays free of cascading setState.
+  const load = useCallback(() => {
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
@@ -71,9 +75,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       .finally(() => setLoading(false));
   }, []);
 
+  const refresh = useCallback(() => {
+    setLoading(true);
+    load();
+  }, [load]);
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    load();
+  }, [load]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);

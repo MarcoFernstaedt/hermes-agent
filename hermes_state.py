@@ -944,7 +944,11 @@ class SessionDB:
     _OPTIMIZE_EVERY_N_WRITES = 1000
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Resolve lazily rather than using the module-level DEFAULT_DB_PATH
+        # snapshot: that constant freezes get_hermes_home() at import time,
+        # so a SessionDB opened after HERMES_HOME changes (profile scoping,
+        # test isolation) would silently bind the wrong home's state.db.
+        self.db_path = db_path or (get_hermes_home() / "state.db")
         self.read_only = read_only
 
         self._lock = threading.Lock()

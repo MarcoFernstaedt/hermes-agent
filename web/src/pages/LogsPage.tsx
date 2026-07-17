@@ -76,12 +76,14 @@ export default function LogsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  // Bare fetch for effects — auto-refresh must not flash the spinner and
+  // effects must not set state synchronously. The header refresh button
+  // uses refreshLogs, which shows the spinner.
   const fetchLogs = useCallback(() => {
-    setLoading(true);
-    setError(null);
     api
       .getLogs({ file, lines: lineCount, level, component })
       .then((resp) => {
+        setError(null);
         setLines(resp.lines);
         setTimeout(() => {
           if (scrollRef.current) {
@@ -92,6 +94,12 @@ export default function LogsPage() {
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
+
+  const refreshLogs = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetchLogs();
+  }, [fetchLogs]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -105,7 +113,7 @@ export default function LogsPage() {
           ghost
           size="icon"
           className="text-muted-foreground hover:text-foreground"
-          onClick={fetchLogs}
+          onClick={refreshLogs}
           disabled={loading}
           aria-label={t.common.refresh}
         >
@@ -148,7 +156,7 @@ export default function LogsPage() {
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
-    fetchLogs,
+    refreshLogs,
   ]);
 
   useEffect(() => {

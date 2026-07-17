@@ -31,12 +31,20 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
+
+        def _reset() -> None:
+            mod._sessions.clear()
+            mod._pending.clear()
+            mod._answers.clear()
+            mod._child_mirrors.clear()
+            mod._active_child_runs.clear()
+
+        # Reset on SETUP too: the module is process-global, so suites that
+        # ran earlier in the same session (e.g. test_tui_gateway_server.py)
+        # leave mirror/session state behind and poison the assertions here.
+        _reset()
         yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._child_mirrors.clear()
-        mod._active_child_runs.clear()
+        _reset()
 
 
 @pytest.fixture()
