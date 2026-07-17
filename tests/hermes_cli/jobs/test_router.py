@@ -121,7 +121,8 @@ def test_jobs_list_summary_and_asset_contract(jobs_db, packet_root, monkeypatch)
     assert "path" not in str(body["items"][0]["assets"]).lower()
     assert body["filters"]["statuses"]
     assert summary.status_code == 200
-    assert summary.json()["counts"]["qualified_packet_ready"] == 1
+    assert summary.json()["counts"]["packet_ready"] == 1
+    assert summary.json()["counts"]["total"] == 1
     assert asset.status_code == 200
     assert asset.content == b"packet"
     assert asset.headers["x-content-type-options"] == "nosniff"

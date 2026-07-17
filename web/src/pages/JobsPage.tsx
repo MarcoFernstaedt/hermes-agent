@@ -44,7 +44,8 @@ interface JobsViewProps {
 }
 
 const SUMMARY_ITEMS: Array<[keyof JobsSummary["counts"], string]> = [
-  ["qualified_packet_ready", "Packet ready"],
+  ["total", "Total jobs"],
+  ["packet_ready", "Packet ready"],
   ["applied", "Applied"],
   ["pending", "Pending response"],
   ["interviewing", "Interviewing"],
@@ -124,12 +125,12 @@ export function JobsView({
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <label className="rounded border border-border p-3">
-                <span className="flex justify-between"><span>Today prepared</span><span>{summary.today_prepared.current} / {summary.today_prepared.target}</span></span>
-                <progress className="mt-2 w-full" value={summary.today_prepared.current} max={summary.today_prepared.target} />
+                <span className="flex justify-between"><span>Agent today qualified</span><span>{summary.agent_today_qualified.current} / {summary.agent_today_qualified.target}</span></span>
+                <progress className="mt-2 w-full" value={summary.agent_today_qualified.current} max={summary.agent_today_qualified.target} />
               </label>
               <label className="rounded border border-border p-3">
-                <span className="flex justify-between"><span>Week applied</span><span>{summary.week_applied.current} / {summary.week_applied.target}</span></span>
-                <progress className="mt-2 w-full" value={summary.week_applied.current} max={summary.week_applied.target} />
+                <span className="flex justify-between"><span>Your week applied</span><span>{summary.your_week_applied.current} / {summary.your_week_applied.target}</span></span>
+                <progress className="mt-2 w-full" value={summary.your_week_applied.current} max={summary.your_week_applied.target} />
               </label>
             </div>
           </section>

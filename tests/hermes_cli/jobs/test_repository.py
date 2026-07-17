@@ -169,12 +169,129 @@ def test_list_jobs_exposes_only_http_external_links(jobs_db):
     assert job["apply_url"] == "https://apply.example/jobs/1"
 
 
-def test_summary_keeps_packet_ready_distinct_and_uses_utc_day_week_boundaries(jobs_db):
+def test_summary_counts_only_todays_qualified_live_validated_complete_packets(
+    jobs_db,
+):
     from hermes_cli.jobs.repository import JobRepository
 
     repository = JobRepository(jobs_db)
     repository.migrate()
     with sqlite3.connect(jobs_db) as connection:
+        for job_id, status, verdict, validated_at, checked_at, success, details in (
+            # Phoenix campaign day starts at 07:00Z. Only this row qualifies.
+            (
+                2,
+                "packet_ready_not_applied",
+                "apply",
+                "2026-07-17T07:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                3,
+                "applied",
+                "apply",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                4,
+                "packet_ready_not_applied",
+                "skip",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                5,
+                "packet_ready_not_applied",
+                "stretch",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                0,
+                "unavailable",
+            ),
+            (
+                6,
+                "packet_ready_not_applied",
+                "stretch",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "closed",
+            ),
+            (
+                7,
+                "packet_ready_not_applied",
+                "stretch",
+                "2026-07-17T08:00:00Z",
+                "2026-07-09T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                8,
+                "packet_ready_not_applied",
+                "stretch",
+                "2026-07-17T06:59:59Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+        ):
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, campaign_id, company, role_title, normalized_company_title,
+                    lane, location, work_mode, pay, source_url, canonical_apply_url,
+                    requisition_id, date_found, freshness_evidence,
+                    responsibilities_json, requirements_json, fit_score, verdict,
+                    fit_rationale, gaps_json, blockers_json, recommended_action,
+                    status, updated_at, applied_at
+                ) SELECT ?, campaign_id, ?, role_title, ?, lane, location, work_mode,
+                    pay, ?, ?, NULL, '2026-07-17', freshness_evidence,
+                    responsibilities_json, requirements_json, fit_score, ?,
+                    fit_rationale, gaps_json, blockers_json, recommended_action,
+                    ?, updated_at, NULL
+                FROM jobs WHERE id = 1
+                """,
+                (
+                    job_id,
+                    f"Example {job_id}",
+                    f"example {job_id}",
+                    f"https://source.example/jobs/{job_id}",
+                    f"https://apply.example/jobs/{job_id}",
+                    verdict,
+                    status,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO packets VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    job_id,
+                    f"Applications/{job_id}",
+                    f"Applications/{job_id}/Job Information.md",
+                    f"Applications/{job_id}/Application Packet.md",
+                    validated_at,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO validation_events VALUES (?, ?, 'freshness_check', ?, ?, ?, ?)",
+                (
+                    job_id,
+                    job_id,
+                    checked_at,
+                    f"https://source.example/jobs/{job_id}",
+                    success,
+                    details,
+                ),
+            )
+        # A packet row with missing required packet paths is not packet-complete.
         connection.execute(
             """
             INSERT INTO jobs (
@@ -185,27 +302,74 @@ def test_summary_keeps_packet_ready_distinct_and_uses_utc_day_week_boundaries(jo
                 fit_rationale, gaps_json, blockers_json, recommended_action,
                 status, updated_at, applied_at
             ) VALUES (
-                2, 1, 'Applied Co', 'Developer', 'applied co developer',
+                9, 1, 'Incomplete Co', 'Developer', 'incomplete co developer',
                 'junior_developer', 'Remote', 'Remote', NULL,
-                'https://source.example/jobs/2', 'https://apply.example/jobs/2',
-                NULL, '2026-07-16', NULL, '[]', '[]', 80, 'stretch',
-                'Fit', '[]', '[]', 'Wait', 'pending',
-                '2026-07-17T00:00:00Z', '2026-07-13T00:00:00Z'
+                'https://source.example/jobs/9', 'https://apply.example/jobs/9',
+                NULL, '2026-07-17', NULL, '[]', '[]', 80, 'stretch',
+                'Fit', '[]', '[]', 'Review', 'packet_ready_not_applied',
+                '2026-07-17T00:00:00Z', NULL
             )
             """
         )
         connection.execute(
-            "INSERT INTO packets VALUES (2, 2, 'Applications/Applied', 'Applications/Applied/Job Information.md', 'Applications/Applied/Application Packet.md', '2026-07-16T00:00:00Z')"
+            "INSERT INTO packets VALUES (9, 9, 'Applications/9', '', 'Applications/9/Application Packet.md', '2026-07-17T08:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO validation_events VALUES (9, 9, 'freshness_check', '2026-07-17T11:00:00Z', 'https://source.example/jobs/9', 1, 'active')"
         )
 
     summary = repository.summary(now=datetime(2026, 7, 17, 12, tzinfo=timezone.utc))
 
-    assert summary["counts"]["qualified_packet_ready"] == 1
-    assert summary["counts"]["applied"] == 0
-    assert summary["counts"]["pending"] == 1
-    assert summary["today_prepared"] == {"current": 1, "target": 300}
-    assert summary["week_applied"] == {"current": 1, "target": 1500}
+    assert summary["agent_today_qualified"] == {"current": 1, "target": 300}
+    assert summary["counts"]["packet_ready"] == 8
+    assert summary["counts"]["applied"] == 1
+    assert summary["counts"]["total"] == 9
     assert summary["campaign_stop"] is False
+
+
+def test_summary_uses_phoenix_week_boundaries_for_manual_applications(jobs_db):
+    from hermes_cli.jobs.repository import JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    with sqlite3.connect(jobs_db) as connection:
+        for job_id, applied_at in (
+            (2, "2026-07-13T06:59:59Z"),
+            (3, "2026-07-13T07:00:00Z"),
+            (4, "2026-07-20T06:59:59+00:00"),
+            (5, "2026-07-20T07:00:00Z"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, campaign_id, company, role_title, normalized_company_title,
+                    lane, location, work_mode, pay, source_url, canonical_apply_url,
+                    requisition_id, date_found, freshness_evidence,
+                    responsibilities_json, requirements_json, fit_score, verdict,
+                    fit_rationale, gaps_json, blockers_json, recommended_action,
+                    status, updated_at, applied_at
+                ) SELECT ?, campaign_id, ?, role_title, ?, lane, location, work_mode,
+                    pay, ?, ?, NULL, date_found, freshness_evidence,
+                    responsibilities_json, requirements_json, fit_score, verdict,
+                    fit_rationale, gaps_json, blockers_json, recommended_action,
+                    'pending', updated_at, ?
+                FROM jobs WHERE id = 1
+                """,
+                (
+                    job_id,
+                    f"Applied {job_id}",
+                    f"applied {job_id}",
+                    f"https://source.example/jobs/{job_id}",
+                    f"https://apply.example/jobs/{job_id}",
+                    applied_at,
+                ),
+            )
+
+    summary = repository.summary(now=datetime(2026, 7, 17, 12, tzinfo=timezone.utc))
+
+    assert summary["your_week_applied"] == {"current": 2, "target": 1500}
+    # Packet generation and packet-ready status never imply a manual application.
+    assert summary["counts"]["packet_ready"] == 1
 
 
 def test_source_pipeline_statuses_remain_filterable_and_closed_counts_as_expired(

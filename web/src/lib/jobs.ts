@@ -68,7 +68,8 @@ export interface JobsListResponse {
 
 export interface JobsSummary {
   counts: {
-    qualified_packet_ready: number;
+    total: number;
+    packet_ready: number;
     applied: number;
     pending: number;
     interviewing: number;
@@ -77,8 +78,8 @@ export interface JobsSummary {
     offer_received: number;
     offer_accepted: number;
   };
-  today_prepared: { current: number; target: number };
-  week_applied: { current: number; target: number };
+  agent_today_qualified: { current: number; target: number };
+  your_week_applied: { current: number; target: number };
   campaign_stop: boolean;
   as_of: string;
 }
