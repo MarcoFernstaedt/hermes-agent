@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  ListPlus,
   LoaderCircle,
   Paperclip,
   RotateCcw,
@@ -151,6 +152,12 @@ export function ChatBubbleFeed({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const slashGateway = useMemo(() => new GatewayClient(), []);
   const welcome = useMemo(() => getChatWelcome(), []);
+  // Mirrors chat-send-queue's rule: plain messages queue while the agent
+  // runs; slash commands always send immediately.
+  const willQueue =
+    isWorking &&
+    composer.trim().length > 0 &&
+    !composer.trimStart().startsWith("/");
   const { showToolCalls } = useAppSettings();
 
   // "Show tool activity" (chat panel setting) hides operational rows only —
@@ -650,7 +657,13 @@ export function ChatBubbleFeed({
               rows={1}
               disabled={disabled}
               aria-label="Message Imperator"
-              placeholder={disabled ? "Reconnecting…" : "Send Imperator a message"}
+              placeholder={
+                disabled
+                  ? "Reconnecting…"
+                  : isWorking
+                    ? "Imperator is working — messages will queue"
+                    : "Send Imperator a message"
+              }
               className="max-h-40 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 text-base leading-6 text-foreground outline-none placeholder:italic placeholder:text-text-disabled disabled:cursor-not-allowed sm:text-sm"
             />
             <Button
@@ -660,21 +673,25 @@ export function ChatBubbleFeed({
               aria-label={
                 isWorking && !composer.trim()
                   ? "Stop agent"
-                  : isWorking
-                    ? "Send while agent is working"
+                  : willQueue
+                    ? "Queue message — sends when Imperator finishes"
                     : "Send message"
               }
               title={
                 isWorking && !composer.trim()
                   ? "Stop agent"
-                  : isWorking
-                    ? "Send while agent is working"
+                  : willQueue
+                    ? "Queue message — sends when Imperator finishes"
                     : "Send message"
               }
               className="mb-0.5 shrink-0"
             >
               {isWorking && !composer.trim() ? (
                 <Square className="size-3.5 fill-current" />
+              ) : willQueue ? (
+                // While the agent is mid-run a plain message queues instead
+                // of steering — the button says so before the user commits.
+                <ListPlus className="size-4" />
               ) : (
                 <SendHorizontal className="size-4" />
               )}

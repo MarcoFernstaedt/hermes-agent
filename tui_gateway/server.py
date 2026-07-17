@@ -12904,8 +12904,11 @@ def _(rid, params: dict) -> dict:
                 "display": to_plain_text(c.display) if c.display else c.text,
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
+            # A bare "/" should surface the FULL command list — both the
+            # dashboard popover and the Ink TUI window/scroll their lists,
+            # so no small hard cap; 500 is a safety valve only.
             for c in completer.get_completions(doc, None)
-        ][:30]
+        ][:500]
         text_lower = text.lower()
         extras = [
             {

@@ -32,7 +32,10 @@ describe("busy chat composer", () => {
       <ChatBubbleFeed {...baseProps} composer="Please focus on the test failure" />,
     );
 
-    expect(html).toContain('aria-label="Send while agent is working"');
+    expect(html).toContain(
+      'aria-label="Queue message — sends when Imperator finishes"',
+    );
+    expect(html).toContain("messages will queue");
     expect(html).toContain("Please focus on the test failure");
     expect(html).not.toContain("/queue");
     expect(html).not.toContain("/steer");
