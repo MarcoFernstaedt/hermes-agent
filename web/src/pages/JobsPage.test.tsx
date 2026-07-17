@@ -6,7 +6,8 @@ import { JobsView } from "./JobsPage";
 
 const summary: JobsSummary = {
   counts: {
-    qualified_packet_ready: 75,
+    total: 99,
+    packet_ready: 75,
     applied: 2,
     pending: 3,
     interviewing: 4,
@@ -15,8 +16,8 @@ const summary: JobsSummary = {
     offer_received: 1,
     offer_accepted: 0,
   },
-  today_prepared: { current: 50, target: 300 },
-  week_applied: { current: 2, target: 1500 },
+  agent_today_qualified: { current: 50, target: 300 },
+  your_week_applied: { current: 2, target: 1500 },
   campaign_stop: false,
   as_of: "2026-07-17T12:00:00Z",
 };
@@ -166,7 +167,8 @@ describe("JobsView", () => {
     );
 
     for (const text of [
-      "Packet ready",
+      "Total jobs",
+      "Packet ready — not applied",
       "Applied",
       "Pending response",
       "Interviewing",
@@ -174,9 +176,14 @@ describe("JobsView", () => {
       "Expired / closed",
       "Offers",
       "Accepted offer",
-      "Today prepared",
-      "Week applied",
+      "Agent today qualified",
+      "Your week applied",
     ]) expect(html).toContain(text);
+    expect(html).toMatch(
+      /<h3[^>]*>Packet ready — not applied<\/h3>/,
+    );
+    expect(html).not.toContain("Today prepared");
+    expect(html).not.toContain("Week applied");
     expect(html).toContain("Example Co");
     expect(html).toContain("Support Engineer");
     expect(html).toContain("$25/hour");

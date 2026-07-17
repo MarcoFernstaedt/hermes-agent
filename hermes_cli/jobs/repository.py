@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from hermes_cli.jobs.models import ALLOWED_TRANSITIONS, JOB_STATUSES
 
@@ -17,6 +18,7 @@ ACTIONABLE_STATUSES = {
     "offer_received",
 }
 READ_TIMEOUT_SECONDS = 0.2
+CAMPAIGN_TIMEZONE = ZoneInfo("America/Phoenix")
 
 
 class JobNotFoundError(LookupError):
@@ -223,39 +225,69 @@ class JobRepository:
 
     def summary(self, *, now: datetime | None = None) -> dict:
         current = _utc(now or datetime.now(timezone.utc))
-        monday = (current - timedelta(days=current.weekday())).replace(
+        campaign_now = current.astimezone(CAMPAIGN_TIMEZONE)
+        day_start = campaign_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        monday = (campaign_now - timedelta(days=campaign_now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         next_monday = monday + timedelta(days=7)
+        day_start_utc = day_start.astimezone(timezone.utc)
+        monday_utc = monday.astimezone(timezone.utc)
+        next_monday_utc = next_monday.astimezone(timezone.utc)
+        live_since = current - timedelta(days=7)
         with self._connect(read_only=True) as connection:
             status_counts = dict(
                 connection.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status")
             )
-            qualified = connection.execute(
+            total = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            agent_today_qualified = connection.execute(
                 """
                 SELECT COUNT(DISTINCT j.id)
-                FROM jobs AS j JOIN packets AS p ON p.job_id = j.id
+                FROM jobs AS j
+                JOIN packets AS p ON p.job_id = j.id
+                JOIN validation_events AS v ON v.id = (
+                    SELECT newest.id FROM validation_events AS newest
+                    WHERE newest.job_id = j.id
+                    ORDER BY newest.checked_at DESC, newest.id DESC LIMIT 1
+                )
                 WHERE j.status = 'packet_ready_not_applied'
                   AND j.verdict IN ('apply', 'stretch')
-                """
-            ).fetchone()[0]
-            prepared = connection.execute(
-                """
-                SELECT COUNT(DISTINCT j.id)
-                FROM jobs AS j JOIN packets AS p ON p.job_id = j.id
-                WHERE j.date_found = ?
+                  AND TRIM(p.folder_path) <> ''
+                  AND TRIM(p.job_information_path) <> ''
+                  AND TRIM(p.application_packet_path) <> ''
+                  AND julianday(p.validated_at) >= julianday(?)
+                  AND julianday(p.validated_at) <= julianday(?)
+                  AND v.success = 1
+                  AND julianday(v.checked_at) >= julianday(?)
+                  AND julianday(v.checked_at) <= julianday(?)
+                  AND LOWER(COALESCE(v.details, '')) NOT LIKE '%closed%'
+                  AND LOWER(COALESCE(v.details, '')) NOT LIKE '%expired%'
+                  AND LOWER(COALESCE(v.details, '')) NOT LIKE '%removed%'
+                  AND LOWER(COALESCE(v.details, '')) NOT LIKE '%broken%'
                 """,
-                (current.date().isoformat(),),
+                (
+                    day_start_utc.isoformat(),
+                    current.isoformat(),
+                    live_since.isoformat(),
+                    current.isoformat(),
+                ),
             ).fetchone()[0]
             week_applied = connection.execute(
-                "SELECT COUNT(*) FROM jobs WHERE applied_at >= ? AND applied_at < ?",
+                """
+                SELECT COUNT(*) FROM status_events
+                WHERE to_status = 'applied'
+                  AND actor = 'dashboard'
+                  AND julianday(changed_at) >= julianday(?)
+                  AND julianday(changed_at) < julianday(?)
+                """,
                 (
-                    monday.isoformat().replace("+00:00", "Z"),
-                    next_monday.isoformat().replace("+00:00", "Z"),
+                    monday_utc.isoformat(),
+                    next_monday_utc.isoformat(),
                 ),
             ).fetchone()[0]
         counts = {
-            "qualified_packet_ready": qualified,
+            "total": total,
+            "packet_ready": status_counts.get("packet_ready_not_applied", 0),
             "applied": status_counts.get("applied", 0),
             "pending": status_counts.get("pending", 0),
             "interviewing": status_counts.get("interviewing", 0),
@@ -266,8 +298,11 @@ class JobRepository:
         }
         return {
             "counts": counts,
-            "today_prepared": {"current": prepared, "target": 300},
-            "week_applied": {"current": week_applied, "target": 1500},
+            "agent_today_qualified": {
+                "current": agent_today_qualified,
+                "target": 300,
+            },
+            "your_week_applied": {"current": week_applied, "target": 1500},
             "campaign_stop": counts["offer_accepted"] > 0,
             "as_of": current.isoformat().replace("+00:00", "Z"),
         }

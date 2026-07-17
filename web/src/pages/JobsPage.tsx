@@ -58,7 +58,8 @@ interface JobsViewProps {
 }
 
 const SUMMARY_ITEMS: Array<[keyof JobsSummary["counts"], string]> = [
-  ["qualified_packet_ready", "Packet ready"],
+  ["total", "Total jobs"],
+  ["packet_ready", "Packet ready — not applied"],
   ["applied", "Applied"],
   ["pending", "Pending response"],
   ["interviewing", "Interviewing"],
@@ -70,7 +71,7 @@ const SUMMARY_ITEMS: Array<[keyof JobsSummary["counts"], string]> = [
 
 /** Accent per pipeline stage so the summary and cards read at a glance. */
 const STATUS_TONES: Record<string, "success" | "warning" | "destructive" | "outline" | "secondary"> = {
-  qualified_packet_ready: "secondary",
+  packet_ready_not_applied: "secondary",
   applied: "outline",
   pending: "outline",
   interviewing: "warning",
@@ -231,8 +232,8 @@ export function JobsView({
               ))}
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <GoalBar label="Today prepared" current={summary.today_prepared.current} target={summary.today_prepared.target} />
-              <GoalBar label="Week applied" current={summary.week_applied.current} target={summary.week_applied.target} />
+              <GoalBar label="Agent today qualified" current={summary.agent_today_qualified.current} target={summary.agent_today_qualified.target} />
+              <GoalBar label="Your week applied" current={summary.your_week_applied.current} target={summary.your_week_applied.target} />
             </div>
           </section>
 
