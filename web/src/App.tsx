@@ -93,6 +93,7 @@ import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
 import MediaPage from "@/features/media/MediaPage";
+import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -485,6 +486,7 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <MediaProvider>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -731,7 +733,7 @@ export default function App() {
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "w-full min-w-0",
+                  "media-dock-inset w-full min-w-0",
                   !isChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
@@ -788,6 +790,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </MediaProvider>
     </ProfileProvider>
   );
 }
