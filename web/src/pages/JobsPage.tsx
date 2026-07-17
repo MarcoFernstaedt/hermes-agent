@@ -9,6 +9,7 @@ import {
 import { api } from "@/lib/api";
 import {
   JOB_STATUSES,
+  commitJobStatus,
   statusLabel,
   type JobFreshness,
   type JobRole,
@@ -28,6 +29,7 @@ interface JobsViewProps {
   availableStatuses?: string[];
   availableLanes?: string[];
   announcement?: string;
+  summaryStale?: boolean;
   pendingJobId?: number | null;
   updateError?: string;
   updateErrorJobId?: number | null;
@@ -35,6 +37,7 @@ interface JobsViewProps {
   onHeadingRef?: (jobId: number, element: HTMLHeadingElement | null) => void;
   onFiltersChange: (filters: JobsFilters) => void;
   onRetry: () => void;
+  onSummaryRetry?: () => void;
   onStatusSelect: (jobId: number, status: JobStatus) => void;
   onStatusUpdate: (jobId: number) => void;
   onAsset: (url: string, disposition: "inline" | "attachment", name: string) => void;
@@ -64,6 +67,7 @@ export function JobsView({
   availableStatuses = [...JOB_STATUSES],
   availableLanes,
   announcement = "",
+  summaryStale = false,
   pendingJobId = null,
   updateError,
   updateErrorJobId = null,
@@ -71,6 +75,7 @@ export function JobsView({
   onHeadingRef,
   onFiltersChange,
   onRetry,
+  onSummaryRetry,
   onStatusSelect,
   onStatusUpdate,
   onAsset,
@@ -103,6 +108,12 @@ export function JobsView({
           )}
           <section aria-labelledby="jobs-summary-heading">
             <h2 id="jobs-summary-heading" className="mb-3 text-lg font-semibold">Summary</h2>
+            {summaryStale && (
+              <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded border border-border p-3">
+                <span>Summary unavailable. Status counts may be stale.</span>
+                <button type="button" onClick={onSummaryRetry} className="min-h-11 rounded border px-4">Reload summary</button>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {SUMMARY_ITEMS.map(([key, label]) => (
                 <article key={key} className="rounded border border-border p-3">
@@ -237,6 +248,7 @@ export default function JobsPage() {
   const [updateError, setUpdateError] = useState("");
   const [updateErrorJobId, setUpdateErrorJobId] = useState<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [summaryStale, setSummaryStale] = useState(false);
   const headingRefs = useRef<Record<number, HTMLHeadingElement | null>>({});
 
   const load = useCallback(async () => {
@@ -248,6 +260,7 @@ export default function JobsPage() {
       ]);
       setRoles(list.items);
       setSummary(nextSummary);
+      setSummaryStale(false);
       setAvailableStatuses(list.filters.statuses);
       setAvailableLanes(list.filters.lanes);
       setSelected(
@@ -269,6 +282,17 @@ export default function JobsPage() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  const reloadSummary = async () => {
+    try {
+      setSummary(await api.getJobsSummary());
+      setSummaryStale(false);
+      setAnnouncement("Summary reloaded.");
+    } catch {
+      setSummaryStale(true);
+      setAnnouncement("Summary remains unavailable.");
+    }
+  };
+
 
   const updateStatus = async (jobId: number) => {
     const role = roles.find((item) => item.id === jobId);
@@ -278,11 +302,21 @@ export default function JobsPage() {
     setUpdateError("");
     setUpdateErrorJobId(null);
     try {
-      const result = await api.updateJobStatus(jobId, target);
-      setRoles((current) => current.map((item) => item.id === jobId ? { ...item, status: result.status, applied_at: result.applied_at, updated_at: result.updated_at } : item));
-      setAnnouncement(result.announcement);
-      const nextSummary = await api.getJobsSummary();
-      setSummary(nextSummary);
+      const committed = await commitJobStatus(
+        role,
+        target,
+        api.updateJobStatus,
+        api.getJobsSummary,
+      );
+      setRoles((current) => current.map((item) => item.id === jobId ? committed.role : item));
+      setSelected((current) => ({ ...current, [jobId]: committed.role.status as JobStatus }));
+      if (committed.summary) setSummary(committed.summary);
+      if (committed.summaryStale !== null) setSummaryStale(committed.summaryStale);
+      if (committed.conflict) {
+        setUpdateError("Status changed elsewhere. Review the current status and choose again.");
+        setUpdateErrorJobId(jobId);
+      }
+      setAnnouncement(committed.announcement);
       requestAnimationFrame(() => headingRefs.current[jobId]?.focus());
     } catch {
       setSelected((current) => ({
@@ -325,6 +359,7 @@ export default function JobsPage() {
         availableStatuses={availableStatuses}
         availableLanes={availableLanes}
         announcement={announcement}
+        summaryStale={summaryStale}
         pendingJobId={pendingJobId}
         updateError={updateError}
         updateErrorJobId={updateErrorJobId}
@@ -332,6 +367,7 @@ export default function JobsPage() {
         onHeadingRef={(jobId, element) => { headingRefs.current[jobId] = element; }}
         onFiltersChange={setFilters}
         onRetry={() => void load()}
+        onSummaryRetry={() => void reloadSummary()}
         onStatusSelect={(jobId, status) => setSelected((current) => ({ ...current, [jobId]: status }))}
         onStatusUpdate={(jobId) => void updateStatus(jobId)}
         onAsset={(url, disposition, name) => void openAsset(url, disposition, name)}

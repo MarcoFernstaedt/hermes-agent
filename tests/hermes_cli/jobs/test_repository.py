@@ -6,6 +6,18 @@ from datetime import datetime, timezone
 import pytest
 
 
+def test_read_connections_are_query_only(jobs_db):
+    from hermes_cli.jobs.repository import JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+
+    with repository._connect(read_only=True) as connection:
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("UPDATE jobs SET status = status")
+
+
 def test_migration_is_additive_idempotent_and_preserves_source_facts(jobs_db):
     from hermes_cli.jobs.repository import JobRepository
 
@@ -93,6 +105,54 @@ def test_list_jobs_filters_and_orders_actionable_fresh_roles(jobs_db):
     assert [job["id"] for job in filtered] == [2]
 
 
+def test_list_jobs_orders_equal_roles_by_checked_then_date_found(jobs_db):
+    from hermes_cli.jobs.repository import JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    with sqlite3.connect(jobs_db) as connection:
+        for job_id, date_found in (
+            (2, "2026-07-16"),
+            (3, "2026-07-17"),
+            (4, "2026-07-16"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, campaign_id, company, role_title, normalized_company_title,
+                    lane, location, work_mode, pay, source_url, canonical_apply_url,
+                    requisition_id, date_found, freshness_evidence,
+                    responsibilities_json, requirements_json, fit_score, verdict,
+                    fit_rationale, gaps_json, blockers_json, recommended_action,
+                    status, updated_at, applied_at
+                ) VALUES (?, 1, ?, 'Support Engineer', ?, 'technical_support',
+                    'Remote', 'Remote', NULL, ?, ?, NULL, ?, NULL, '[]', '[]',
+                    92, 'apply', 'Strong fit', '[]', '[]', 'Review packet',
+                    'packet_ready_not_applied', '2026-07-17T00:00:00Z', NULL)
+                """,
+                (
+                    job_id,
+                    f"Example {job_id}",
+                    f"example {job_id} support engineer",
+                    f"https://source.example/jobs/{job_id}",
+                    f"https://apply.example/jobs/{job_id}",
+                    date_found,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO validation_events VALUES (
+                2, 2, 'freshness_check', '2026-07-17T09:00:00Z',
+                'https://source.example/jobs/2', 1, 'active'
+            )
+            """
+        )
+
+    result = repository.list_jobs(now=datetime(2026, 7, 17, 12, tzinfo=timezone.utc))
+
+    assert [job["id"] for job in result] == [2, 1, 3, 4]
+
+
 def test_list_jobs_exposes_only_http_external_links(jobs_db):
     from hermes_cli.jobs.repository import JobRepository
 
@@ -165,6 +225,46 @@ def test_source_pipeline_statuses_remain_filterable_and_closed_counts_as_expired
     assert summary["counts"]["expired"] == 1
 
 
+def test_status_transition_rejects_a_stale_observation_without_overwriting(jobs_db):
+    from hermes_cli.jobs.repository import JobRepository, StaleJobError
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    first = repository.transition_status(
+        1,
+        "applied",
+        expected_status="packet_ready_not_applied",
+        expected_updated_at="2026-07-17T00:00:00Z",
+        changed_at=datetime(2026, 7, 17, 13, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(StaleJobError) as caught:
+        repository.transition_status(
+            1,
+            "withdrawn",
+            expected_status="packet_ready_not_applied",
+            expected_updated_at="2026-07-17T00:00:00Z",
+            changed_at=datetime(2026, 7, 17, 14, tzinfo=timezone.utc),
+        )
+
+    assert first["status"] == "applied"
+    assert caught.value.current == {
+        "id": 1,
+        "status": "applied",
+        "updated_at": "2026-07-17T13:00:00Z",
+        "applied_at": "2026-07-17T13:00:00Z",
+    }
+    with sqlite3.connect(jobs_db) as connection:
+        row = connection.execute(
+            "SELECT status, updated_at FROM jobs WHERE id = 1"
+        ).fetchone()
+        events = connection.execute(
+            "SELECT from_status, to_status FROM status_events ORDER BY id"
+        ).fetchall()
+    assert row == ("applied", "2026-07-17T13:00:00Z")
+    assert events == [("packet_ready_not_applied", "applied")]
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [
@@ -203,6 +303,8 @@ def test_every_valid_status_transition_is_audited(jobs_db, source, target):
     result = repository.transition_status(
         1,
         target,
+        expected_status=source,
+        expected_updated_at="2026-07-17T00:00:00Z",
         changed_at=datetime(2026, 7, 17, 13, tzinfo=timezone.utc),
     )
 
@@ -241,6 +343,8 @@ def test_invalid_status_transitions_change_nothing(jobs_db, source, target):
         repository.transition_status(
             1,
             target,
+            expected_status=source,
+            expected_updated_at="2026-07-17T00:00:00Z",
             changed_at=datetime(2026, 7, 17, 13, tzinfo=timezone.utc),
         )
 

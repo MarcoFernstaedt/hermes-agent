@@ -93,6 +93,77 @@ export interface JobStatusUpdate {
   announcement: string;
 }
 
+export interface JobStatusObservation {
+  expected_status: JobStatus;
+  expected_updated_at: string;
+}
+
+type UpdateJobStatus = (
+  jobId: number,
+  status: JobStatus,
+  observation: JobStatusObservation,
+) => Promise<JobStatusUpdate>;
+
+interface StatusConflictError {
+  status: number;
+  body?: {
+    current?: {
+      id: number;
+      status: string;
+      updated_at: string;
+      applied_at: string | null;
+    };
+  };
+}
+
+export async function commitJobStatus(
+  role: JobRole,
+  target: JobStatus,
+  update: UpdateJobStatus,
+  refreshSummary: () => Promise<JobsSummary>,
+) {
+  let result: JobStatusUpdate;
+  try {
+    result = await update(role.id, target, {
+      expected_status: role.status as JobStatus,
+      expected_updated_at: role.updated_at,
+    });
+  } catch (error) {
+    const conflict = error as StatusConflictError;
+    if (conflict.status !== 409 || !conflict.body?.current) throw error;
+    return {
+      role: { ...role, ...conflict.body.current },
+      summary: null,
+      summaryStale: null,
+      conflict: true,
+      announcement: "Status changed elsewhere. Review the current status before retrying.",
+    };
+  }
+  const committedRole = {
+    ...role,
+    status: result.status,
+    applied_at: result.applied_at,
+    updated_at: result.updated_at,
+  };
+  try {
+    return {
+      role: committedRole,
+      summary: await refreshSummary(),
+      summaryStale: false,
+      conflict: false,
+      announcement: result.announcement,
+    };
+  } catch {
+    return {
+      role: committedRole,
+      summary: null,
+      summaryStale: true,
+      conflict: false,
+      announcement: `${result.announcement} Summary unavailable.`,
+    };
+  }
+}
+
 export function buildJobsQuery(filters: JobsFilters): string {
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);

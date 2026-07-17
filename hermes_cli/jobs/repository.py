@@ -16,6 +16,7 @@ ACTIONABLE_STATUSES = {
     "interviewing",
     "offer_received",
 }
+READ_TIMEOUT_SECONDS = 0.2
 
 
 class JobNotFoundError(LookupError):
@@ -24,6 +25,12 @@ class JobNotFoundError(LookupError):
 
 class InvalidTransitionError(ValueError):
     pass
+
+
+class StaleJobError(RuntimeError):
+    def __init__(self, current: dict) -> None:
+        super().__init__("job changed since it was loaded")
+        self.current = current
 
 
 def _utc(value: datetime) -> datetime:
@@ -66,10 +73,18 @@ class JobRepository:
     def __init__(self, database_path: Path | str) -> None:
         self.database_path = Path(database_path)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, read_only: bool = False) -> sqlite3.Connection:
         if not self.database_path.is_file():
             raise FileNotFoundError("jobs database is not configured")
-        connection = sqlite3.connect(self.database_path)
+        if read_only:
+            connection = sqlite3.connect(
+                f"{self.database_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=READ_TIMEOUT_SECONDS,
+            )
+            connection.execute("PRAGMA query_only = ON")
+        else:
+            connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -109,7 +124,7 @@ class JobRepository:
         now: datetime | None = None,
     ) -> list[dict]:
         if status is not None and status not in JOB_STATUSES:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 known = connection.execute(
                     "SELECT 1 FROM jobs WHERE status = ? LIMIT 1", (status,)
                 ).fetchone()
@@ -144,7 +159,7 @@ class JobRepository:
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
 
-        with self._connect() as connection:
+        with self._connect(read_only=True) as connection:
             rows = connection.execute(sql, parameters).fetchall()
 
         jobs: list[dict] = []
@@ -188,11 +203,19 @@ class JobRepository:
                 "freshness": derived_freshness,
             })
         freshness_rank = {"active": 0, "unknown": 1, "stale": 2}
+
+        def ordering_timestamp(job: dict) -> float:
+            value = _parse_timestamp(job["checked_at"]) or _parse_timestamp(
+                job["date_found"]
+            )
+            return -value.timestamp() if value is not None else float("inf")
+
         jobs.sort(
             key=lambda job: (
                 0 if job["status"] in ACTIONABLE_STATUSES else 1,
                 -job["fit_score"],
                 freshness_rank[job["freshness"]],
+                ordering_timestamp(job),
                 job["id"],
             )
         )
@@ -204,7 +227,7 @@ class JobRepository:
             hour=0, minute=0, second=0, microsecond=0
         )
         next_monday = monday + timedelta(days=7)
-        with self._connect() as connection:
+        with self._connect(read_only=True) as connection:
             status_counts = dict(
                 connection.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status")
             )
@@ -254,6 +277,8 @@ class JobRepository:
         job_id: int,
         target_status: str,
         *,
+        expected_status: str,
+        expected_updated_at: str,
         changed_at: datetime | None = None,
     ) -> dict:
         if target_status not in JOB_STATUSES:
@@ -266,24 +291,45 @@ class JobRepository:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status, applied_at FROM jobs WHERE id = ?", (job_id,)
+                "SELECT id, status, updated_at, applied_at FROM jobs WHERE id = ?",
+                (job_id,),
             ).fetchone()
             if row is None:
                 raise JobNotFoundError("job not found")
+            if (
+                row["status"] != expected_status
+                or row["updated_at"] != expected_updated_at
+            ):
+                raise StaleJobError(dict(row))
             source_status = row["status"]
             if target_status not in ALLOWED_TRANSITIONS.get(source_status, frozenset()):
                 raise InvalidTransitionError("invalid status transition")
             applied_at = row["applied_at"]
             if target_status == "applied" and applied_at is None:
                 applied_at = timestamp
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE jobs
                 SET status = ?, updated_at = ?, applied_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = ? AND updated_at = ?
                 """,
-                (target_status, timestamp, applied_at, job_id),
+                (
+                    target_status,
+                    timestamp,
+                    applied_at,
+                    job_id,
+                    expected_status,
+                    expected_updated_at,
+                ),
             )
+            if updated.rowcount != 1:
+                current = connection.execute(
+                    "SELECT id, status, updated_at, applied_at FROM jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                if current is None:
+                    raise JobNotFoundError("job not found")
+                raise StaleJobError(dict(current))
             connection.execute(
                 """
                 INSERT INTO status_events

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import type { JobRole, JobsSummary } from "@/lib/jobs";
+import { commitJobStatus, type JobRole, type JobsSummary } from "@/lib/jobs";
 import { JobsView } from "./JobsPage";
 
 const summary: JobsSummary = {
@@ -65,6 +65,67 @@ const handlers = {
 };
 
 describe("JobsView", () => {
+  it("keeps a committed status when the summary refresh fails", async () => {
+    const update = vi.fn().mockResolvedValue({
+      job_id: 1,
+      from_status: "packet_ready_not_applied",
+      status: "applied",
+      updated_at: "2026-07-17T13:00:00Z",
+      applied_at: "2026-07-17T13:00:00Z",
+      campaign_stop: false,
+      announcement: "Status updated to Applied.",
+    });
+    const refreshSummary = vi.fn().mockRejectedValue(new Error("unavailable"));
+
+    const result = await commitJobStatus(
+      role,
+      "applied",
+      update,
+      refreshSummary,
+    );
+
+    expect(update).toHaveBeenCalledWith(1, "applied", {
+      expected_status: "packet_ready_not_applied",
+      expected_updated_at: "2026-07-17T12:00:00Z",
+    });
+    expect(result.role.status).toBe("applied");
+    expect(result.summary).toBeNull();
+    expect(result.summaryStale).toBe(true);
+    expect(result.announcement).toContain("Status updated to Applied.");
+    expect(result.announcement).not.toContain("not updated");
+  });
+
+  it("reconciles a 409 conflict and requires a deliberate retry", async () => {
+    const conflict = Object.assign(new Error("409: conflict"), {
+      status: 409,
+      body: {
+        detail: "Job status changed",
+        current: {
+          id: 1,
+          status: "applied",
+          updated_at: "2026-07-17T13:00:00Z",
+          applied_at: "2026-07-17T13:00:00Z",
+        },
+      },
+    });
+    const update = vi.fn().mockRejectedValue(conflict);
+    const refreshSummary = vi.fn();
+
+    const result = await commitJobStatus(
+      role,
+      "withdrawn",
+      update,
+      refreshSummary,
+    );
+
+    expect(result.role.status).toBe("applied");
+    expect(result.role.updated_at).toBe("2026-07-17T13:00:00Z");
+    expect(result.conflict).toBe(true);
+    expect(result.announcement).toContain("changed elsewhere");
+    expect(refreshSummary).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
   it("renders accessible loading, error, and empty states", () => {
     const loading = renderToStaticMarkup(
       <JobsView state="loading" summary={null} roles={[]} filters={{ status: "", lane: "", freshness: "", query: "" }} {...handlers} />,

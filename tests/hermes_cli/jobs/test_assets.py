@@ -7,6 +7,16 @@ from pathlib import Path
 import pytest
 
 
+def test_asset_inventory_connections_are_query_only(jobs_db, packet_root):
+    from hermes_cli.jobs.assets import JobAssetStore
+
+    store = JobAssetStore(jobs_db, packet_root)
+    with store._connect() as connection:
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("UPDATE assets SET path = path")
+
+
 def test_asset_metadata_and_resolution_never_expose_stored_paths(jobs_db, packet_root):
     from hermes_cli.jobs.assets import JobAssetStore
 

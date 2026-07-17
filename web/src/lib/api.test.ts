@@ -185,7 +185,10 @@ describe("jobs API", () => {
       freshness: "active",
       query: "analyst",
     });
-    await api.updateJobStatus(42, "pending");
+    await api.updateJobStatus(42, "pending", {
+      expected_status: "applied",
+      expected_updated_at: "2026-07-17T12:00:00Z",
+    });
 
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/jobs?status=applied&lane=quality_assurance&freshness=active&q=analyst",
@@ -194,7 +197,11 @@ describe("jobs API", () => {
     expect(fetchMock.mock.calls[1][1]).toEqual(
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ status: "pending" }),
+        body: JSON.stringify({
+          status: "pending",
+          expected_status: "applied",
+          expected_updated_at: "2026-07-17T12:00:00Z",
+        }),
       }),
     );
     const headers = fetchMock.mock.calls[1][1]?.headers as Headers;

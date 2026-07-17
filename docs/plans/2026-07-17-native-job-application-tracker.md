@@ -24,7 +24,7 @@
 
 - `HERMES_JOBS_DB_PATH` selects the SQLite database.
 - `HERMES_JOBS_PACKET_ROOT` selects the `Applications` packet root.
-- If unset, paths are derived from `Path.home()` plus the established Job Search layout; no `/home/marco` literal is committed.
+- If unset, paths are derived from `Path.home()` plus the established Job Search layout; no user-specific absolute home path is committed.
 - Tests always inject temporary paths and never open or mutate the live database.
 - A missing database/root produces a safe `503` JSON error and a useful frontend error state; it does not create an empty database in the configured location.
 
@@ -591,7 +591,7 @@ git diff --cached --name-only -z | xargs -0 python <redacted-pattern scanner>
 python <redacted-pattern scanner> web/dist
 ```
 
-The scanner reports only file/count/status (`clean` or `needs review`), never candidate secret values. Also assert tracked changes contain no `/home/marco`, no live DB bytes, no `.env`, and no absolute packet paths.
+The scanner reports only file/count/status (`clean` or `needs review`), never candidate secret values. Also assert tracked changes contain no user-specific absolute home path, no live DB bytes, no `.env`, and no absolute packet paths.
 
 Inspect:
 
