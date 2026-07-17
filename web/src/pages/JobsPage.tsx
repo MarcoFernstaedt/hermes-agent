@@ -45,7 +45,7 @@ interface JobsViewProps {
 
 const SUMMARY_ITEMS: Array<[keyof JobsSummary["counts"], string]> = [
   ["total", "Total jobs"],
-  ["packet_ready", "Packet ready"],
+  ["packet_ready", "Packet ready — not applied"],
   ["applied", "Applied"],
   ["pending", "Pending response"],
   ["interviewing", "Interviewing"],

@@ -158,7 +158,7 @@ describe("JobsView", () => {
 
     for (const text of [
       "Total jobs",
-      "Packet ready",
+      "Packet ready — not applied",
       "Applied",
       "Pending response",
       "Interviewing",
@@ -169,6 +169,9 @@ describe("JobsView", () => {
       "Agent today qualified",
       "Your week applied",
     ]) expect(html).toContain(text);
+    expect(html).toMatch(
+      /<h3[^>]*>Packet ready — not applied<\/h3>/,
+    );
     expect(html).not.toContain("Today prepared");
     expect(html).not.toContain("Week applied");
     expect(html).toContain("Example Co");

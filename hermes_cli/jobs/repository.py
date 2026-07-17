@@ -227,13 +227,11 @@ class JobRepository:
         current = _utc(now or datetime.now(timezone.utc))
         campaign_now = current.astimezone(CAMPAIGN_TIMEZONE)
         day_start = campaign_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
         monday = (campaign_now - timedelta(days=campaign_now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         next_monday = monday + timedelta(days=7)
         day_start_utc = day_start.astimezone(timezone.utc)
-        day_end_utc = day_end.astimezone(timezone.utc)
         monday_utc = monday.astimezone(timezone.utc)
         next_monday_utc = next_monday.astimezone(timezone.utc)
         live_since = current - timedelta(days=7)
@@ -258,26 +256,29 @@ class JobRepository:
                   AND TRIM(p.job_information_path) <> ''
                   AND TRIM(p.application_packet_path) <> ''
                   AND julianday(p.validated_at) >= julianday(?)
-                  AND julianday(p.validated_at) < julianday(?)
+                  AND julianday(p.validated_at) <= julianday(?)
                   AND v.success = 1
                   AND julianday(v.checked_at) >= julianday(?)
                   AND julianday(v.checked_at) <= julianday(?)
                   AND LOWER(COALESCE(v.details, '')) NOT LIKE '%closed%'
                   AND LOWER(COALESCE(v.details, '')) NOT LIKE '%expired%'
                   AND LOWER(COALESCE(v.details, '')) NOT LIKE '%removed%'
+                  AND LOWER(COALESCE(v.details, '')) NOT LIKE '%broken%'
                 """,
                 (
                     day_start_utc.isoformat(),
-                    day_end_utc.isoformat(),
+                    current.isoformat(),
                     live_since.isoformat(),
                     current.isoformat(),
                 ),
             ).fetchone()[0]
             week_applied = connection.execute(
                 """
-                SELECT COUNT(*) FROM jobs
-                WHERE julianday(applied_at) >= julianday(?)
-                  AND julianday(applied_at) < julianday(?)
+                SELECT COUNT(*) FROM status_events
+                WHERE to_status = 'applied'
+                  AND actor = 'dashboard'
+                  AND julianday(changed_at) >= julianday(?)
+                  AND julianday(changed_at) < julianday(?)
                 """,
                 (
                     monday_utc.isoformat(),

@@ -242,6 +242,51 @@ def test_summary_counts_only_todays_qualified_live_validated_complete_packets(
                 1,
                 "active",
             ),
+            (
+                10,
+                "packet_ready_not_applied",
+                "apply",
+                "2026-07-17T12:00:01Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                11,
+                "packet_ready_not_applied",
+                "apply",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T12:00:01Z",
+                1,
+                "active",
+            ),
+            (
+                12,
+                "ineligible",
+                "apply",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                13,
+                "duplicate",
+                "apply",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "active",
+            ),
+            (
+                14,
+                "packet_ready_not_applied",
+                "apply",
+                "2026-07-17T08:00:00Z",
+                "2026-07-17T11:00:00Z",
+                1,
+                "broken packet",
+            ),
         ):
             connection.execute(
                 """
@@ -321,9 +366,9 @@ def test_summary_counts_only_todays_qualified_live_validated_complete_packets(
     summary = repository.summary(now=datetime(2026, 7, 17, 12, tzinfo=timezone.utc))
 
     assert summary["agent_today_qualified"] == {"current": 1, "target": 300}
-    assert summary["counts"]["packet_ready"] == 8
+    assert summary["counts"]["packet_ready"] == 11
     assert summary["counts"]["applied"] == 1
-    assert summary["counts"]["total"] == 9
+    assert summary["counts"]["total"] == 14
     assert summary["campaign_stop"] is False
 
 
@@ -334,10 +379,11 @@ def test_summary_uses_phoenix_week_boundaries_for_manual_applications(jobs_db):
     repository.migrate()
     with sqlite3.connect(jobs_db) as connection:
         for job_id, applied_at in (
-            (2, "2026-07-13T06:59:59Z"),
+            (2, "2026-07-13T07:00:00Z"),
             (3, "2026-07-13T07:00:00Z"),
             (4, "2026-07-20T06:59:59+00:00"),
-            (5, "2026-07-20T07:00:00Z"),
+            (5, "2026-07-20T06:59:59Z"),
+            (6, "2026-07-13T08:00:00Z"),
         ):
             connection.execute(
                 """
@@ -364,10 +410,24 @@ def test_summary_uses_phoenix_week_boundaries_for_manual_applications(jobs_db):
                     applied_at,
                 ),
             )
+        connection.executemany(
+            """
+            INSERT INTO status_events
+                (job_id, from_status, to_status, changed_at, actor)
+            VALUES (?, 'packet_ready_not_applied', 'applied', ?, ?)
+            """,
+            (
+                (3, "2026-07-13T07:00:00Z", "dashboard"),
+                (4, "2026-07-20T06:59:59+00:00", "dashboard"),
+                (5, "2026-07-20T07:00:00Z", "dashboard"),
+                (6, "2026-07-13T08:00:00Z", "automation"),
+            ),
+        )
 
     summary = repository.summary(now=datetime(2026, 7, 17, 12, tzinfo=timezone.utc))
 
     assert summary["your_week_applied"] == {"current": 2, "target": 1500}
+    # Raw imported applied_at values and non-dashboard events never count.
     # Packet generation and packet-ready status never imply a manual application.
     assert summary["counts"]["packet_ready"] == 1
 
