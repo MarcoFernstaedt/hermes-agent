@@ -20,6 +20,15 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { buildJobsQuery } from "@/lib/jobs";
+import type {
+  JobStatus,
+  JobStatusObservation,
+  JobStatusUpdate,
+  JobsFilters,
+  JobsListResponse,
+  JobsSummary,
+} from "@/lib/jobs";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -90,6 +99,22 @@ function withManagementProfile(url: string): string {
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(
+    status: number,
+    message: string,
+    body: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
 }
 
 export async function fetchJSON<T>(
@@ -187,7 +212,13 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+    throw new ApiError(res.status, `${res.status}: ${text}`, body);
   }
   return res.json();
 }
@@ -450,6 +481,29 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(progress),
     }),
+  getJobs: (filters: JobsFilters) =>
+    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
+  getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+  updateJobStatus: (
+    jobId: number,
+    status: JobStatus,
+    observation: JobStatusObservation,
+  ) =>
+    fetchJSON<JobStatusUpdate>(`/api/jobs/${jobId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, ...observation }),
+    }),
+  fetchJobAsset: async (url: string) => {
+    if (!url.startsWith("/api/jobs/") || url.includes("token=")) {
+      throw new Error("Invalid job asset URL");
+    }
+    const response = await authedFetch(url);
+    if (!response.ok) {
+      throw new Error(`Asset request failed: ${response.status}`);
+    }
+    return response.blob();
+  },
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *

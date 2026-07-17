@@ -172,6 +172,9 @@ def _resolve_restart_drain_timeout() -> float:
 
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
+    from hermes_cli.jobs.router import initialize_jobs
+
+    initialize_jobs()
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -401,6 +404,13 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# Native Jobs routes reuse the dashboard's existing token/cookie authorization
+# assertion. Feature logic stays in the modular jobs package.
+from hermes_cli.jobs.router import create_jobs_router as _create_jobs_router  # noqa: E402
+
+app.include_router(_create_jobs_router(_require_token, initialize=False))
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
