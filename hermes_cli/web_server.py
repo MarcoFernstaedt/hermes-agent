@@ -256,7 +256,17 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
         return app.state.pty_active_session_files
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+# API docs live under /api/* so the dashboard SPA owns /docs (in-app
+# documentation); Swagger/ReDoc stay reachable for API exploration at
+# /api/docs behind the same auth middleware as the rest of the API.
+app = FastAPI(
+    title="Hermes Agent",
+    version=__version__,
+    lifespan=_lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402

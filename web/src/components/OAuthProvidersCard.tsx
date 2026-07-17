@@ -7,6 +7,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
+import { imperatorDocsHref } from "@/lib/imperator-branding";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -216,9 +217,13 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
                     <a
-                      href={p.docs_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      href={imperatorDocsHref(p.docs_url)}
+                      // Upstream docs links rewrite onto the in-app /docs
+                      // route and stay in this tab; anything else is a
+                      // provider site and opens in a new one.
+                      {...(imperatorDocsHref(p.docs_url).startsWith("/")
+                        ? {}
+                        : { target: "_blank", rel: "noopener noreferrer" })}
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
                     >

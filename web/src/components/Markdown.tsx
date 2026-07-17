@@ -2,21 +2,29 @@ import { useMemo, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
+ * Handles: code blocks, inline code, bold, italic, headers, links, lists,
+ * blockquotes, pipe tables, horizontal rules.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
  * appears to hug the final character instead of wrapping onto a new line
  * after a block element (paragraph/list/code/…).
+ *
+ * `transformText` rewrites prose at render time (display-level rebranding of
+ * doc content). It is applied to plain text, emphasis, headings, list items,
+ * and table cells — never to code blocks or inline code, so literal commands
+ * and identifiers pass through untouched.
  */
 export function Markdown({
   content,
   highlightTerms,
   streaming,
+  transformText,
 }: {
   content: string;
   highlightTerms?: string[];
   streaming?: boolean;
+  transformText?: (text: string) => string;
 }) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   const caret = streaming ? <StreamingCaret /> : null;
@@ -28,6 +36,7 @@ export function Markdown({
           key={i}
           block={block}
           highlightTerms={highlightTerms}
+          transformText={transformText}
           caret={caret && i === blocks.length - 1 ? caret : null}
         />
       ))}
@@ -54,6 +63,8 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "blockquote"; blocks: BlockNode[] }
+  | { type: "table"; header: string[]; rows: string[][] }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +113,42 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // Blockquote — strip the marker and re-parse the inner lines so quotes
+    // can carry paragraphs, lists, and nested emphasis.
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      blocks.push({ type: "blockquote", blocks: parseBlocks(quoteLines.join("\n")) });
+      continue;
+    }
+
+    // GFM pipe table: a |header| row followed by a |---|---| separator.
+    if (
+      /^\s*\|.*\|\s*$/.test(line) &&
+      i + 1 < lines.length &&
+      /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])
+    ) {
+      const splitRow = (row: string) =>
+        row
+          .trim()
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((cell) => cell.trim());
+      const header = splitRow(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      blocks.push({ type: "table", header, rows });
+      continue;
+    }
+
     // Unordered list
     if (/^[-*+]\s/.test(line)) {
       const items: string[] = [];
@@ -139,7 +186,9 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !lines[i].match(/^>\s?/) &&
+      !lines[i].match(/^\s*\|.*\|\s*$/)
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -159,10 +208,12 @@ function parseBlocks(text: string): BlockNode[] {
 function Block({
   block,
   highlightTerms,
+  transformText,
   caret,
 }: {
   block: BlockNode;
   highlightTerms?: string[];
+  transformText?: (text: string) => string;
   caret?: ReactNode;
 }) {
   switch (block.type) {
@@ -186,7 +237,11 @@ function Block({
       };
       return (
         <Tag className={sizes[Tag]}>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent
+            text={block.content}
+            highlightTerms={highlightTerms}
+            transformText={transformText}
+          />
           {caret}
         </Tag>
       );
@@ -209,7 +264,11 @@ function Block({
         >
           {block.items.map((item, i) => (
             <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} />
+              <InlineContent
+                text={item}
+                highlightTerms={highlightTerms}
+                transformText={transformText}
+              />
               {i === last ? caret : null}
             </li>
           ))}
@@ -217,10 +276,72 @@ function Block({
       );
     }
 
+    case "blockquote":
+      return (
+        <blockquote className="border-l-2 border-primary/40 bg-secondary/30 px-3 py-2 space-y-2">
+          {block.blocks.map((inner, i) => (
+            <Block
+              key={i}
+              block={inner}
+              highlightTerms={highlightTerms}
+              transformText={transformText}
+            />
+          ))}
+          {caret}
+        </blockquote>
+      );
+
+    case "table":
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                {block.header.map((cell, i) => (
+                  <th
+                    key={i}
+                    className="border border-border bg-secondary/40 px-2.5 py-1.5 text-left font-semibold"
+                  >
+                    <InlineContent
+                      text={cell}
+                      highlightTerms={highlightTerms}
+                      transformText={transformText}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td
+                      key={c}
+                      className="border border-border px-2.5 py-1.5 align-top"
+                    >
+                      <InlineContent
+                        text={cell}
+                        highlightTerms={highlightTerms}
+                        transformText={transformText}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {caret}
+        </div>
+      );
+
     case "paragraph":
       return (
         <p>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent
+            text={block.content}
+            highlightTerms={highlightTerms}
+            transformText={transformText}
+          />
           {caret}
         </p>
       );
@@ -285,11 +406,14 @@ function parseInline(text: string): InlineNode[] {
 function InlineContent({
   text,
   highlightTerms,
+  transformText,
 }: {
   text: string;
   highlightTerms?: string[];
+  transformText?: (text: string) => string;
 }) {
   const nodes = useMemo(() => parseInline(text), [text]);
+  const prose = (value: string) => (transformText ? transformText(value) : value);
 
   return (
     <>
@@ -299,7 +423,7 @@ function InlineContent({
             return (
               <HighlightedText
                 key={i}
-                text={node.content}
+                text={prose(node.content)}
                 terms={highlightTerms}
               />
             );
@@ -315,25 +439,33 @@ function InlineContent({
           case "bold":
             return (
               <strong key={i} className="font-semibold">
-                <HighlightedText text={node.content} terms={highlightTerms} />
+                <HighlightedText
+                  text={prose(node.content)}
+                  terms={highlightTerms}
+                />
               </strong>
             );
           case "italic":
             return (
               <em key={i}>
-                <HighlightedText text={node.content} terms={highlightTerms} />
+                <HighlightedText
+                  text={prose(node.content)}
+                  terms={highlightTerms}
+                />
               </em>
             );
           case "link": {
-            // Security: only render http(s)/mailto links. Other schemes
-            // (javascript:, data:, vbscript:) are dropped to plain text so a
-            // crafted link in agent/message content can't execute on click.
+            // Security: only render http(s)/mailto and site-relative links.
+            // Other schemes (javascript:, data:, vbscript:) are dropped to
+            // plain text so a crafted link in agent/message content can't
+            // execute on click.
             const href = node.href.trim();
-            if (!/^(https?:|mailto:)/i.test(href)) {
+            const isRelative = href.startsWith("/") && !href.startsWith("//");
+            if (!isRelative && !/^(https?:|mailto:)/i.test(href)) {
               return (
                 <HighlightedText
                   key={i}
-                  text={node.text}
+                  text={prose(node.text)}
                   terms={highlightTerms}
                 />
               );
@@ -342,11 +474,12 @@ function InlineContent({
               <a
                 key={i}
                 href={href}
-                target="_blank"
-                rel="noreferrer"
+                // Site-relative links stay in this tab (in-app navigation);
+                // external links open in a new one.
+                {...(isRelative ? {} : { target: "_blank", rel: "noreferrer" })}
                 className="text-primary underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60 transition-colors"
               >
-                {node.text}
+                {prose(node.text)}
               </a>
             );
           }

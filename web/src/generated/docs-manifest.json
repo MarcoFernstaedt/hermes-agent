@@ -1,0 +1,2444 @@
+[
+ {
+  "id": "getting-started",
+  "label": "Getting started",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "getting-started/quickstart",
+    "slug": "quickstart",
+    "title": "Quickstart"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/installation",
+    "slug": "installation",
+    "title": "Installation"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/platform-support",
+    "slug": "platform-support",
+    "title": "Platform Support"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/termux",
+    "slug": "termux",
+    "title": "Android / Termux"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/learning-path",
+    "slug": "learning-path",
+    "title": "Learning Path"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/nix-setup",
+    "slug": "nix-setup",
+    "title": "Nix & NixOS Setup"
+   },
+   {
+    "kind": "doc",
+    "page": "getting-started/updating",
+    "slug": "updating",
+    "title": "Updating & Uninstalling"
+   }
+  ]
+ },
+ {
+  "id": "user-guide",
+  "label": "User guide",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "user-guide/cli",
+    "slug": "cli",
+    "title": "CLI Interface"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/configuration",
+    "slug": "configuration",
+    "title": "Configuration"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/profiles",
+    "slug": "profiles",
+    "title": "Profiles: Running Multiple Agents"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/tui",
+    "slug": "tui",
+    "title": "TUI"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/windows-wsl-quickstart",
+    "slug": "windows-wsl-quickstart",
+    "title": "Windows (WSL2)"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/configuring-models",
+    "slug": "configuring-models",
+    "title": "Configuring Models"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/desktop",
+    "slug": "desktop",
+    "title": "Desktop App"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/git-worktrees",
+    "slug": "git-worktrees",
+    "title": "Git Worktrees"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/managed-scope",
+    "slug": "managed-scope",
+    "title": "Managed Scope"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/profile-distributions",
+    "slug": "profile-distributions",
+    "title": "Profile Distributions: Share a Whole Agent"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/windows-native",
+    "slug": "windows-native",
+    "title": "Windows (Native)"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/multi-profile-gateways",
+    "slug": "multi-profile-gateways",
+    "title": "Running Many Gateways at Once"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/docker",
+    "slug": "docker",
+    "title": "Docker"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/sessions",
+    "slug": "sessions",
+    "title": "Sessions"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/checkpoints-and-rollback",
+    "slug": "checkpoints-and-rollback",
+    "title": "Checkpoints & Rollback"
+   },
+   {
+    "kind": "doc",
+    "page": "user-guide/security",
+    "slug": "security",
+    "title": "Security"
+   },
+   {
+    "kind": "group",
+    "slug": "features",
+    "label": "Features",
+    "children": [
+     {
+      "kind": "doc",
+      "page": "user-guide/features/overview",
+      "slug": "overview",
+      "title": "Overview"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/tools",
+      "slug": "tools",
+      "title": "Tools & Toolsets"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/skills",
+      "slug": "skills",
+      "title": "Skills System"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/tool-gateway",
+      "slug": "tool-gateway",
+      "title": "Tool Gateway"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/curator",
+      "slug": "curator",
+      "title": "Curator"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/memory",
+      "slug": "memory",
+      "title": "Persistent Memory"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/mcp",
+      "slug": "mcp",
+      "title": "MCP (Model Context Protocol)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/memory-providers",
+      "slug": "memory-providers",
+      "title": "Memory Providers"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/browser",
+      "slug": "browser",
+      "title": "Browser"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/cron",
+      "slug": "cron",
+      "title": "Scheduled Tasks (Cron)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/hooks",
+      "slug": "hooks",
+      "title": "Event Hooks"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/image-generation",
+      "slug": "image-generation",
+      "title": "Image Generation"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/web-search",
+      "slug": "web-search",
+      "title": "Web Search"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/mixture-of-agents",
+      "slug": "mixture-of-agents",
+      "title": "Mixture of Agents"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/provider-routing",
+      "slug": "provider-routing",
+      "title": "Provider Routing"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/delegation",
+      "slug": "delegation",
+      "title": "Subagent Delegation"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/vision",
+      "slug": "vision",
+      "title": "Vision & Image Paste"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/x-search",
+      "slug": "x-search",
+      "title": "X (Twitter) Search"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/code-execution",
+      "slug": "code-execution",
+      "title": "Code Execution"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/context-files",
+      "slug": "context-files",
+      "title": "Context Files"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/fallback-providers",
+      "slug": "fallback-providers",
+      "title": "Fallback Providers"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/context-references",
+      "slug": "context-references",
+      "title": "Context References"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/credential-pools",
+      "slug": "credential-pools",
+      "title": "Credential Pools"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/personality",
+      "slug": "personality",
+      "title": "Personality & SOUL.md"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/tts",
+      "slug": "tts",
+      "title": "Voice & TTS"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/skins",
+      "slug": "skins",
+      "title": "Skins & Themes"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/voice-mode",
+      "slug": "voice-mode",
+      "title": "Voice Mode"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/acp",
+      "slug": "acp",
+      "title": "ACP Editor Integration"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/pets",
+      "slug": "pets",
+      "title": "Pets (Petdex Mascots)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/plugins",
+      "slug": "plugins",
+      "title": "Plugins"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/batch-processing",
+      "slug": "batch-processing",
+      "title": "Batch Processing"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/built-in-plugins",
+      "slug": "built-in-plugins",
+      "title": "Built-in Plugins"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/kanban",
+      "slug": "kanban",
+      "title": "Kanban (Multi-Agent Board)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/api-server",
+      "slug": "api-server",
+      "title": "API Server"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/subscription-proxy",
+      "slug": "subscription-proxy",
+      "title": "Subscription Proxy"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/web-dashboard",
+      "slug": "web-dashboard",
+      "title": "Web Dashboard"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/computer-use",
+      "slug": "computer-use",
+      "title": "Computer Use"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/lsp",
+      "slug": "lsp",
+      "title": "LSP — Semantic Diagnostics"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/goals",
+      "slug": "goals",
+      "title": "Persistent Goals"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/extending-the-dashboard",
+      "slug": "extending-the-dashboard",
+      "title": "Extending the Dashboard"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/tool-search",
+      "slug": "tool-search",
+      "title": "Tool Search"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/honcho",
+      "slug": "honcho",
+      "title": "Honcho Memory"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/codex-app-server-runtime",
+      "slug": "codex-app-server-runtime",
+      "title": "Codex App-Server Runtime"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/deliverable-mode",
+      "slug": "deliverable-mode",
+      "title": "Deliverable Mode"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/kanban-tutorial",
+      "slug": "kanban-tutorial",
+      "title": "Kanban tutorial"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/kanban-worker-lanes",
+      "slug": "kanban-worker-lanes",
+      "title": "Kanban worker lanes"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/features/spotify",
+      "slug": "spotify",
+      "title": "Spotify"
+     }
+    ]
+   },
+   {
+    "kind": "group",
+    "slug": "messaging",
+    "label": "Messaging",
+    "children": [
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/index",
+      "slug": "index",
+      "title": "Messaging Gateway"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/telegram",
+      "slug": "telegram",
+      "title": "Telegram"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/discord",
+      "slug": "discord",
+      "title": "Discord"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/slack",
+      "slug": "slack",
+      "title": "Slack"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/homeassistant",
+      "slug": "homeassistant",
+      "title": "Home Assistant"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/teams",
+      "slug": "teams",
+      "title": "Microsoft Teams"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/whatsapp",
+      "slug": "whatsapp",
+      "title": "WhatsApp"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/signal",
+      "slug": "signal",
+      "title": "Signal"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/teams-meetings",
+      "slug": "teams-meetings",
+      "title": "Teams Meetings"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/whatsapp-cloud",
+      "slug": "whatsapp-cloud",
+      "title": "WhatsApp Business (Cloud API)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/email",
+      "slug": "email",
+      "title": "Email"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/mattermost",
+      "slug": "mattermost",
+      "title": "Mattermost"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/open-webui",
+      "slug": "open-webui",
+      "title": "Open WebUI"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/sms",
+      "slug": "sms",
+      "title": "SMS (Twilio)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/matrix",
+      "slug": "matrix",
+      "title": "Matrix"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/dingtalk",
+      "slug": "dingtalk",
+      "title": "DingTalk"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/feishu",
+      "slug": "feishu",
+      "title": "Feishu / Lark"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/google_chat",
+      "slug": "google_chat",
+      "title": "Google Chat"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/webhooks",
+      "slug": "webhooks",
+      "title": "Webhooks"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/wecom",
+      "slug": "wecom",
+      "title": "WeCom (Enterprise WeChat)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/wecom-callback",
+      "slug": "wecom-callback",
+      "title": "WeCom Callback (Self-Built App)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/weixin",
+      "slug": "weixin",
+      "title": "Weixin (WeChat)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/yuanbao",
+      "slug": "yuanbao",
+      "title": "Yuanbao"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/line",
+      "slug": "line",
+      "title": "LINE"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/photon",
+      "slug": "photon",
+      "title": "Photon iMessage"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/raft",
+      "slug": "raft",
+      "title": "Raft"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/msgraph-webhook",
+      "slug": "msgraph-webhook",
+      "title": "Microsoft Graph Webhook Listener"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/bluebubbles",
+      "slug": "bluebubbles",
+      "title": "BlueBubbles (iMessage)"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/irc",
+      "slug": "irc",
+      "title": "IRC"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/ntfy",
+      "slug": "ntfy",
+      "title": "ntfy"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/qqbot",
+      "slug": "qqbot",
+      "title": "QQ Bot"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/messaging/simplex",
+      "slug": "simplex",
+      "title": "SimpleX Chat"
+     }
+    ]
+   },
+   {
+    "kind": "group",
+    "slug": "secrets",
+    "label": "Secrets",
+    "children": [
+     {
+      "kind": "doc",
+      "page": "user-guide/secrets/index",
+      "slug": "index",
+      "title": "Secrets"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/secrets/onepassword",
+      "slug": "onepassword",
+      "title": "1Password"
+     },
+     {
+      "kind": "doc",
+      "page": "user-guide/secrets/bitwarden",
+      "slug": "bitwarden",
+      "title": "Bitwarden Secrets Manager"
+     }
+    ]
+   },
+   {
+    "kind": "group",
+    "slug": "skills",
+    "label": "Skills",
+    "children": [
+     {
+      "kind": "doc",
+      "page": "user-guide/skills/google-workspace",
+      "slug": "google-workspace",
+      "title": "Google Workspace"
+     },
+     {
+      "kind": "group",
+      "slug": "bundled",
+      "label": "Bundled",
+      "children": [
+       {
+        "kind": "group",
+        "slug": "apple",
+        "label": "Apple",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/apple/apple-apple-notes",
+          "slug": "apple-apple-notes",
+          "title": "Apple Notes"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/apple/apple-apple-reminders",
+          "slug": "apple-apple-reminders",
+          "title": "Apple Reminders"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/apple/apple-findmy",
+          "slug": "apple-findmy",
+          "title": "Findmy"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/apple/apple-imessage",
+          "slug": "apple-imessage",
+          "title": "Imessage"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/apple/apple-macos-computer-use",
+          "slug": "apple-macos-computer-use",
+          "title": "Macos Computer Use"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "autonomous-ai-agents",
+        "label": "Autonomous AI agents",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code",
+          "slug": "autonomous-ai-agents-claude-code",
+          "title": "Claude Code"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex",
+          "slug": "autonomous-ai-agents-codex",
+          "title": "Codex"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent",
+          "slug": "autonomous-ai-agents-hermes-agent",
+          "title": "Hermes Agent"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane",
+          "slug": "autonomous-ai-agents-kanban-codex-lane",
+          "title": "Kanban Codex Lane"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode",
+          "slug": "autonomous-ai-agents-opencode",
+          "title": "Opencode"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "creative",
+        "label": "Creative",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-architecture-diagram",
+          "slug": "creative-architecture-diagram",
+          "title": "Architecture Diagram"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-ascii-art",
+          "slug": "creative-ascii-art",
+          "title": "Ascii Art"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-ascii-video",
+          "slug": "creative-ascii-video",
+          "title": "Ascii Video"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-baoyu-infographic",
+          "slug": "creative-baoyu-infographic",
+          "title": "Baoyu Infographic"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-claude-design",
+          "slug": "creative-claude-design",
+          "title": "Claude Design"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-comfyui",
+          "slug": "creative-comfyui",
+          "title": "Comfyui"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-design-md",
+          "slug": "creative-design-md",
+          "title": "Design Md"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-excalidraw",
+          "slug": "creative-excalidraw",
+          "title": "Excalidraw"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-humanizer",
+          "slug": "creative-humanizer",
+          "title": "Humanizer"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-manim-video",
+          "slug": "creative-manim-video",
+          "title": "Manim Video"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-p5js",
+          "slug": "creative-p5js",
+          "title": "P5Js"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-popular-web-designs",
+          "slug": "creative-popular-web-designs",
+          "title": "Popular Web Designs"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-pretext",
+          "slug": "creative-pretext",
+          "title": "Pretext"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-sketch",
+          "slug": "creative-sketch",
+          "title": "Sketch"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-songwriting-and-ai-music",
+          "slug": "creative-songwriting-and-ai-music",
+          "title": "Songwriting And Ai Music"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/creative/creative-touchdesigner-mcp",
+          "slug": "creative-touchdesigner-mcp",
+          "title": "Touchdesigner Mcp"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "data-science",
+        "label": "Data science",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel",
+          "slug": "data-science-jupyter-live-kernel",
+          "title": "Jupyter Live Kernel"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "dogfood",
+        "label": "Dogfood",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/dogfood/dogfood-dogfood",
+          "slug": "dogfood-dogfood",
+          "title": "Dogfood"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "email",
+        "label": "Email",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/email/email-himalaya",
+          "slug": "email-himalaya",
+          "title": "Himalaya"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "github",
+        "label": "Github",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-codebase-inspection",
+          "slug": "github-codebase-inspection",
+          "title": "Codebase Inspection"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-github-auth",
+          "slug": "github-github-auth",
+          "title": "Github Auth"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-github-code-review",
+          "slug": "github-github-code-review",
+          "title": "Github Code Review"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-github-issues",
+          "slug": "github-github-issues",
+          "title": "Github Issues"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-github-pr-workflow",
+          "slug": "github-github-pr-workflow",
+          "title": "Github Pr Workflow"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/github/github-github-repo-management",
+          "slug": "github-github-repo-management",
+          "title": "Github Repo Management"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "media",
+        "label": "Media",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/media/media-gif-search",
+          "slug": "media-gif-search",
+          "title": "Gif Search"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/media/media-heartmula",
+          "slug": "media-heartmula",
+          "title": "Heartmula"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/media/media-songsee",
+          "slug": "media-songsee",
+          "title": "Songsee"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/media/media-youtube-content",
+          "slug": "media-youtube-content",
+          "title": "Youtube Content"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "mlops",
+        "label": "MLOps",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-models-audiocraft",
+          "slug": "mlops-models-audiocraft",
+          "title": "Audiocraft Audio Generation"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness",
+          "slug": "mlops-evaluation-lm-evaluation-harness",
+          "title": "Evaluating Llms Harness"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-huggingface-hub",
+          "slug": "mlops-huggingface-hub",
+          "title": "Huggingface Hub"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-inference-llama-cpp",
+          "slug": "mlops-inference-llama-cpp",
+          "title": "Llama Cpp"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-models-segment-anything",
+          "slug": "mlops-models-segment-anything",
+          "title": "Segment Anything Model"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-inference-vllm",
+          "slug": "mlops-inference-vllm",
+          "title": "Serving Llms Vllm"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases",
+          "slug": "mlops-evaluation-weights-and-biases",
+          "title": "Weights And Biases"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "note-taking",
+        "label": "Note taking",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/note-taking/note-taking-obsidian",
+          "slug": "note-taking-obsidian",
+          "title": "Obsidian"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "productivity",
+        "label": "Productivity",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-airtable",
+          "slug": "productivity-airtable",
+          "title": "Airtable"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-google-workspace",
+          "slug": "productivity-google-workspace",
+          "title": "Google Workspace"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-maps",
+          "slug": "productivity-maps",
+          "title": "Maps"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-nano-pdf",
+          "slug": "productivity-nano-pdf",
+          "title": "Nano Pdf"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-notion",
+          "slug": "productivity-notion",
+          "title": "Notion"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-ocr-and-documents",
+          "slug": "productivity-ocr-and-documents",
+          "title": "Ocr And Documents"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-petdex",
+          "slug": "productivity-petdex",
+          "title": "Petdex"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-powerpoint",
+          "slug": "productivity-powerpoint",
+          "title": "Powerpoint"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline",
+          "slug": "productivity-teams-meeting-pipeline",
+          "title": "Teams Meeting Pipeline"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "research",
+        "label": "Research",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/research/research-arxiv",
+          "slug": "research-arxiv",
+          "title": "Arxiv"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/research/research-blogwatcher",
+          "slug": "research-blogwatcher",
+          "title": "Blogwatcher"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/research/research-llm-wiki",
+          "slug": "research-llm-wiki",
+          "title": "Llm Wiki"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/research/research-polymarket",
+          "slug": "research-polymarket",
+          "title": "Polymarket"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/research/research-research-paper-writing",
+          "slug": "research-research-paper-writing",
+          "title": "Research Paper Writing"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "smart-home",
+        "label": "Smart home",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/smart-home/smart-home-openhue",
+          "slug": "smart-home-openhue",
+          "title": "Openhue"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "social-media",
+        "label": "Social media",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/social-media/social-media-xurl",
+          "slug": "social-media-xurl",
+          "title": "Xurl"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "software-development",
+        "label": "Software development",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring",
+          "slug": "software-development-hermes-agent-skill-authoring",
+          "title": "Hermes Agent Skill Authoring"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-node-inspect-debugger",
+          "slug": "software-development-node-inspect-debugger",
+          "title": "Node Inspect Debugger"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-plan",
+          "slug": "software-development-plan",
+          "title": "Plan"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-python-debugpy",
+          "slug": "software-development-python-debugpy",
+          "title": "Python Debugpy"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-requesting-code-review",
+          "slug": "software-development-requesting-code-review",
+          "title": "Requesting Code Review"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-simplify-code",
+          "slug": "software-development-simplify-code",
+          "title": "Simplify Code"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-spike",
+          "slug": "software-development-spike",
+          "title": "Spike"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-systematic-debugging",
+          "slug": "software-development-systematic-debugging",
+          "title": "Systematic Debugging"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/software-development/software-development-test-driven-development",
+          "slug": "software-development-test-driven-development",
+          "title": "Test Driven Development"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "yuanbao",
+        "label": "Yuanbao",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/bundled/yuanbao/yuanbao-yuanbao",
+          "slug": "yuanbao-yuanbao",
+          "title": "Yuanbao"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "kind": "group",
+      "slug": "optional",
+      "label": "Optional",
+      "children": [
+       {
+        "kind": "group",
+        "slug": "autonomous-ai-agents",
+        "label": "Autonomous AI agents",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli",
+          "slug": "autonomous-ai-agents-antigravity-cli",
+          "title": "Antigravity Cli"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox",
+          "slug": "autonomous-ai-agents-blackbox",
+          "title": "Blackbox"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok",
+          "slug": "autonomous-ai-agents-grok",
+          "title": "Grok"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho",
+          "slug": "autonomous-ai-agents-honcho",
+          "title": "Honcho"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands",
+          "slug": "autonomous-ai-agents-openhands",
+          "title": "Openhands"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "blockchain",
+        "label": "Blockchain",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/blockchain/blockchain-evm",
+          "slug": "blockchain-evm",
+          "title": "Evm"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/blockchain/blockchain-hyperliquid",
+          "slug": "blockchain-hyperliquid",
+          "title": "Hyperliquid"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/blockchain/blockchain-solana",
+          "slug": "blockchain-solana",
+          "title": "Solana"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "communication",
+        "label": "Communication",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/communication/communication-one-three-one-rule",
+          "slug": "communication-one-three-one-rule",
+          "title": "One Three One Rule"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "creative",
+        "label": "Creative",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-baoyu-article-illustrator",
+          "slug": "creative-baoyu-article-illustrator",
+          "title": "Baoyu Article Illustrator"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-baoyu-comic",
+          "slug": "creative-baoyu-comic",
+          "title": "Baoyu Comic"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-blender-mcp",
+          "slug": "creative-blender-mcp",
+          "title": "Blender Mcp"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-concept-diagrams",
+          "slug": "creative-concept-diagrams",
+          "title": "Concept Diagrams"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-creative-ideation",
+          "slug": "creative-creative-ideation",
+          "title": "Creative Ideation"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-hyperframes",
+          "slug": "creative-hyperframes",
+          "title": "Hyperframes"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-kanban-video-orchestrator",
+          "slug": "creative-kanban-video-orchestrator",
+          "title": "Kanban Video Orchestrator"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-meme-generation",
+          "slug": "creative-meme-generation",
+          "title": "Meme Generation"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/creative/creative-pixel-art",
+          "slug": "creative-pixel-art",
+          "title": "Pixel Art"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "devops",
+        "label": "DevOps",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/devops/devops-docker-management",
+          "slug": "devops-docker-management",
+          "title": "Docker Management"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/devops/devops-hermes-s6-container-supervision",
+          "slug": "devops-hermes-s6-container-supervision",
+          "title": "Hermes S6 Container Supervision"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/devops/devops-cli",
+          "slug": "devops-cli",
+          "title": "Inference Sh Cli"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/devops/devops-pinggy-tunnel",
+          "slug": "devops-pinggy-tunnel",
+          "title": "Pinggy Tunnel"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/devops/devops-watchers",
+          "slug": "devops-watchers",
+          "title": "Watchers"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "dogfood",
+        "label": "Dogfood",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test",
+          "slug": "dogfood-adversarial-ux-test",
+          "title": "Adversarial Ux Test"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "email",
+        "label": "Email",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/email/email-agentmail",
+          "slug": "email-agentmail",
+          "title": "Agentmail"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "finance",
+        "label": "Finance",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-3-statement-model",
+          "slug": "finance-3-statement-model",
+          "title": "3 Statement Model"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-comps-analysis",
+          "slug": "finance-comps-analysis",
+          "title": "Comps Analysis"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-dcf-model",
+          "slug": "finance-dcf-model",
+          "title": "Dcf Model"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-excel-author",
+          "slug": "finance-excel-author",
+          "title": "Excel Author"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-lbo-model",
+          "slug": "finance-lbo-model",
+          "title": "Lbo Model"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-merger-model",
+          "slug": "finance-merger-model",
+          "title": "Merger Model"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-pptx-author",
+          "slug": "finance-pptx-author",
+          "title": "Pptx Author"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/finance/finance-stocks",
+          "slug": "finance-stocks",
+          "title": "Stocks"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "gaming",
+        "label": "Gaming",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/gaming/gaming-minecraft-modpack-server",
+          "slug": "gaming-minecraft-modpack-server",
+          "title": "Minecraft Modpack Server"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/gaming/gaming-pokemon-player",
+          "slug": "gaming-pokemon-player",
+          "title": "Pokemon Player"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "health",
+        "label": "Health",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/health/health-fitness-nutrition",
+          "slug": "health-fitness-nutrition",
+          "title": "Fitness Nutrition"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/health/health-neuroskill-bci",
+          "slug": "health-neuroskill-bci",
+          "title": "Neuroskill Bci"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "mcp",
+        "label": "MCP",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mcp/mcp-fastmcp",
+          "slug": "mcp-fastmcp",
+          "title": "Fastmcp"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mcp/mcp-mcporter",
+          "slug": "mcp-mcporter",
+          "title": "Mcporter"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "migration",
+        "label": "Migration",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/migration/migration-openclaw-migration",
+          "slug": "migration-openclaw-migration",
+          "title": "Openclaw Migration"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "mlops",
+        "label": "MLOps",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-training-axolotl",
+          "slug": "mlops-training-axolotl",
+          "title": "Axolotl"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-chroma",
+          "slug": "mlops-chroma",
+          "title": "Chroma"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-clip",
+          "slug": "mlops-clip",
+          "title": "Clip"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-torchtitan",
+          "slug": "mlops-torchtitan",
+          "title": "Distributed Llm Pretraining Torchtitan"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-research-dspy",
+          "slug": "mlops-research-dspy",
+          "title": "Dspy"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-faiss",
+          "slug": "mlops-faiss",
+          "title": "Faiss"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-training-trl-fine-tuning",
+          "slug": "mlops-training-trl-fine-tuning",
+          "title": "Fine Tuning With Trl"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-guidance",
+          "slug": "mlops-guidance",
+          "title": "Guidance"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-accelerate",
+          "slug": "mlops-accelerate",
+          "title": "Huggingface Accelerate"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-huggingface-tokenizers",
+          "slug": "mlops-huggingface-tokenizers",
+          "title": "Huggingface Tokenizers"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-instructor",
+          "slug": "mlops-instructor",
+          "title": "Instructor"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-lambda-labs",
+          "slug": "mlops-lambda-labs",
+          "title": "Lambda Labs Gpu Cloud"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-llava",
+          "slug": "mlops-llava",
+          "title": "Llava"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-modal",
+          "slug": "mlops-modal",
+          "title": "Modal Serverless Gpu"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-nemo-curator",
+          "slug": "mlops-nemo-curator",
+          "title": "Nemo Curator"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-obliteratus",
+          "slug": "mlops-obliteratus",
+          "title": "Obliteratus"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-flash-attention",
+          "slug": "mlops-flash-attention",
+          "title": "Optimizing Attention Flash"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-inference-outlines",
+          "slug": "mlops-inference-outlines",
+          "title": "Outlines"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-peft",
+          "slug": "mlops-peft",
+          "title": "Peft Fine Tuning"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-pinecone",
+          "slug": "mlops-pinecone",
+          "title": "Pinecone"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-pytorch-fsdp",
+          "slug": "mlops-pytorch-fsdp",
+          "title": "Pytorch Fsdp"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-pytorch-lightning",
+          "slug": "mlops-pytorch-lightning",
+          "title": "Pytorch Lightning"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-qdrant",
+          "slug": "mlops-qdrant",
+          "title": "Qdrant Vector Search"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-simpo",
+          "slug": "mlops-simpo",
+          "title": "Simpo Training"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-slime",
+          "slug": "mlops-slime",
+          "title": "Slime Rl Training"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-saelens",
+          "slug": "mlops-saelens",
+          "title": "Sparse Autoencoder Training"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-stable-diffusion",
+          "slug": "mlops-stable-diffusion",
+          "title": "Stable Diffusion Image Generation"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-tensorrt-llm",
+          "slug": "mlops-tensorrt-llm",
+          "title": "Tensorrt Llm"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-training-unsloth",
+          "slug": "mlops-training-unsloth",
+          "title": "Unsloth"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/mlops/mlops-whisper",
+          "slug": "mlops-whisper",
+          "title": "Whisper"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "payments",
+        "label": "Payments",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/payments/payments-mpp-agent",
+          "slug": "payments-mpp-agent",
+          "title": "Mpp Agent"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/payments/payments-stripe-link-cli",
+          "slug": "payments-stripe-link-cli",
+          "title": "Stripe Link Cli"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/payments/payments-stripe-projects",
+          "slug": "payments-stripe-projects",
+          "title": "Stripe Projects"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "productivity",
+        "label": "Productivity",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-canvas",
+          "slug": "productivity-canvas",
+          "title": "Canvas"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-here-now",
+          "slug": "productivity-here-now",
+          "title": "Here.Now"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-memento-flashcards",
+          "slug": "productivity-memento-flashcards",
+          "title": "Memento Flashcards"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-shop",
+          "slug": "productivity-shop",
+          "title": "Shop"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-shopify",
+          "slug": "productivity-shopify",
+          "title": "Shopify"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-siyuan",
+          "slug": "productivity-siyuan",
+          "title": "Siyuan"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/productivity/productivity-telephony",
+          "slug": "productivity-telephony",
+          "title": "Telephony"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "research",
+        "label": "Research",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-bioinformatics",
+          "slug": "research-bioinformatics",
+          "title": "Bioinformatics"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-darwinian-evolver",
+          "slug": "research-darwinian-evolver",
+          "title": "Darwinian Evolver"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-domain-intel",
+          "slug": "research-domain-intel",
+          "title": "Domain Intel"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-drug-discovery",
+          "slug": "research-drug-discovery",
+          "title": "Drug Discovery"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-duckduckgo-search",
+          "slug": "research-duckduckgo-search",
+          "title": "Duckduckgo Search"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-gitnexus-explorer",
+          "slug": "research-gitnexus-explorer",
+          "title": "Gitnexus Explorer"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-osint-investigation",
+          "slug": "research-osint-investigation",
+          "title": "Osint Investigation"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-parallel-cli",
+          "slug": "research-parallel-cli",
+          "title": "Parallel Cli"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-qmd",
+          "slug": "research-qmd",
+          "title": "Qmd"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-scrapling",
+          "slug": "research-scrapling",
+          "title": "Scrapling"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/research/research-searxng-search",
+          "slug": "research-searxng-search",
+          "title": "Searxng Search"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "security",
+        "label": "Security",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/security/security-1password",
+          "slug": "security-1password",
+          "title": "1Password"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/security/security-godmode",
+          "slug": "security-godmode",
+          "title": "Godmode"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/security/security-oss-forensics",
+          "slug": "security-oss-forensics",
+          "title": "Oss Forensics"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/security/security-sherlock",
+          "slug": "security-sherlock",
+          "title": "Sherlock"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/security/security-web-pentest",
+          "slug": "security-web-pentest",
+          "title": "Web Pentest"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "software-development",
+        "label": "Software development",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/software-development/software-development-code-wiki",
+          "slug": "software-development-code-wiki",
+          "title": "Code Wiki"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/software-development/software-development-rest-graphql-debug",
+          "slug": "software-development-rest-graphql-debug",
+          "title": "Rest Graphql Debug"
+         },
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/software-development/software-development-subagent-driven-development",
+          "slug": "software-development-subagent-driven-development",
+          "title": "Subagent Driven Development"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "slug": "web-development",
+        "label": "Web development",
+        "children": [
+         {
+          "kind": "doc",
+          "page": "user-guide/skills/optional/web-development/web-development-page-agent",
+          "slug": "web-development-page-agent",
+          "title": "Page Agent"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "id": "guides",
+  "label": "Guides",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "guides/run-nemotron-3-ultra-free",
+    "slug": "run-nemotron-3-ultra-free",
+    "title": "Run Nemotron 3 Ultra free in Hermes Agent"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/run-hermes-with-nous-portal",
+    "slug": "run-hermes-with-nous-portal",
+    "title": "Run Hermes Agent with Nous Portal"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/tips",
+    "slug": "tips",
+    "title": "Tips & Best Practices"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/local-llm-on-mac",
+    "slug": "local-llm-on-mac",
+    "title": "Run Local LLMs on Mac"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/daily-briefing-bot",
+    "slug": "daily-briefing-bot",
+    "title": "Tutorial: Daily Briefing Bot"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/team-telegram-assistant",
+    "slug": "team-telegram-assistant",
+    "title": "Tutorial: Team Telegram Assistant"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/python-library",
+    "slug": "python-library",
+    "title": "Using Hermes as a Python Library"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/use-mcp-with-hermes",
+    "slug": "use-mcp-with-hermes",
+    "title": "Use MCP with Hermes"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/use-soul-with-hermes",
+    "slug": "use-soul-with-hermes",
+    "title": "Use SOUL.md with Hermes"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/use-voice-mode-with-hermes",
+    "slug": "use-voice-mode-with-hermes",
+    "title": "Use Voice Mode with Hermes"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/local-ollama-setup",
+    "slug": "local-ollama-setup",
+    "title": "Run Hermes Locally with Ollama — Zero API Cost"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/migrate-from-openclaw",
+    "slug": "migrate-from-openclaw",
+    "title": "Migrate from OpenClaw"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/github-pr-review-agent",
+    "slug": "github-pr-review-agent",
+    "title": "Tutorial: GitHub PR Review Agent"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/automate-with-cron",
+    "slug": "automate-with-cron",
+    "title": "Automate Anything with Cron"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/webhook-github-pr-review",
+    "slug": "webhook-github-pr-review",
+    "title": "GitHub PR Reviews via Webhook"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/cron-troubleshooting",
+    "slug": "cron-troubleshooting",
+    "title": "Cron Troubleshooting"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/pipe-script-output",
+    "slug": "pipe-script-output",
+    "title": "Pipe Script Output to Messaging Platforms"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/work-with-skills",
+    "slug": "work-with-skills",
+    "title": "Working with Skills"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/delegation-patterns",
+    "slug": "delegation-patterns",
+    "title": "Delegation & Parallel Work"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/cron-script-only",
+    "slug": "cron-script-only",
+    "title": "Script-Only Cron Jobs (No LLM)"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/aws-bedrock",
+    "slug": "aws-bedrock",
+    "title": "AWS Bedrock"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/automation-blueprints",
+    "slug": "automation-blueprints",
+    "title": "Automation Blueprints"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/google-vertex",
+    "slug": "google-vertex",
+    "title": "Google Vertex AI"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/azure-foundry",
+    "slug": "azure-foundry",
+    "title": "Microsoft Foundry"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/minimax-oauth",
+    "slug": "minimax-oauth",
+    "title": "MiniMax OAuth"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/google-gemini",
+    "slug": "google-gemini",
+    "title": "Google Gemini"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/xai-grok-oauth",
+    "slug": "xai-grok-oauth",
+    "title": "xAI Grok OAuth (SuperGrok / X Premium+)"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/oauth-over-ssh",
+    "slug": "oauth-over-ssh",
+    "title": "OAuth over SSH / Remote Hosts"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/operate-teams-meeting-pipeline",
+    "slug": "operate-teams-meeting-pipeline",
+    "title": "Operate the Teams Meeting Pipeline"
+   },
+   {
+    "kind": "doc",
+    "page": "guides/microsoft-graph-app-registration",
+    "slug": "microsoft-graph-app-registration",
+    "title": "Register a Microsoft Graph Application"
+   }
+  ]
+ },
+ {
+  "id": "integrations",
+  "label": "Integrations",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "integrations/index",
+    "slug": "index",
+    "title": "Overview"
+   },
+   {
+    "kind": "doc",
+    "page": "integrations/providers",
+    "slug": "providers",
+    "title": "AI Providers"
+   },
+   {
+    "kind": "doc",
+    "page": "integrations/nous-portal",
+    "slug": "nous-portal",
+    "title": "Nous Portal"
+   }
+  ]
+ },
+ {
+  "id": "reference",
+  "label": "Reference",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "reference/cli-commands",
+    "slug": "cli-commands",
+    "title": "CLI Commands Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/environment-variables",
+    "slug": "environment-variables",
+    "title": "Environment Variables"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/slash-commands",
+    "slug": "slash-commands",
+    "title": "Slash Commands Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/tools-reference",
+    "slug": "tools-reference",
+    "title": "Built-in Tools Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/faq",
+    "slug": "faq",
+    "title": "FAQ & Troubleshooting"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/toolsets-reference",
+    "slug": "toolsets-reference",
+    "title": "Toolsets Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/skills-catalog",
+    "slug": "skills-catalog",
+    "title": "Bundled Skills Catalog"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/profile-commands",
+    "slug": "profile-commands",
+    "title": "Profile Commands Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/mcp-config-reference",
+    "slug": "mcp-config-reference",
+    "title": "MCP Config Reference"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/optional-skills-catalog",
+    "slug": "optional-skills-catalog",
+    "title": "Optional Skills Catalog"
+   },
+   {
+    "kind": "doc",
+    "page": "reference/model-catalog",
+    "slug": "model-catalog",
+    "title": "Model Catalog"
+   }
+  ]
+ },
+ {
+  "id": "developer-guide",
+  "label": "Developer guide",
+  "children": [
+   {
+    "kind": "doc",
+    "page": "developer-guide/architecture",
+    "slug": "architecture",
+    "title": "Architecture"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/acp-internals",
+    "slug": "acp-internals",
+    "title": "ACP Internals"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/adding-tools",
+    "slug": "adding-tools",
+    "title": "Adding Tools"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/agent-loop",
+    "slug": "agent-loop",
+    "title": "Agent Loop Internals"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/creating-skills",
+    "slug": "creating-skills",
+    "title": "Creating Skills"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/contributing",
+    "slug": "contributing",
+    "title": "Contributing"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/provider-runtime",
+    "slug": "provider-runtime",
+    "title": "Provider Runtime Resolution"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/adding-providers",
+    "slug": "adding-providers",
+    "title": "Adding Providers"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/prompt-assembly",
+    "slug": "prompt-assembly",
+    "title": "Prompt Assembly"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/gateway-internals",
+    "slug": "gateway-internals",
+    "title": "Gateway Internals"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/extending-the-cli",
+    "slug": "extending-the-cli",
+    "title": "Extending the CLI"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/memory-provider-plugin",
+    "slug": "memory-provider-plugin",
+    "title": "Memory Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/programmatic-integration",
+    "slug": "programmatic-integration",
+    "title": "Programmatic Integration"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/adding-platform-adapters",
+    "slug": "adding-platform-adapters",
+    "title": "Adding a Platform Adapter"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/context-engine-plugin",
+    "slug": "context-engine-plugin",
+    "title": "Context Engine Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/secret-source-plugin",
+    "slug": "secret-source-plugin",
+    "title": "Secret Source Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/tools-runtime",
+    "slug": "tools-runtime",
+    "title": "Tools Runtime"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/model-provider-plugin",
+    "slug": "model-provider-plugin",
+    "title": "Model Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/cron-internals",
+    "slug": "cron-internals",
+    "title": "Cron Internals"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/image-gen-provider-plugin",
+    "slug": "image-gen-provider-plugin",
+    "title": "Image Generation Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/plugin-llm-access",
+    "slug": "plugin-llm-access",
+    "title": "Plugin LLM Access"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/video-gen-provider-plugin",
+    "slug": "video-gen-provider-plugin",
+    "title": "Video Generation Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/web-search-provider-plugin",
+    "slug": "web-search-provider-plugin",
+    "title": "Web Search Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/browser-provider-plugin",
+    "slug": "browser-provider-plugin",
+    "title": "Browser Provider Plugins"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/browser-supervisor",
+    "slug": "browser-supervisor",
+    "title": "Browser CDP Supervisor"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/context-compression-and-caching",
+    "slug": "context-compression-and-caching",
+    "title": "Context Compression and Caching"
+   },
+   {
+    "kind": "group",
+    "slug": "plugins",
+    "label": "Plugins",
+    "children": [
+     {
+      "kind": "doc",
+      "page": "developer-guide/plugins/index",
+      "slug": "index",
+      "title": "Build a Plugin"
+     }
+    ]
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/session-storage",
+    "slug": "session-storage",
+    "title": "Session Storage"
+   },
+   {
+    "kind": "doc",
+    "page": "developer-guide/trajectory-format",
+    "slug": "trajectory-format",
+    "title": "Trajectory Format"
+   }
+  ]
+ }
+]
