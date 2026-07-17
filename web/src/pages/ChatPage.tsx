@@ -464,6 +464,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
+  // Ref mirror for effects that must read the CURRENT resume target
+  // without re-running on every URL change (the event-channel effect).
+  const resumeParamRef = useRef(resumeParam);
+  useEffect(() => {
+    resumeParamRef.current = resumeParam;
+  }, [resumeParam]);
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
@@ -635,6 +641,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // Shared per-channel hub — one resilient socket multiplexed with the
     // ChatSidebar subscription instead of a second parallel WebSocket.
+    // Seed hydration from the resume target immediately. The PTY's first
+    // session.info normally re-triggers hydration after the reset above,
+    // but event delivery can lag or drop entirely (slow TUI boot, publisher
+    // reconnect) — and the reset must never leave an already-fetched
+    // transcript wiped with nothing scheduled to restore it. Chain-based
+    // hydration makes this idempotent with whatever session.info later
+    // announces.
+    if (resumeParamRef.current) {
+      activeStoredSessionIdRef.current = resumeParamRef.current;
+      hydrateStoredSession(resumeParamRef.current);
+    }
+
     const stopEventSocket = subscribeDashboardEvents(channel, {
       onMessage: (raw) => {
         if (
