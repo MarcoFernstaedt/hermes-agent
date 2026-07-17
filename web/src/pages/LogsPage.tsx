@@ -24,16 +24,24 @@ const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
 
 function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
-  const upper = line.toUpperCase();
-  if (
-    upper.includes("ERROR") ||
-    upper.includes("CRITICAL") ||
-    upper.includes("FATAL")
-  )
-    return "error";
-  if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
-  if (upper.includes("DEBUG")) return "debug";
-  return "info";
+  // Match the first standalone level token so counters like
+  // "parse_errors=0" in healthy INFO lines don't paint the row red.
+  const match = line
+    .toUpperCase()
+    .match(/\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b/);
+  switch (match?.[1]) {
+    case "ERROR":
+    case "CRITICAL":
+    case "FATAL":
+      return "error";
+    case "WARNING":
+    case "WARN":
+      return "warning";
+    case "DEBUG":
+      return "debug";
+    default:
+      return "info";
+  }
 }
 
 const LINE_COLORS: Record<string, string> = {

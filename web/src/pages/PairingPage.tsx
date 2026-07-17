@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Check, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -165,8 +166,17 @@ export default function PairingPage() {
 
         {pending.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
+            <CardContent className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
+              <span>No pending pairing requests</span>
+              <span className="max-w-md text-xs text-text-tertiary">
+                When someone new messages Imperator on a connected channel
+                (Telegram, Discord, …), their pairing code appears here for
+                you to approve. Set up channels on the{" "}
+                <Link to="/channels" className="text-primary underline underline-offset-2">
+                  Channels page
+                </Link>
+                .
+              </span>
             </CardContent>
           </Card>
         )}
@@ -229,8 +239,11 @@ export default function PairingPage() {
 
         {approved.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
+            <CardContent className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
+              <span>No approved users</span>
+              <span className="max-w-md text-xs text-text-tertiary">
+                Users you approve keep access until revoked here.
+              </span>
             </CardContent>
           </Card>
         )}

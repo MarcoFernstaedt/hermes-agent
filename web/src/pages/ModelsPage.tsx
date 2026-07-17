@@ -942,9 +942,9 @@ function ModelSettingsPanel({
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
-              {mainProv || "(unset)"}
-              {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainProv || mainModel
+                ? [mainProv, mainModel].filter(Boolean).join(" · ")
+                : "Not set — pick a model to get started"}
             </div>
           </div>
           <Button

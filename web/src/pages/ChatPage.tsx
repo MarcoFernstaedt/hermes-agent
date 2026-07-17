@@ -454,6 +454,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd, setTitle } = usePageHeader();
+  /** True while chat's mobile panel button occupies the header end slot. */
+  const headerEndOwnedRef = useRef(false);
+  /** True while chat's session title occupies the header title slot. */
+  const headerTitleOwnedRef = useRef(false);
   const [sessionTitleState, setSessionTitleState] = useState<{
     scope: string;
     title: string | null;
@@ -1147,13 +1151,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
+    // Same ownership rule as the header end slot: the hidden chat host
+    // must never null a title another page just set.
     if (!isActive) {
-      setTitle(null);
+      if (headerTitleOwnedRef.current) {
+        headerTitleOwnedRef.current = false;
+        setTitle(null);
+      }
       return;
     }
 
+    headerTitleOwnedRef.current = true;
     setTitle(sessionTitle);
-    return () => setTitle(null);
+    return () => {
+      if (headerTitleOwnedRef.current) {
+        headerTitleOwnedRef.current = false;
+        setTitle(null);
+      }
+    };
   }, [isActive, sessionTitle, setTitle]);
 
   // Unread-reply badge clears the moment the chat is actually in view.
@@ -1245,16 +1260,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
-    // When hidden (non-chat tab) we must not register the header button —
-    // another page owns the header's end slot at that point.
-    if (!isActive) {
-      setEnd(null);
+    // When hidden (non-chat tab) or wide, another page owns the header's
+    // end slot. Only clear it when WE set it — the persistent chat host
+    // mounts on every route, and an unconditional setEnd(null) here wiped
+    // the active page's header button on hard loads (its effect runs
+    // after the routed page's).
+    if (!isActive || !narrow) {
+      if (headerEndOwnedRef.current) {
+        headerEndOwnedRef.current = false;
+        setEnd(null);
+      }
       return;
     }
-    if (!narrow) {
-      setEnd(null);
-      return;
-    }
+    headerEndOwnedRef.current = true;
     setEnd(
       <Button
         ghost
@@ -1273,7 +1291,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </span>
       </Button>,
     );
-    return () => setEnd(null);
+    return () => {
+      if (headerEndOwnedRef.current) {
+        headerEndOwnedRef.current = false;
+        setEnd(null);
+      }
+    };
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   useEffect(() => {

@@ -12,7 +12,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Database,
   MessageSquare,
   Search,
   Trash2,
@@ -714,6 +713,7 @@ function SessionsPagination({
 }
 
 export default function SessionsPage() {
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -1358,7 +1358,7 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">Active</span>
           </div>
           <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
@@ -1664,49 +1664,77 @@ export default function SessionsPage() {
           {recentSessions.length > 0 && (
             <Card className="min-w-0 max-w-full overflow-hidden">
               <CardHeader className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <CardTitle className="min-w-0 truncate text-base">
+                      {t.status.recentSessions}
+                    </CardTitle>
+                  </div>
+                  <Button
+                    ghost
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => switchView("list")}
+                  >
+                    <span className="font-mondwest normal-case text-xs">
+                      {t.sessions.history} →
+                    </span>
+                  </Button>
                 </div>
               </CardHeader>
 
-              <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
-                        {s.title ?? t.common.untitled}
-                      </span>
-
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        <span className="font-mono-ui">
-                          {(s.model ?? t.common.unknown).split("/").pop()}
-                        </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
+              <CardContent className="grid min-w-0 gap-2">
+                {recentSessions.map((s) => {
+                  const title =
+                    s.title && s.title !== "Untitled"
+                      ? s.title
+                      : s.preview
+                        ? s.preview.slice(0, 60)
+                        : t.common.untitled;
+                  const model = (s.model ?? "").split("/").pop();
+                  const open = () =>
+                    resumeInChatEnabled
+                      ? navigate(`/chat?resume=${encodeURIComponent(s.id)}`)
+                      : switchView("list");
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={open}
+                      className="group flex min-w-0 max-w-full cursor-pointer items-center gap-3 border border-border p-3 text-left transition-colors hover:border-primary/40 hover:bg-secondary/30"
                     >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
-                    </Badge>
-                  </div>
-                ))}
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span
+                          className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title && s.title !== "Untitled" ? "font-medium" : "text-muted-foreground"}`}
+                        >
+                          {title}
+                        </span>
+
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {model && (
+                            <>
+                              <span className="font-mono-ui">{model}</span>
+                              {" · "}
+                            </>
+                          )}
+                          {s.message_count} {t.common.msgs} ·{" "}
+                          {timeAgo(s.last_active)}
+                          {s.source ? ` · ${s.source}` : ""}
+                        </span>
+                      </div>
+
+                      {resumeInChatEnabled && (
+                        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors group-hover:text-primary">
+                          <Play className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">
+                            {t.sessions.resumeInChat}
+                          </span>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </CardContent>
             </Card>
           )}
