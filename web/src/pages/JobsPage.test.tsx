@@ -144,6 +144,16 @@ describe("JobsView", () => {
     expect(empty).toContain("No roles found.");
   });
 
+  it("renders a setup guide when the jobs vault is not configured", () => {
+    const html = renderToStaticMarkup(
+      <JobsView state="unconfigured" summary={null} roles={[]} filters={{ status: "", lane: "", freshness: "", query: "" }} {...handlers} />,
+    );
+    expect(html).toContain("isn&#x27;t configured yet");
+    expect(html).toContain("HERMES_JOBS_DB_PATH");
+    expect(html).toContain("HERMES_JOBS_PACKET_ROOT");
+    expect(html).toContain("Check again");
+  });
+
   it("renders distinct summary progress and complete card controls", () => {
     const html = renderToStaticMarkup(
       <JobsView

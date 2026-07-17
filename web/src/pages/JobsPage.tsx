@@ -5,6 +5,14 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
+import {
+  BriefcaseBusiness,
+  Download,
+  ExternalLink,
+  FileText,
+  Search,
+  Settings2,
+} from "lucide-react";
 
 import { api } from "@/lib/api";
 import {
@@ -17,8 +25,14 @@ import {
   type JobsSummary,
   type JobStatus,
 } from "@/lib/jobs";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { cn } from "@/lib/utils";
 
-export type JobsViewState = "loading" | "ready" | "error";
+export type JobsViewState = "loading" | "ready" | "error" | "unconfigured";
 
 interface JobsViewProps {
   state: JobsViewState;
@@ -54,9 +68,76 @@ const SUMMARY_ITEMS: Array<[keyof JobsSummary["counts"], string]> = [
   ["offer_accepted", "Accepted offer"],
 ];
 
+/** Accent per pipeline stage so the summary and cards read at a glance. */
+const STATUS_TONES: Record<string, "success" | "warning" | "destructive" | "outline" | "secondary"> = {
+  qualified_packet_ready: "secondary",
+  applied: "outline",
+  pending: "outline",
+  interviewing: "warning",
+  rejected: "destructive",
+  expired: "outline",
+  offer_received: "success",
+  offer_accepted: "success",
+};
+
+const SUMMARY_NUMBER_COLORS: Record<string, string> = {
+  interviewing: "text-warning",
+  offer_received: "text-success",
+  offer_accepted: "text-success",
+  rejected: "text-destructive",
+};
+
 function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
+
+function GoalBar({ label, current, target }: { label: string; current: number; target: number }) {
+  const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+  const met = target > 0 && current >= target;
+  return (
+    <Card className="p-3">
+      <div className="flex items-baseline justify-between gap-2 text-sm">
+        <span className="text-text-secondary">{label}</span>
+        <span className={cn("font-mono-ui tabular-nums", met ? "text-success" : "text-foreground")}>
+          {current} / {target}
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuenow={current}
+        aria-valuemin={0}
+        aria-valuemax={target}
+        className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary/60"
+      >
+        <div
+          className={cn("h-full rounded-full transition-all", met ? "bg-success" : "bg-primary")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </Card>
+  );
+}
+
+const FRESHNESS_DOTS: Record<string, string> = {
+  active: "bg-success",
+  stale: "bg-warning",
+  unknown: "bg-text-tertiary",
+};
+
+/** Native <select> (keeps aria-label + mobile pickers) in dashboard clothes. */
+const SELECT_CN = cn(
+  "min-h-11 w-full cursor-pointer border border-midground/15 bg-background/40 px-3",
+  "font-courier text-sm text-midground transition-colors hover:border-midground/25",
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30",
+  "disabled:cursor-not-allowed disabled:opacity-50",
+);
+
+const LINK_BUTTON_CN = cn(
+  "inline-flex min-h-11 items-center gap-1.5 border border-current/25 px-3 py-2 text-sm",
+  "text-text-secondary transition-colors hover:border-primary/50 hover:text-midground",
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+);
 
 export function JobsView({
   state,
@@ -91,82 +172,128 @@ export function JobsView({
       </header>
       <p className="sr-only" aria-live="polite">{announcement}</p>
 
-      {state === "loading" && <p role="status">Loading jobs…</p>}
+      {state === "loading" && (
+        <p role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-text-secondary">
+          <Spinner className="text-xl text-primary" />
+          Loading jobs…
+        </p>
+      )}
+      {state === "unconfigured" && (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+            <Settings2 className="size-6 text-text-disabled" />
+            <p className="text-sm font-medium">Job tracking isn&apos;t configured yet.</p>
+            <p className="max-w-md text-xs text-text-secondary">
+              The tracker reads your job-search vault. Point{" "}
+              <code className="font-mono-ui text-primary/90">HERMES_JOBS_DB_PATH</code> at the
+              applications database and{" "}
+              <code className="font-mono-ui text-primary/90">HERMES_JOBS_PACKET_ROOT</code> at the
+              packet folder, then restart the dashboard.
+            </p>
+            <Button size="sm" outlined onClick={onRetry}>Check again</Button>
+          </CardContent>
+        </Card>
+      )}
       {state === "error" && (
-        <section role="alert" className="space-y-3 rounded border border-destructive p-4">
-          <p>{error || "Jobs could not load."}</p>
-          <button type="button" onClick={onRetry} className="min-h-11 rounded border px-4">Retry</button>
+        <section role="alert" className="space-y-3 rounded border border-destructive/50 bg-destructive/[0.06] p-4">
+          <p className="text-sm">{error || "Jobs could not load."}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex min-h-11 items-center border border-current/30 px-4 text-sm transition-colors hover:bg-midground/10"
+          >Retry</button>
         </section>
       )}
 
       {state === "ready" && summary && (
         <>
           {summary.campaign_stop && (
-            <p role="status" className="rounded border border-emerald-600 p-3 font-medium">
+            <p role="status" className="rounded border border-success/50 bg-success/10 p-3 text-sm font-medium text-success">
               Offer accepted. Campaign stop signal is active.
             </p>
           )}
           <section aria-labelledby="jobs-summary-heading">
-            <h2 id="jobs-summary-heading" className="mb-3 text-lg font-semibold">Summary</h2>
+            <h2 id="jobs-summary-heading" className="mb-3 text-base font-semibold tracking-wide">Pipeline</h2>
             {summaryStale && (
-              <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded border border-border p-3">
+              <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded border border-warning/40 bg-warning/5 p-3 text-sm">
                 <span>Summary unavailable. Status counts may be stale.</span>
-                <button type="button" onClick={onSummaryRetry} className="min-h-11 rounded border px-4">Reload summary</button>
+                <Button size="sm" outlined onClick={onSummaryRetry}>Reload summary</Button>
               </div>
             )}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {SUMMARY_ITEMS.map(([key, label]) => (
-                <article key={key} className="rounded border border-border p-3">
-                  <h3 className="text-sm text-muted-foreground">{label}</h3>
-                  <p className="text-2xl font-semibold">{summary.counts[key]}</p>
-                </article>
+                <Card key={key} className="p-3">
+                  <h3 className="text-xs tracking-wide text-text-secondary">{label}</h3>
+                  <p className={cn("mt-1 text-2xl font-semibold tabular-nums", SUMMARY_NUMBER_COLORS[key] ?? "text-foreground")}>
+                    {summary.counts[key]}
+                  </p>
+                </Card>
               ))}
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <label className="rounded border border-border p-3">
-                <span className="flex justify-between"><span>Today prepared</span><span>{summary.today_prepared.current} / {summary.today_prepared.target}</span></span>
-                <progress className="mt-2 w-full" value={summary.today_prepared.current} max={summary.today_prepared.target} />
-              </label>
-              <label className="rounded border border-border p-3">
-                <span className="flex justify-between"><span>Week applied</span><span>{summary.week_applied.current} / {summary.week_applied.target}</span></span>
-                <progress className="mt-2 w-full" value={summary.week_applied.current} max={summary.week_applied.target} />
-              </label>
+              <GoalBar label="Today prepared" current={summary.today_prepared.current} target={summary.today_prepared.target} />
+              <GoalBar label="Week applied" current={summary.week_applied.current} target={summary.week_applied.target} />
             </div>
           </section>
 
-          <section aria-label="Job search filters" className="grid gap-3 rounded border border-border p-3 sm:grid-cols-4">
-            <label className="grid gap-1 text-sm">
+          <section aria-label="Job search filters" className="grid gap-3 rounded border border-current/15 bg-background-base/40 p-3 sm:grid-cols-4">
+            <label className="grid gap-1 text-xs text-text-secondary">
               Search
-              <input className="min-h-11 rounded border border-border bg-background px-3" type="search" value={filters.query} onChange={updateFilter("query")} />
+              <span className="relative block">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-text-disabled" />
+                <Input
+                  type="search"
+                  className="min-h-11 w-full pl-8"
+                  value={filters.query}
+                  onChange={updateFilter("query")}
+                  placeholder="Company or role"
+                />
+              </span>
             </label>
-            <label className="grid gap-1 text-sm">
+            <label className="grid gap-1 text-xs text-text-secondary">
               Status
-              <select className="min-h-11 rounded border border-border bg-background px-3" value={filters.status} onChange={updateFilter("status")}>
+              <select className={SELECT_CN} value={filters.status} onChange={updateFilter("status")}>
                 <option value="">All statuses</option>
-                {availableStatuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+                {availableStatuses.map((status) => (
+                  <option key={status} value={status}>{statusLabel(status)}</option>
+                ))}
               </select>
             </label>
-            <label className="grid gap-1 text-sm">
+            <label className="grid gap-1 text-xs text-text-secondary">
               Lane
-              <select className="min-h-11 rounded border border-border bg-background px-3" value={filters.lane} onChange={updateFilter("lane")}>
+              <select className={SELECT_CN} value={filters.lane} onChange={updateFilter("lane")}>
                 <option value="">All lanes</option>
-                {(availableLanes || [...new Set(roles.map((role) => role.lane))].sort()).map((lane) => <option key={lane} value={lane}>{titleCase(lane)}</option>)}
+                {(availableLanes || [...new Set(roles.map((role) => role.lane))].sort()).map((lane) => (
+                  <option key={lane} value={lane}>{titleCase(lane)}</option>
+                ))}
               </select>
             </label>
-            <label className="grid gap-1 text-sm">
+            <label className="grid gap-1 text-xs text-text-secondary">
               Freshness
-              <select className="min-h-11 rounded border border-border bg-background px-3" value={filters.freshness} onChange={updateFilter("freshness")}>
+              <select className={SELECT_CN} value={filters.freshness} onChange={updateFilter("freshness")}>
                 <option value="">Any freshness</option>
-                {(["active", "stale", "unknown"] as JobFreshness[]).map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
+                {(["active", "stale", "unknown"] as JobFreshness[]).map((value) => (
+                  <option key={value} value={value}>{titleCase(value)}</option>
+                ))}
               </select>
             </label>
           </section>
 
           {roles.length === 0 ? (
-            <p role="status" className="rounded border border-border p-5">No roles found.</p>
+            <Card>
+              <CardContent role="status" className="flex flex-col items-center gap-2 py-10 text-center text-sm text-text-secondary">
+                <BriefcaseBusiness className="size-6 text-text-disabled" />
+                No roles found.
+                <span className="text-xs text-text-tertiary">
+                  Adjust the filters above, or wait for the next scouting run.
+                </span>
+              </CardContent>
+            </Card>
           ) : (
             <section aria-labelledby="roles-heading">
-              <h2 id="roles-heading" className="mb-3 text-lg font-semibold">Roles</h2>
+              <h2 id="roles-heading" className="mb-3 text-base font-semibold tracking-wide">
+                Roles <span className="font-normal text-text-tertiary">({roles.length})</span>
+              </h2>
               <div className="grid gap-4 lg:grid-cols-2">
                 {roles.map((role) => {
                   const label = `${role.role_title} at ${role.company}`;
@@ -174,52 +301,103 @@ export function JobsView({
                   const selectedStatus = selectedStatuses[role.id] || role.status;
                   const trackable = JOB_STATUSES.includes(role.status as JobStatus);
                   return (
-                    <article key={role.id} className="rounded border border-border p-4" aria-labelledby={`job-${role.id}-heading`}>
+                    <Card key={role.id} className="flex flex-col p-4" aria-labelledby={`job-${role.id}-heading`}>
                       <header className="flex items-start justify-between gap-3">
-                        <div>
-                          <h3 ref={(element) => onHeadingRef?.(role.id, element)} id={`job-${role.id}-heading`} tabIndex={-1} className="font-semibold">{role.role_title}</h3>
-                          <p>{role.company}</p>
+                        <div className="min-w-0">
+                          <h3
+                            ref={(element) => onHeadingRef?.(role.id, element)}
+                            id={`job-${role.id}-heading`}
+                            tabIndex={-1}
+                            className="truncate font-semibold"
+                          >{role.role_title}</h3>
+                          <p className="truncate text-sm text-text-secondary">{role.company}</p>
                         </div>
-                        <span className="rounded border border-border px-2 py-1 text-sm">Fit {role.fit_score}</span>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded border px-2 py-1 text-sm font-mono-ui tabular-nums",
+                            role.fit_score >= 80
+                              ? "border-success/40 text-success"
+                              : role.fit_score >= 60
+                                ? "border-warning/40 text-warning"
+                                : "border-current/25 text-text-secondary",
+                          )}
+                        >Fit {role.fit_score}</span>
                       </header>
                       <p className="mt-2 text-sm text-muted-foreground">
-                        {role.location} · {role.work_mode}{role.pay ? ` · ${role.pay}` : ""}
+                        {role.location}
+                        {role.work_mode && role.work_mode !== role.location ? ` · ${role.work_mode}` : ""}
+                        {role.pay ? ` · ${role.pay}` : ""}
                       </p>
-                      <p className="mt-1 text-sm">
-                        {titleCase(role.freshness)} · Checked {role.checked_at?.slice(0, 10) || role.date_found}
+                      <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
+                        <Badge tone={STATUS_TONES[role.status] ?? "outline"} className="text-xs">
+                          {statusLabel(role.status)}
+                        </Badge>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">
+                          <span aria-hidden className={cn("size-1.5 rounded-full", FRESHNESS_DOTS[role.freshness] ?? "bg-text-tertiary")} />
+                          {titleCase(role.freshness)} · Checked {role.checked_at?.slice(0, 10) || role.date_found}
+                        </span>
                       </p>
-                      <p className="mt-1 font-medium">{statusLabel(role.status)}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {role.apply_url && <a className="min-h-11 rounded border border-border px-3 py-2" href={role.apply_url} target="_blank" rel="noopener noreferrer">Open apply page</a>}
-                        {role.source_url && <a className="min-h-11 rounded border border-border px-3 py-2" href={role.source_url} target="_blank" rel="noopener noreferrer">Open source</a>}
+                        {role.apply_url && (
+                          <a className={LINK_BUTTON_CN} href={role.apply_url} target="_blank" rel="noopener noreferrer">
+                            <ExternalLink className="size-3.5" />Open apply page
+                          </a>
+                        )}
+                        {role.source_url && (
+                          <a className={LINK_BUTTON_CN} href={role.source_url} target="_blank" rel="noopener noreferrer">
+                            <ExternalLink className="size-3.5" />Open source
+                          </a>
+                        )}
                       </div>
                       <details className="mt-3">
-                        <summary className="min-h-11 cursor-pointer py-2 font-medium">Details and packet</summary>
-                        <div className="space-y-3 text-sm">
-                          <section><h4 className="font-medium">Fit</h4><p>{role.fit_rationale}</p></section>
-                          {role.gaps.length > 0 && <section><h4 className="font-medium">Gaps</h4><ul className="list-disc pl-5">{role.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></section>}
-                          {role.blockers.length > 0 && <section><h4 className="font-medium">Blockers</h4><ul className="list-disc pl-5">{role.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></section>}
-                          <section><h4 className="font-medium">Next</h4><p>{role.recommended_action}</p></section>
-                          <section><h4 className="font-medium">Packet</h4><div className="flex flex-wrap gap-2">{role.assets.map((asset) => (
-                            <span key={asset.id} className="contents">
-                              <button type="button" className="min-h-11 rounded border border-border px-3" onClick={() => onAsset(asset.open_url, "inline", asset.name)}>Open {asset.name}</button>
-                              <button type="button" className="min-h-11 rounded border border-border px-3" onClick={() => onAsset(asset.download_url, "attachment", asset.name)}>Download {asset.name}</button>
-                            </span>
-                          ))}</div></section>
+                        <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-text-secondary transition-colors hover:text-midground">
+                          Details and packet
+                        </summary>
+                        <div className="space-y-3 border-l border-current/15 pl-3 text-sm">
+                          <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Fit</h4><p className="mt-0.5">{role.fit_rationale}</p></section>
+                          {role.gaps.length > 0 && <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Gaps</h4><ul className="mt-0.5 list-disc pl-5">{role.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></section>}
+                          {role.blockers.length > 0 && <section><h4 className="text-xs tracking-wide text-warning uppercase">Blockers</h4><ul className="mt-0.5 list-disc pl-5">{role.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></section>}
+                          <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Next</h4><p className="mt-0.5">{role.recommended_action}</p></section>
+                          <section>
+                            <h4 className="text-xs tracking-wide text-text-tertiary uppercase">Packet</h4>
+                            <div className="mt-1 flex flex-wrap gap-2">{role.assets.map((asset) => (
+                              <span key={asset.id} className="contents">
+                                <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.open_url, "inline", asset.name)}>
+                                  <FileText className="size-3.5" />Open {asset.name}
+                                </button>
+                                <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.download_url, "attachment", asset.name)}>
+                                  <Download className="size-3.5" />Download {asset.name}
+                                </button>
+                              </span>
+                            ))}</div>
+                          </section>
                         </div>
                       </details>
-                      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-                        <label className="grid gap-1 text-sm">
+                      <div className="mt-auto grid gap-2 pt-4 sm:grid-cols-[1fr_auto] sm:items-end">
+                        <label className="grid gap-1 text-xs text-text-secondary">
                           Status for {label}
-                          <select aria-label={`Status for ${label}`} className="min-h-11 rounded border border-border bg-background px-3" value={selectedStatus} disabled={pending || !trackable || role.status === "offer_accepted"} onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}>
+                          <select
+                            aria-label={`Status for ${label}`}
+                            className={SELECT_CN}
+                            value={selectedStatus}
+                            disabled={pending || !trackable || role.status === "offer_accepted"}
+                            onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}
+                          >
                             {!trackable && <option value={role.status}>{statusLabel(role.status)}</option>}
-                            {JOB_STATUSES.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+                            {JOB_STATUSES.map((status) => (
+                              <option key={status} value={status}>{statusLabel(status)}</option>
+                            ))}
                           </select>
                         </label>
-                        <button type="button" aria-label={`Update status for ${label}`} className="min-h-11 rounded bg-primary px-4 text-primary-foreground disabled:opacity-50" disabled={pending || !trackable || role.status === "offer_accepted" || selectedStatus === role.status} onClick={() => onStatusUpdate(role.id)}>{pending ? "Updating…" : "Update status"}</button>
+                        <Button
+                          aria-label={`Update status for ${label}`}
+                          className="min-h-11"
+                          disabled={pending || !trackable || role.status === "offer_accepted" || selectedStatus === role.status}
+                          onClick={() => onStatusUpdate(role.id)}
+                        >{pending ? "Updating…" : "Update status"}</Button>
                       </div>
-                      {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-destructive">{updateError}</p>}
-                    </article>
+                      {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p>}
+                    </Card>
                   );
                 })}
               </div>
@@ -271,14 +449,21 @@ export default function JobsPage() {
         ),
       );
       setState("ready");
-    } catch {
+    } catch (err) {
+      // The backend answers 503 "Jobs data is not configured" until the
+      // job-search vault paths are set — that's a setup state, not an error.
+      if (/not configured|503/i.test(String(err))) {
+        setState("unconfigured");
+        return;
+      }
       setError("Jobs could not load.");
       setState("error");
     }
   }, [filters]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
+    // Debounced so search keystrokes coalesce into one request.
+    const timer = window.setTimeout(() => void load(), 250);
     return () => window.clearTimeout(timer);
   }, [load]);
 
