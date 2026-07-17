@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 
 import { cn } from "@/lib/utils";
 import { useMedia } from "./MediaProvider";
@@ -308,12 +307,11 @@ export function MediaPage({ initialSource = "spotify" }: { initialSource?: Media
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6 p-1 sm:p-3">
-      <div>
-        <H2>Media</H2>
-        <p className="text-sm text-muted-foreground">
-          Provider-neutral playback for Spotify and owned audiobooks.
-        </p>
-      </div>
+      {/* The app header already carries the page title; keep just the
+          one-line description here like every other page. */}
+      <p className="text-sm text-muted-foreground">
+        Provider-neutral playback for Spotify and owned audiobooks.
+      </p>
       <div role="tablist" aria-label="Media source" className="flex gap-1 overflow-x-auto border-b border-border">
         {MEDIA_SOURCES.map((source) => {
           const selected = source === activeSource;
