@@ -4,9 +4,12 @@ import {
   BarChart3,
   BellRing,
   ChevronRight,
+  BookOpen,
+  Cpu,
   KeyRound,
   MessagesSquare,
   Settings,
+  Trophy,
   Wrench,
 } from "lucide-react";
 
@@ -24,6 +27,12 @@ import { cn } from "@/lib/utils";
  */
 
 const AREA_LINKS = [
+  {
+    to: "/models",
+    icon: Cpu,
+    label: "Models",
+    description: "Main model, auxiliary tasks, mixture of agents",
+  },
   {
     to: "/env",
     icon: KeyRound,
@@ -47,6 +56,18 @@ const AREA_LINKS = [
     icon: Wrench,
     label: "System",
     description: "Gateway, updates, backups, diagnostics, credential pool",
+  },
+  {
+    to: "/docs",
+    icon: BookOpen,
+    label: "Documentation",
+    description: "The full Imperator manual, searchable in-app",
+  },
+  {
+    to: "/achievements",
+    icon: Trophy,
+    label: "Achievements",
+    description: "Milestones you and Imperator have unlocked",
   },
 ] as const;
 

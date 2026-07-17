@@ -85,9 +85,9 @@ export function JobsView({
   ) => onFiltersChange({ ...filters, [key]: event.target.value });
 
   return (
-    <main aria-labelledby="jobs-heading" className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6">
+    <section aria-labelledby="jobs-heading" className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6">
       <header>
-        <h1 id="jobs-heading" className="text-2xl font-semibold">Jobs</h1>
+        <h2 id="jobs-heading" className="sr-only">Jobs</h2>
       </header>
       <p className="sr-only" aria-live="polite">{announcement}</p>
 
@@ -227,7 +227,7 @@ export function JobsView({
           )}
         </>
       )}
-    </main>
+    </section>
   );
 }
 

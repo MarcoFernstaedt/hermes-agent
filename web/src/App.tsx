@@ -262,7 +262,17 @@ const NAV_SECTIONS: Array<{
     id: "settings",
     labelKey: "settings",
     label: "Settings",
-    paths: ["/settings", "/models", "/config", "/env", "/system", "/docs"],
+    paths: [
+      "/settings",
+      "/models",
+      "/config",
+      "/env",
+      "/system",
+      "/docs",
+      // Plugin-provided page; claimed here so it sits with the other
+      // admin/meta surfaces instead of a floating plugin cluster.
+      "/achievements",
+    ],
   },
 ];
 
@@ -338,11 +348,18 @@ function partitionSidebarNav(
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
   const merged = buildNavItems(builtIn, manifests);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
+  // Plugin pages a NAV_SECTIONS entry claims (e.g. /achievements under
+  // Settings) render inside that section like a built-in; only truly
+  // unclaimed plugin pages fall into the separate plugin cluster.
+  const sectionClaimed = new Set(NAV_SECTIONS.flatMap((s) => s.paths));
   const coreItems: NavItem[] = [];
   const pluginItems: NavItem[] = [];
   for (const item of merged) {
-    if (builtinPaths.has(item.path)) coreItems.push(item);
-    else pluginItems.push(item);
+    if (builtinPaths.has(item.path) || sectionClaimed.has(item.path)) {
+      coreItems.push(item);
+    } else {
+      pluginItems.push(item);
+    }
   }
   return { coreItems, pluginItems };
 }

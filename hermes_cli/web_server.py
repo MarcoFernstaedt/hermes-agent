@@ -96,6 +96,7 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, constr
     from starlette.concurrency import run_in_threadpool
+    from starlette.middleware.gzip import GZipMiddleware
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -112,6 +113,7 @@ except ImportError:
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel, constr
         from starlette.concurrency import run_in_threadpool
+        from starlette.middleware.gzip import GZipMiddleware
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -312,6 +314,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Transfer-size + cache policy for the SPA.
+#
+# * Vite emits content-hashed filenames under /assets, so those responses
+#   are immutable: one year + `immutable` means repeat visits never even
+#   revalidate. index.html stays no-store (it carries the session token
+#   and points at the current hashes), so deploys take effect on reload.
+# * GZip shrinks the main bundle ~70% on the wire. Byte-range media
+#   streams are excluded — compressing a 206 response would corrupt the
+#   Content-Range offsets the <audio> element seeks with.
+# ---------------------------------------------------------------------------
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+_GZIP_EXEMPT_PREFIXES = ("/api/media/", "/api/files/download")
+
+
+class _SelectiveGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send):  # type: ignore[override]
+        if scope["type"] == "http" and scope.get("path", "").startswith(
+            _GZIP_EXEMPT_PREFIXES
+        ):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def _static_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE)
+    elif path.startswith(("/icons/", "/fonts/", "/fonts-terminal/", "/ds-assets/")) or path in (
+        "/favicon.ico",
+        "/manifest.webmanifest",
+        "/apple-touch-icon.png",
+    ):
+        # Not content-hashed — cache for a day, revalidate cheaply after.
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
@@ -16004,7 +16049,11 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
                 css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
-        return Response(content=css, media_type="text/css")
+        return Response(
+            content=css,
+            media_type="text/css",
+            headers={"Cache-Control": _IMMUTABLE_CACHE},
+        )
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 

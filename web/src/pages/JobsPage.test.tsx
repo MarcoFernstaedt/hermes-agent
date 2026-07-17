@@ -137,7 +137,7 @@ describe("JobsView", () => {
       <JobsView state="ready" summary={summary} roles={[]} filters={{ status: "", lane: "", freshness: "", query: "" }} {...handlers} />,
     );
 
-    expect(loading).toContain('<main aria-labelledby="jobs-heading"');
+    expect(loading).toContain('<section aria-labelledby="jobs-heading"');
     expect(loading).toContain("Loading jobs…");
     expect(error).toContain('role="alert"');
     expect(error).toContain(">Retry<");
