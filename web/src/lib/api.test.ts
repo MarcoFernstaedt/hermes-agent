@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, buildAuthedAssetUrl } from "./api";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
@@ -46,6 +46,29 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("buildAuthedAssetUrl", () => {
+  it("uses the ephemeral loopback token for native audio elements", () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback token" });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe(
+      "/api/media/audiobooks/chapter/stream?token=loopback%20token",
+    );
+  });
+
+  it("relies on cookie auth in gated mode", () => {
+    vi.stubGlobal("window", {
+      __HERMES_AUTH_REQUIRED__: true,
+      __HERMES_SESSION_TOKEN__: "must-not-appear",
+    });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe("/api/media/audiobooks/chapter/stream");
   });
 });
 

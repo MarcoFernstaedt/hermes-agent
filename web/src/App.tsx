@@ -35,6 +35,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  Music,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -91,6 +92,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import MediaPage from "@/features/media/MediaPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -133,6 +135,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/media": MediaPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -167,6 +170,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/media", label: "Media", icon: Music },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",

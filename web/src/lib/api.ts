@@ -279,6 +279,24 @@ export async function authedFetch(
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */
+/** Build a browser-loadable URL for an authenticated media element.
+ *
+ * Remote dashboards authenticate audio requests with the existing session
+ * cookie. Local desktop mode has no cookie and media elements cannot set the
+ * dashboard header, so the backend accepts its ephemeral process token only
+ * on the narrow audiobook stream route.
+ */
+export function buildAuthedAssetUrl(path: string): string {
+  const url = `${BASE}${path}`;
+  if (typeof window === "undefined" || window.__HERMES_AUTH_REQUIRED__) {
+    return url;
+  }
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
 export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
@@ -315,9 +333,63 @@ export interface WriteApprovalResponse {
   error?: string;
 }
 
+export type MediaProviderStatus =
+  | "ready"
+  | "needs_auth"
+  | "needs_device"
+  | "degraded";
+
+export interface SpotifyPlaybackSummary {
+  is_playing: boolean;
+  progress_ms: number | null;
+  item: {
+    name: string | null;
+    uri: string | null;
+    duration_ms: number | null;
+    artists: string[];
+  } | null;
+  device: {
+    id: string | null;
+    name: string | null;
+    volume_percent: number | null;
+  } | null;
+}
+
+export interface SpotifyMediaState {
+  provider: "spotify";
+  status: MediaProviderStatus;
+  message: string;
+  playback: SpotifyPlaybackSummary | null;
+}
+
+export interface AudiobookChapter {
+  id: string;
+  title: string;
+  order: number;
+  stream_url: string;
+}
+
+export interface AudiobookIndex {
+  book: string;
+  chapters: AudiobookChapter[];
+}
+
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getSpotifyMediaState: () =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
+  controlSpotifyMedia: (
+    action: "play" | "pause" | "previous" | "next",
+    deviceId?: string,
+  ) =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, device_id: deviceId }),
+    }),
+  getAudiobookIndex: () =>
+    fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
