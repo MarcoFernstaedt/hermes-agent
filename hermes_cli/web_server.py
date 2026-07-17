@@ -379,6 +379,13 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+# Native Jobs routes reuse the dashboard's existing token/cookie authorization
+# assertion. Feature logic stays in the modular jobs package.
+from hermes_cli.jobs.router import create_jobs_router as _create_jobs_router  # noqa: E402
+
+app.include_router(_create_jobs_router(_require_token))
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin

@@ -172,3 +172,48 @@ describe("api.resolveWriteApproval", () => {
     ).rejects.toThrow("409: safe failure");
   });
 });
+
+describe("jobs API", () => {
+  it("lists jobs and sends exact status payloads with existing auth", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({ items: [], total: 0, filters: {} });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getJobs({
+      status: "applied",
+      lane: "quality_assurance",
+      freshness: "active",
+      query: "analyst",
+    });
+    await api.updateJobStatus(42, "pending");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/jobs?status=applied&lane=quality_assurance&freshness=active&q=analyst",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/42/status");
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ status: "pending" }),
+      }),
+    );
+    const headers = fetchMock.mock.calls[1][1]?.headers as Headers;
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("fetches packet assets with auth and no URL credential", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("asset"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.fetchJobAsset("/api/jobs/1/assets/2?disposition=attachment");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/jobs/1/assets/2?disposition=attachment",
+    );
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("token=");
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+});

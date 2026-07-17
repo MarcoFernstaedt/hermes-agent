@@ -20,6 +20,14 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { buildJobsQuery } from "@/lib/jobs";
+import type {
+  JobStatus,
+  JobStatusUpdate,
+  JobsFilters,
+  JobsListResponse,
+  JobsSummary,
+} from "@/lib/jobs";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -318,6 +326,25 @@ export interface WriteApprovalResponse {
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getJobs: (filters: JobsFilters) =>
+    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
+  getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+  updateJobStatus: (jobId: number, status: JobStatus) =>
+    fetchJSON<JobStatusUpdate>(`/api/jobs/${jobId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    }),
+  fetchJobAsset: async (url: string) => {
+    if (!url.startsWith("/api/jobs/") || url.includes("token=")) {
+      throw new Error("Invalid job asset URL");
+    }
+    const response = await authedFetch(url);
+    if (!response.ok) {
+      throw new Error(`Asset request failed: ${response.status}`);
+    }
+    return response.blob();
+  },
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *

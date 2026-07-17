@@ -24,6 +24,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  BriefcaseBusiness,
   Clock,
   Code,
   Cpu,
@@ -89,6 +90,7 @@ const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
 const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
+const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
@@ -145,6 +147,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/jobs": JobsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -180,6 +183,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
@@ -233,7 +237,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/files", "/analytics", "/logs"],
+    paths: ["/sessions", "/jobs", "/files", "/analytics", "/logs"],
   },
   {
     id: "automate",
