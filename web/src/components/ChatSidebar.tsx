@@ -24,13 +24,15 @@
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
+import { Switch } from "@nous-research/ui/ui/components/switch";
+
+import { setAppSetting, useAppSettings } from "@/lib/app-settings";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
+import { GatewayClient } from "@/lib/gatewayClient";
 import { api } from "@/lib/api";
 import {
   restartDashboardEvents,
@@ -55,24 +57,6 @@ interface RpcEnvelope {
   params?: { type?: string; payload?: unknown };
 }
 
-const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
-
-const STATE_TONE: Record<
-  ConnectionState,
-  "secondary" | "warning" | "success" | "destructive"
-> = {
-  idle: "secondary",
-  connecting: "warning",
-  open: "success",
-  closed: "secondary",
-  error: "destructive",
-};
 
 interface ChatSidebarProps {
   channel: string;
@@ -98,8 +82,8 @@ export function ChatSidebar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const gw = useMemo(() => new GatewayClient(), [version]);
 
-  const [state, setState] = useState<ConnectionState>("idle");
   const [info, setInfo] = useState<SessionInfo>({});
+  const settings = useAppSettings();
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The badge shows config.yaml's main model (`model.default`) via
@@ -166,7 +150,6 @@ export function ChatSidebar({
       setInfo({});
       setError(null);
     });
-    const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
       if (ev.payload) {
@@ -207,7 +190,6 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true;
-      offState();
       offSessionInfo();
       offError();
       gw.close();
@@ -327,9 +309,26 @@ export function ChatSidebar({
           </Button>
         </div>
 
-        <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
-        </Badge>
+        {/* The sidecar connection badge that used to sit here duplicated
+            the composer's always-on status dot (working/idle/reconnecting)
+            with a cryptic second vocabulary ("live"/"closed"). One status
+            surface only; sidecar failures still surface via the banner. */}
+      </Card>
+
+      <Card className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-display text-xs tracking-wider text-text-tertiary">
+            chat settings
+          </div>
+          <div className="text-sm text-text-secondary">Show tool activity</div>
+        </div>
+        <Switch
+          checked={settings.showToolCalls}
+          onCheckedChange={(checked) =>
+            setAppSetting("showToolCalls", checked === true)
+          }
+          aria-label="Show tool activity in the chat feed"
+        />
       </Card>
 
       {supportsReasoning && (

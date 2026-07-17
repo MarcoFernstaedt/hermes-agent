@@ -26,6 +26,8 @@ import {
 } from "@/components/SlashPopover";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { Markdown } from "@/components/Markdown";
+import { useAppSettings } from "@/lib/app-settings";
+import { formatMessageTime } from "@/lib/format";
 import { getChatWelcome, type ChatFeedMessage } from "@/lib/chat-feed-model";
 import { GatewayClient } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
@@ -62,25 +64,6 @@ const roleLabel = (message: ChatFeedMessage): string => {
   if (message.role === "clarify") return "Input requested";
   return message.title || message.role;
 };
-
-/** Render a bubble timestamp; null for index-fallback pseudo-timestamps. */
-export function formatMessageTime(
-  timestamp: number,
-  now = new Date(),
-): string | null {
-  const ms = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
-  // Hydration uses the row index when a stored message has no timestamp —
-  // anything before ~2001 can't be a real message time.
-  if (ms < 1_000_000_000_000) return null;
-  const date = new Date(ms);
-  const time = date.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return time;
-  return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${time}`;
-}
 
 function MessageTime({ message }: { message: ChatFeedMessage }) {
   const label = formatMessageTime(message.timestamp);
@@ -162,6 +145,20 @@ export function ChatBubbleFeed({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const slashGateway = useMemo(() => new GatewayClient(), []);
   const welcome = useMemo(() => getChatWelcome(), []);
+  const { showToolCalls } = useAppSettings();
+
+  // "Show tool activity" (chat panel setting) hides operational rows only —
+  // conversation, approvals, and clarifications always render.
+  const visibleMessages = useMemo(
+    () =>
+      showToolCalls
+        ? messages
+        : messages.filter(
+            (message) =>
+              message.role !== "tool" && message.role !== "system",
+          ),
+    [messages, showToolCalls],
+  );
 
   useEffect(() => {
     void slashGateway.connect().catch(() => undefined);
@@ -182,9 +179,9 @@ export function ChatBubbleFeed({
       "(prefers-reduced-motion: reduce)",
     ).matches;
     const previousCount = prevMessageCountRef.current;
-    prevMessageCountRef.current = messages.length;
+    prevMessageCountRef.current = visibleMessages.length;
 
-    if (previousCount === 0 && messages.length > 0) {
+    if (previousCount === 0 && visibleMessages.length > 0) {
       // A session just hydrated: land near the latest exchange instantly,
       // then glide the final stretch — the transcript arrives at the newest
       // message instead of opening at the top of the history.
@@ -212,7 +209,7 @@ export function ChatBubbleFeed({
     } else {
       setUnread(true);
     }
-  }, [messages]);
+  }, [visibleMessages]);
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -288,7 +285,7 @@ export function ChatBubbleFeed({
         aria-live="polite"
         aria-relevant="additions text"
       >
-        {messages.length === 0 && hydrating ? (
+        {visibleMessages.length === 0 && hydrating ? (
           <div
             className="flex h-full min-h-40 flex-col items-center justify-center gap-3 text-text-tertiary"
             aria-busy="true"
@@ -297,7 +294,7 @@ export function ChatBubbleFeed({
             <LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" />
             <p className="text-sm text-text-secondary">Loading conversation…</p>
           </div>
-        ) : messages.length === 0 ? (
+        ) : visibleMessages.length === 0 ? (
           <ChatEmptyState
             greeting={welcome.greeting}
             prompt={welcome.prompt}
@@ -315,7 +312,7 @@ export function ChatBubbleFeed({
           // max-w-3xl keeps the transcript at a readable measure on wide
           // screens — the column width ChatGPT/Claude converge on.
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 sm:gap-4">
-            {messages.map((message) => {
+            {visibleMessages.map((message) => {
               const user = message.role === "user";
               const assistant = message.role === "assistant";
               const operational =
@@ -588,8 +585,8 @@ export function ChatBubbleFeed({
               rows={1}
               disabled={disabled}
               aria-label="Message Imperator"
-              placeholder={disabled ? "Reconnecting…" : "Message Imperator or type / for commands"}
-              className="max-h-40 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 text-base leading-6 text-foreground outline-none placeholder:text-text-tertiary disabled:cursor-not-allowed sm:text-sm"
+              placeholder={disabled ? "Reconnecting…" : "Send Imperator a message"}
+              className="max-h-40 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 text-base leading-6 text-foreground outline-none placeholder:italic placeholder:text-text-disabled disabled:cursor-not-allowed sm:text-sm"
             />
             <Button
               size="icon"

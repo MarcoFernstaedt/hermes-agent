@@ -69,6 +69,7 @@ import {
   takeNextQueuedSend,
   type QueuedSend,
 } from "@/lib/chat-send-queue";
+import { clearUnreadReplies, notifyAssistantReply } from "@/lib/notify";
 import { subscribeDashboardEvents } from "@/lib/event-channel-hub";
 import {
   createCurrentPtySocket,
@@ -496,6 +497,68 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [titleScope],
   );
 
+  // ── Session-chain hydration ─────────────────────────────────────────
+  // Resume runs continue under CHILD session ids (the store links them via
+  // parent_session_id), so one id's message list is only a fragment of
+  // what the user sees as "one conversation". Loading a single id is what
+  // made resumed sessions open empty: the first session.info announced the
+  // new descendant id, the feed was cleared, and the descendant had no
+  // stored messages yet. Hydration therefore always loads the WHOLE chain:
+  // walk up to the root via parent_session_id, take the root's descendant
+  // path, and concatenate every session's messages in order.
+  const sessionChainCacheRef = useRef(new Map<string, string[]>());
+
+  const resolveSessionChain = useCallback(
+    async (sessionId: string): Promise<string[]> => {
+      const cached = sessionChainCacheRef.current.get(sessionId);
+      if (cached) return cached;
+
+      let root = sessionId;
+      const seen = new Set([sessionId]);
+      for (let hop = 0; hop < 25; hop++) {
+        let parent: string | null | undefined;
+        try {
+          parent = (await api.getSessionDetail(root, scopedProfile))
+            .parent_session_id;
+        } catch {
+          break;
+        }
+        if (!parent || seen.has(parent)) break;
+        seen.add(parent);
+        root = parent;
+      }
+
+      let chain: string[] = [sessionId];
+      try {
+        const resp = await api.getSessionLatestDescendant(root, scopedProfile);
+        if (resp.path?.length) chain = resp.path;
+      } catch {
+        // Fall back to the single id — hydration still works, just unchained.
+      }
+      if (!chain.includes(sessionId)) chain = [...chain, sessionId];
+      sessionChainCacheRef.current.set(sessionId, chain);
+      return chain;
+    },
+    [scopedProfile],
+  );
+
+  const fetchChainMessages = useCallback(
+    async (sessionId: string) => {
+      const chain = await resolveSessionChain(sessionId);
+      const parts = await Promise.all(
+        chain.map((id) =>
+          api
+            .getSessionMessages(id, scopedProfile)
+            .then((response) => response.messages)
+            .catch(() => []),
+        ),
+      );
+      return { chain, messages: parts.flat() };
+    },
+    [resolveSessionChain, scopedProfile],
+  );
+
+
   // Structured event relay for the bubble transcript. The PTY remains the
   // execution authority; this subscriber is a read-only projection of the
   // same message/tool/approval stream already used by the native clients.
@@ -509,6 +572,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     activeRuntimeSessionIdRef.current = null;
     activeStoredSessionIdRef.current = null;
     queuedSendsRef.current = [];
+    sessionChainCacheRef.current.clear();
     queueMicrotask(() => {
       if (!unmounting) {
         setFeedState(EMPTY_CHAT_FEED);
@@ -516,14 +580,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     });
 
-    const hydrateStoredSession = (sessionId: string) => {
+    const hydrateStoredSession = (
+      sessionId: string,
+      previousSessionId?: string | null,
+    ) => {
       if (!sessionId || hydratedSessionIdsRef.current.has(sessionId)) return;
       hydratedSessionIdsRef.current.add(sessionId);
       const requestGeneration = hydrationGenerationRef.current;
       setHydrationsInFlight((count) => count + 1);
-      void api
-        .getSessionMessages(sessionId, scopedProfile)
-        .then((response) => {
+      void fetchChainMessages(sessionId)
+        .then(({ chain, messages }) => {
           if (
             unmounting ||
             !shouldApplyHydration(
@@ -535,8 +601,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ) {
             return;
           }
-          const history = hydrateSessionMessages(response.messages);
-          setFeedState((state) => mergeHydratedFeedState(history, state));
+          const history = hydrateSessionMessages(messages);
+          setFeedState((state) => {
+            // A stored-id change that ISN'T part of the visible chain
+            // (e.g. /new typed into the TUI) starts from a clean feed.
+            // Continuations — resume runs rotating to a child session id —
+            // keep the live bubbles and swap in the full-chain history,
+            // instead of the old behavior of wiping the transcript the
+            // moment the descendant id was announced.
+            const base =
+              previousSessionId && !chain.includes(previousSessionId)
+                ? EMPTY_CHAT_FEED
+                : state;
+            return mergeHydratedFeedState(history, base);
+          });
         })
         .catch(() => {
           if (
@@ -590,12 +668,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             if (previousStoredSessionId !== storedSessionId) {
               hydrationGenerationRef.current += 1;
               hydratedSessionIdsRef.current.clear();
-              if (previousStoredSessionId) {
-                setFeedState(EMPTY_CHAT_FEED);
-              }
+              // No synchronous wipe here: whether this id change is a
+              // continuation (resume descendant — keep the transcript) or
+              // a genuinely fresh session (clear it) is decided by the
+              // chain lookup inside hydrateStoredSession.
             }
             activeStoredSessionIdRef.current = storedSessionId;
-            hydrateStoredSession(storedSessionId);
+            hydrateStoredSession(storedSessionId, previousStoredSessionId);
           }
           if (typeof event.payload?.running === "boolean") {
             setAgentRunning(event.payload.running);
@@ -629,6 +708,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (event.type === "message.start") setAgentRunning(true);
         if (event.type === "message.complete" || event.type === "error") {
           setAgentRunning(false);
+          if (event.type === "message.complete") {
+            // Replies only — tool calls and streaming deltas never notify.
+            const payload = event.payload as {
+              text?: unknown;
+              rendered?: unknown;
+            };
+            const replyText =
+              typeof payload?.text === "string" && payload.text
+                ? payload.text
+                : typeof payload?.rendered === "string"
+                  ? payload.rendered
+                  : "";
+            notifyAssistantReply(replyText);
+          }
           const sessionId = activeStoredSessionIdRef.current;
           if (sessionId) {
             hydratedSessionIdsRef.current.delete(sessionId);
@@ -695,7 +788,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       hydrationGenerationRef.current += 1;
       stopEventSocket();
     };
-  }, [channel, ptyOwnershipReady, scopedProfile]);
+  }, [channel, ptyOwnershipReady, scopedProfile, fetchChainMessages]);
 
   // Restore the selected session into semantic bubbles before new live events
   // arrive. Stored system/tool rows are retained rather than prettified away.
@@ -711,9 +804,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const requestGeneration = hydrationGenerationRef.current;
     let cancelled = false;
     setHydrationsInFlight((count) => count + 1);
-    void api
-      .getSessionMessages(resumeParam, scopedProfile)
-      .then((response) => {
+    void fetchChainMessages(resumeParam)
+      .then(({ messages }) => {
         if (
           cancelled ||
           !shouldApplyHydration(
@@ -725,7 +817,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         ) {
           return;
         }
-        const history = hydrateSessionMessages(response.messages);
+        const history = hydrateSessionMessages(messages);
         setFeedState((state) => mergeHydratedFeedState(history, state));
       })
       .catch(() => {
@@ -747,7 +839,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, scopedProfile, channel]);
+  }, [resumeParam, scopedProfile, channel, fetchChainMessages]);
 
   const sendPtyText = useCallback((text: string, submit = true): boolean => {
     const ws = wsRef.current;
@@ -958,6 +1050,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setTitle(sessionTitle);
     return () => setTitle(null);
   }, [isActive, sessionTitle, setTitle]);
+
+  // Unread-reply badge clears the moment the chat is actually in view.
+  useEffect(() => {
+    if (!isActive) return;
+    const clearIfVisible = () => {
+      if (!document.hidden) clearUnreadReplies();
+    };
+    clearIfVisible();
+    document.addEventListener("visibilitychange", clearIfVisible);
+    return () =>
+      document.removeEventListener("visibilitychange", clearIfVisible);
+  }, [isActive]);
 
   useEffect(() => {
     if (!resumeParam) return;

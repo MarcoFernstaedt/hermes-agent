@@ -59,7 +59,7 @@ describe("CommandPalette", () => {
 });
 
 // --- chat timestamp formatting -------------------------------------------
-import { formatMessageTime } from "./ChatBubbleFeed";
+import { formatMessageTime } from "../lib/format";
 
 describe("formatMessageTime", () => {
   const now = new Date("2026-07-16T15:00:00");

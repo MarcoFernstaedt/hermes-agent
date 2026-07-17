@@ -48,6 +48,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Terminal,
@@ -102,6 +103,7 @@ const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -155,6 +157,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/channels": ChannelsPage,
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
+  "/settings": SettingsPage,
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
   "/config": ConfigPage,
@@ -202,6 +205,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },
+  { path: "/settings", label: "Settings", icon: SlidersHorizontal },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -249,7 +253,7 @@ const NAV_SECTIONS: Array<{
     id: "settings",
     labelKey: "settings",
     label: "Settings",
-    paths: ["/models", "/config", "/env", "/system", "/docs"],
+    paths: ["/settings", "/models", "/config", "/env", "/system", "/docs"],
   },
 ];
 
