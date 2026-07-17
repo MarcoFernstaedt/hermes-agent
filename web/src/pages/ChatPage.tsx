@@ -43,7 +43,7 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { api } from "@/lib/api";
+import { api, type SessionMessage } from "@/lib/api";
 import {
   eventChannelForPtyAttach,
   isPtyOwnershipReady,
@@ -69,6 +69,11 @@ import {
   takeNextQueuedSend,
   type QueuedSend,
 } from "@/lib/chat-send-queue";
+import {
+  planInitialWindow,
+  planOlderPage,
+  type ChainCursor,
+} from "@/lib/chat-history-window";
 import { clearUnreadReplies, notifyAssistantReply } from "@/lib/notify";
 import { subscribeDashboardEvents } from "@/lib/event-channel-hub";
 import {
@@ -361,11 +366,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       reconnectTimerRef.current = null;
     }
   }, []);
+  // Windowed hydration state: the accumulated stored messages currently
+  // rendered as history, plus the cursor marking where the next older
+  // page ends. Reset alongside the feed.
+  const historyWindowRef = useRef<{
+    chain: string[];
+    counts: number[];
+    cursor: ChainCursor | null;
+    accumulated: SessionMessage[];
+    loadedOlder: boolean;
+  } | null>(null);
+  const [olderHistory, setOlderHistory] = useState<{
+    available: boolean;
+    loading: boolean;
+    /** True once a window has loaded, so "Beginning of session" only
+     *  renders for real transcripts. */
+    windowed: boolean;
+  }>({ available: false, loading: false, windowed: false });
   const resetFreshChatProjection = useCallback(() => {
     hydrationGenerationRef.current += 1;
     activeRuntimeSessionIdRef.current = null;
     activeStoredSessionIdRef.current = null;
     hydratedSessionIdsRef.current.clear();
+    historyWindowRef.current = null;
+    setOlderHistory({ available: false, loading: false, windowed: false });
     setComposer("");
     setFeedState(EMPTY_CHAT_FEED);
     setAgentRunning(false);
@@ -551,18 +575,75 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const fetchChainMessages = useCallback(
     async (sessionId: string) => {
       const chain = await resolveSessionChain(sessionId);
-      const parts = await Promise.all(
+      const counts = await Promise.all(
         chain.map((id) =>
           api
-            .getSessionMessages(id, scopedProfile)
+            .getSessionDetail(id, scopedProfile)
+            .then((detail) => detail.message_count ?? 0)
+            .catch(() => 0),
+        ),
+      );
+      const { fetches, cursor } = planInitialWindow(counts);
+      const parts = await Promise.all(
+        fetches.map((page) =>
+          api
+            .getSessionMessages(chain[page.chainIndex], scopedProfile, {
+              limit: page.limit,
+              offset: page.offset,
+            })
             .then((response) => response.messages)
             .catch(() => []),
         ),
       );
-      return { chain, messages: parts.flat() };
+      const messages = parts.flat();
+      historyWindowRef.current = {
+        chain,
+        counts,
+        cursor,
+        accumulated: messages,
+        loadedOlder: false,
+      };
+      setOlderHistory({
+        available: cursor !== null,
+        loading: false,
+        windowed: true,
+      });
+      return { chain, messages };
     },
     [resolveSessionChain, scopedProfile],
   );
+
+  /** Prepend the next older page; triggered from the feed's top sentinel. */
+  const loadOlderHistory = useCallback(() => {
+    const window = historyWindowRef.current;
+    if (!window || !window.cursor) return;
+    setOlderHistory((state) =>
+      state.loading ? state : { ...state, loading: true },
+    );
+    const { fetch: page, cursor } = planOlderPage(window.counts, window.cursor);
+    void api
+      .getSessionMessages(window.chain[page.chainIndex], scopedProfile, {
+        limit: page.limit,
+        offset: page.offset,
+      })
+      .then((response) => {
+        const current = historyWindowRef.current;
+        if (current !== window) return; // feed was reset mid-flight
+        current.accumulated = [...response.messages, ...current.accumulated];
+        current.cursor = cursor;
+        current.loadedOlder = true;
+        const history = hydrateSessionMessages(current.accumulated);
+        setFeedState((state) => mergeHydratedFeedState(history, state));
+        setOlderHistory({
+          available: cursor !== null,
+          loading: false,
+          windowed: true,
+        });
+      })
+      .catch(() => {
+        setOlderHistory((state) => ({ ...state, loading: false }));
+      });
+  }, [scopedProfile]);
 
 
   // Structured event relay for the bubble transcript. The PTY remains the
@@ -579,8 +660,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     activeStoredSessionIdRef.current = null;
     queuedSendsRef.current = [];
     sessionChainCacheRef.current.clear();
+    historyWindowRef.current = null;
     queueMicrotask(() => {
       if (!unmounting) {
+        setOlderHistory({ available: false, loading: false, windowed: false });
         setFeedState(EMPTY_CHAT_FEED);
         setAgentRunning(false);
       }
@@ -741,7 +824,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             notifyAssistantReply(replyText);
           }
           const sessionId = activeStoredSessionIdRef.current;
-          if (sessionId) {
+          // Post-turn reconcile refetches the newest window. Skip it once
+          // the user has paged older history in — a window refetch would
+          // collapse those pages, and the live bubbles already carry the
+          // completed turn verbatim.
+          if (sessionId && !historyWindowRef.current?.loadedOlder) {
             hydratedSessionIdsRef.current.delete(sessionId);
             hydrateStoredSession(sessionId);
           }
@@ -2158,6 +2245,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 disabled={ptyState !== "open"}
                 writeApprovalDisabled={false}
                 hydrating={hydrationsInFlight > 0}
+                hasOlderHistory={olderHistory.available}
+                loadingOlderHistory={olderHistory.loading}
+                historyWindowed={olderHistory.windowed}
+                onLoadOlderHistory={loadOlderHistory}
                 isWorking={agentRunning}
                 rawConsoleOpen={rawConsoleOpen}
                 focusSignal={reconnectNonce}

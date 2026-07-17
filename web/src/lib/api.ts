@@ -376,9 +376,18 @@ export const api = {
         profile,
       ),
     ),
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+  getSessionMessages: (
+    id: string,
+    profile = getManagementProfile(),
+    page?: { limit: number; offset: number },
+  ) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages${
+          page ? `?limit=${page.limit}&offset=${page.offset}` : ""
+        }`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(

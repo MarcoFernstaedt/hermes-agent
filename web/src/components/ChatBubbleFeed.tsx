@@ -39,6 +39,13 @@ interface ChatBubbleFeedProps {
   writeApprovalDisabled?: boolean;
   /** A selected session's history is being fetched into the feed. */
   hydrating?: boolean;
+  /** Older messages exist beyond the loaded window. */
+  hasOlderHistory?: boolean;
+  /** An older page is being fetched right now. */
+  loadingOlderHistory?: boolean;
+  /** A history window has loaded (gates the beginning-of-session marker). */
+  historyWindowed?: boolean;
+  onLoadOlderHistory?(): void;
   isWorking: boolean;
   rawConsoleOpen: boolean;
   focusSignal: number;
@@ -123,6 +130,10 @@ export function ChatBubbleFeed({
   disabled = false,
   writeApprovalDisabled = disabled,
   hydrating = false,
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  historyWindowed = false,
+  onLoadOlderHistory,
   isWorking,
   rawConsoleOpen,
   focusSignal,
@@ -171,6 +182,26 @@ export function ChatBubbleFeed({
     return () => cancelAnimationFrame(frame);
   }, [disabled, focusSignal]);
 
+  // Scroll anchoring for older-page prepends: capture the geometry when a
+  // load is requested; after the rows land, restore the visual position so
+  // the transcript doesn't jump under the user's thumb.
+  const prependAnchorRef = useRef<{
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
+
+  const requestOlderHistory = useCallback(() => {
+    if (!onLoadOlderHistory || !hasOlderHistory || loadingOlderHistory) return;
+    const node = scrollRef.current;
+    if (node) {
+      prependAnchorRef.current = {
+        scrollHeight: node.scrollHeight,
+        scrollTop: node.scrollTop,
+      };
+    }
+    onLoadOlderHistory();
+  }, [onLoadOlderHistory, hasOlderHistory, loadingOlderHistory]);
+
   const prevMessageCountRef = useRef(0);
   useEffect(() => {
     const node = scrollRef.current;
@@ -180,6 +211,15 @@ export function ChatBubbleFeed({
     ).matches;
     const previousCount = prevMessageCountRef.current;
     prevMessageCountRef.current = visibleMessages.length;
+
+    const anchor = prependAnchorRef.current;
+    if (anchor && !loadingOlderHistory && visibleMessages.length > previousCount) {
+      // Older rows just prepended above the viewport — keep what the user
+      // was reading exactly where it was.
+      prependAnchorRef.current = null;
+      node.scrollTop = node.scrollHeight - anchor.scrollHeight + anchor.scrollTop;
+      return;
+    }
 
     if (previousCount === 0 && visibleMessages.length > 0) {
       // A session just hydrated: land near the latest exchange instantly,
@@ -209,7 +249,7 @@ export function ChatBubbleFeed({
     } else {
       setUnread(true);
     }
-  }, [visibleMessages]);
+  }, [visibleMessages, loadingOlderHistory]);
 
   useEffect(() => {
     const textarea = composerRef.current;
@@ -224,7 +264,10 @@ export function ChatBubbleFeed({
     const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 96;
     nearBottomRef.current = nearBottom;
     if (nearBottom) setUnread(false);
-  }, []);
+    // Approaching the top pulls the next older page in automatically —
+    // the button stays as an explicit affordance.
+    if (node.scrollTop < 80) requestOlderHistory();
+  }, [requestOlderHistory]);
 
   const jumpToLatest = useCallback(() => {
     const node = scrollRef.current;
@@ -312,6 +355,33 @@ export function ChatBubbleFeed({
           // max-w-3xl keeps the transcript at a readable measure on wide
           // screens — the column width ChatGPT/Claude converge on.
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 sm:gap-4">
+            {historyWindowed && (
+              loadingOlderHistory ? (
+                <div
+                  className="flex items-center justify-center gap-2 py-2 text-xs text-text-tertiary"
+                  aria-busy="true"
+                  aria-live="polite"
+                >
+                  <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" />
+                  Loading earlier messages…
+                </div>
+              ) : hasOlderHistory ? (
+                <div className="flex justify-center py-1">
+                  <Button size="sm" ghost onClick={requestOlderHistory}>
+                    Load earlier messages
+                  </Button>
+                </div>
+              ) : (
+                <div
+                  className="flex items-center gap-3 py-2 text-xs tracking-wide text-text-tertiary"
+                  role="note"
+                >
+                  <span aria-hidden className="h-px flex-1 bg-current/20" />
+                  Beginning of session
+                  <span aria-hidden className="h-px flex-1 bg-current/20" />
+                </div>
+              )
+            )}
             {visibleMessages.map((message) => {
               const user = message.role === "user";
               const assistant = message.role === "assistant";
