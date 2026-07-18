@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   BriefcaseBusiness,
+  CheckCircle2,
   Download,
   ExternalLink,
   FileText,
@@ -53,7 +54,7 @@ interface JobsViewProps {
   onRetry: () => void;
   onSummaryRetry?: () => void;
   onStatusSelect: (jobId: number, status: JobStatus) => void;
-  onStatusUpdate: (jobId: number) => void;
+  onStatusUpdate: (jobId: number, status?: JobStatus) => void;
   onAsset: (url: string, disposition: "inline" | "attachment", name: string) => void;
 }
 
@@ -118,6 +119,25 @@ function GoalBar({ label, current, target }: { label: string; current: number; t
       </div>
     </Card>
   );
+}
+
+/**
+ * The page is an apply workflow, not a flat list: ready packets queue in
+ * "Up next", anything submitted tracks in "In motion", and terminal
+ * statuses rest in "Closed". Updating a status re-groups immediately, so
+ * marking a job applied visibly moves it out of the queue.
+ */
+const IN_MOTION = new Set(["applied", "pending", "interviewing", "offer_received", "offer_accepted"]);
+const GROUPS = [
+  { id: "queue", title: "Up next", hint: "Packet ready — apply and mark it" },
+  { id: "motion", title: "In motion", hint: "Submitted and moving" },
+  { id: "closed", title: "Closed", hint: "Rejected, withdrawn, expired" },
+] as const;
+
+function groupOf(role: JobRole): (typeof GROUPS)[number]["id"] {
+  if (role.status === "packet_ready_not_applied") return "queue";
+  if (IN_MOTION.has(role.status)) return "motion";
+  return "closed";
 }
 
 const FRESHNESS_DOTS: Record<string, string> = {
@@ -206,9 +226,9 @@ export function JobsView({
         </section>
       )}
 
-      {state === "ready" && summary && (
+      {state === "ready" && (
         <>
-          {summary.campaign_stop && (
+          {summary?.campaign_stop && (
             <p role="status" className="rounded border border-success/50 bg-success/10 p-3 text-sm font-medium text-success">
               Offer accepted. Campaign stop signal is active.
             </p>
@@ -221,20 +241,24 @@ export function JobsView({
                 <Button size="sm" outlined onClick={onSummaryRetry}>Reload summary</Button>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {SUMMARY_ITEMS.map(([key, label]) => (
-                <Card key={key} className="p-3">
-                  <h3 className="text-xs tracking-wide text-text-secondary">{label}</h3>
-                  <p className={cn("mt-1 text-2xl font-semibold tabular-nums", SUMMARY_NUMBER_COLORS[key] ?? "text-foreground")}>
-                    {summary.counts[key]}
-                  </p>
-                </Card>
-              ))}
-            </div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <GoalBar label="Agent today qualified" current={summary.agent_today_qualified.current} target={summary.agent_today_qualified.target} />
-              <GoalBar label="Your week applied" current={summary.your_week_applied.current} target={summary.your_week_applied.target} />
-            </div>
+            {summary && (
+              <>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {SUMMARY_ITEMS.map(([key, label]) => (
+                    <Card key={key} className="p-3">
+                      <h3 className="text-xs tracking-wide text-text-secondary">{label}</h3>
+                      <p className={cn("mt-1 text-2xl font-semibold tabular-nums", SUMMARY_NUMBER_COLORS[key] ?? "text-foreground")}>
+                        {summary.counts[key]}
+                      </p>
+                    </Card>
+                  ))}
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <GoalBar label="Agent today qualified" current={summary.agent_today_qualified.current} target={summary.agent_today_qualified.target} />
+                  <GoalBar label="Your week applied" current={summary.your_week_applied.current} target={summary.your_week_applied.target} />
+                </div>
+              </>
+            )}
           </section>
 
           <section aria-label="Job search filters" className="grid gap-3 rounded border border-current/15 bg-background-base/40 p-3 sm:grid-cols-4">
@@ -291,118 +315,142 @@ export function JobsView({
               </CardContent>
             </Card>
           ) : (
-            <section aria-labelledby="roles-heading">
-              <h2 id="roles-heading" className="mb-3 text-base font-semibold tracking-wide">
-                Roles <span className="font-normal text-text-tertiary">({roles.length})</span>
-              </h2>
-              <div className="grid gap-4 lg:grid-cols-2">
-                {roles.map((role) => {
-                  const label = `${role.role_title} at ${role.company}`;
-                  const pending = pendingJobId === role.id;
-                  const selectedStatus = selectedStatuses[role.id] || role.status;
-                  const trackable = JOB_STATUSES.includes(role.status as JobStatus);
-                  return (
-                    <Card key={role.id} className="flex flex-col p-4" aria-labelledby={`job-${role.id}-heading`}>
-                      <header className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <h3
-                            ref={(element) => onHeadingRef?.(role.id, element)}
-                            id={`job-${role.id}-heading`}
-                            tabIndex={-1}
-                            className="truncate font-semibold"
-                          >{role.role_title}</h3>
-                          <p className="truncate text-sm text-text-secondary">{role.company}</p>
-                        </div>
-                        <span
-                          className={cn(
-                            "shrink-0 rounded border px-2 py-1 text-sm font-mono-ui tabular-nums",
-                            role.fit_score >= 80
-                              ? "border-success/40 text-success"
-                              : role.fit_score >= 60
-                                ? "border-warning/40 text-warning"
-                                : "border-current/25 text-text-secondary",
-                          )}
-                        >Fit {role.fit_score}</span>
-                      </header>
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        {role.location}
-                        {role.work_mode && role.work_mode !== role.location ? ` · ${role.work_mode}` : ""}
-                        {role.pay ? ` · ${role.pay}` : ""}
-                      </p>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
-                        <Badge tone={STATUS_TONES[role.status] ?? "outline"} className="text-xs">
-                          {statusLabel(role.status)}
-                        </Badge>
-                        <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">
-                          <span aria-hidden className={cn("size-1.5 rounded-full", FRESHNESS_DOTS[role.freshness] ?? "bg-text-tertiary")} />
-                          {titleCase(role.freshness)} · Checked {role.checked_at?.slice(0, 10) || role.date_found}
-                        </span>
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {role.apply_url && (
-                          <a className={LINK_BUTTON_CN} href={role.apply_url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="size-3.5" />Open apply page
-                          </a>
-                        )}
-                        {role.source_url && (
-                          <a className={LINK_BUTTON_CN} href={role.source_url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="size-3.5" />Open source
-                          </a>
-                        )}
-                      </div>
-                      <details className="mt-3">
-                        <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-text-secondary transition-colors hover:text-midground">
-                          Details and packet
-                        </summary>
-                        <div className="space-y-3 border-l border-current/15 pl-3 text-sm">
-                          <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Fit</h4><p className="mt-0.5">{role.fit_rationale}</p></section>
-                          {role.gaps.length > 0 && <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Gaps</h4><ul className="mt-0.5 list-disc pl-5">{role.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></section>}
-                          {role.blockers.length > 0 && <section><h4 className="text-xs tracking-wide text-warning uppercase">Blockers</h4><ul className="mt-0.5 list-disc pl-5">{role.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></section>}
-                          <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Next</h4><p className="mt-0.5">{role.recommended_action}</p></section>
-                          <section>
-                            <h4 className="text-xs tracking-wide text-text-tertiary uppercase">Packet</h4>
-                            <div className="mt-1 flex flex-wrap gap-2">{role.assets.map((asset) => (
-                              <span key={asset.id} className="contents">
-                                <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.open_url, "inline", asset.name)}>
-                                  <FileText className="size-3.5" />Open {asset.name}
-                                </button>
-                                <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.download_url, "attachment", asset.name)}>
-                                  <Download className="size-3.5" />Download {asset.name}
-                                </button>
-                              </span>
-                            ))}</div>
-                          </section>
-                        </div>
-                      </details>
-                      <div className="mt-auto grid gap-2 pt-4 sm:grid-cols-[1fr_auto] sm:items-end">
-                        <label className="grid gap-1 text-xs text-text-secondary">
-                          Status for {label}
-                          <select
-                            aria-label={`Status for ${label}`}
-                            className={SELECT_CN}
-                            value={selectedStatus}
-                            disabled={pending || !trackable || role.status === "offer_accepted"}
-                            onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}
-                          >
-                            {!trackable && <option value={role.status}>{statusLabel(role.status)}</option>}
-                            {JOB_STATUSES.map((status) => (
-                              <option key={status} value={status}>{statusLabel(status)}</option>
+            GROUPS.map((group) => {
+              const groupRoles = roles.filter((role) => groupOf(role) === group.id);
+              if (groupRoles.length === 0) return null;
+              return (
+                <section key={group.id} aria-labelledby={`jobs-${group.id}-heading`} data-snap-block>
+                  <h2 id={`jobs-${group.id}-heading`} className="mb-1 text-base font-semibold tracking-wide">
+                    {group.title} <span className="font-normal text-text-tertiary">({groupRoles.length})</span>
+                  </h2>
+                  <p className="mb-3 text-xs text-text-tertiary">{group.hint}</p>
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {groupRoles.map((role) => {
+                      const label = `${role.role_title} at ${role.company}`;
+                      const pending = pendingJobId === role.id;
+                      const selectedStatus = selectedStatuses[role.id] || role.status;
+                      const trackable = JOB_STATUSES.includes(role.status as JobStatus);
+                      const inQueue = group.id === "queue";
+                      return (
+                        <Card key={role.id} data-snap-card className="flex scroll-mt-4 snap-start flex-col p-4" aria-labelledby={`job-${role.id}-heading`}>
+                          <header className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <h3
+                                ref={(element) => onHeadingRef?.(role.id, element)}
+                                id={`job-${role.id}-heading`}
+                                tabIndex={-1}
+                                className="truncate font-semibold"
+                              >{role.role_title}</h3>
+                              <p className="truncate text-sm text-text-secondary">{role.company}</p>
+                            </div>
+                            <span
+                              className={cn(
+                                "shrink-0 rounded border px-2 py-1 text-sm font-mono-ui tabular-nums",
+                                role.fit_score >= 80
+                                  ? "border-success/40 text-success"
+                                  : role.fit_score >= 60
+                                    ? "border-warning/40 text-warning"
+                                    : "border-current/25 text-text-secondary",
+                              )}
+                            >Fit {role.fit_score}</span>
+                          </header>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            {role.location}
+                            {role.work_mode && role.work_mode !== role.location ? ` · ${role.work_mode}` : ""}
+                            {role.pay ? ` · ${role.pay}` : ""}
+                          </p>
+                          <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
+                            <Badge tone={STATUS_TONES[role.status] ?? "outline"} className="text-xs">
+                              {statusLabel(role.status)}
+                            </Badge>
+                            <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">
+                              <span aria-hidden className={cn("size-1.5 rounded-full", FRESHNESS_DOTS[role.freshness] ?? "bg-text-tertiary")} />
+                              {titleCase(role.freshness)} · Checked {role.checked_at?.slice(0, 10) || role.date_found}
+                            </span>
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {/* Queue cards surface the packet inline: the whole
+                                flow is open packet -> apply -> mark applied. */}
+                            {inQueue && role.assets.map((asset) => (
+                              <button key={asset.id} type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.open_url, "inline", asset.name)}>
+                                <FileText className="size-3.5" />Open {asset.name}
+                              </button>
                             ))}
-                          </select>
-                        </label>
-                        <Button
-                          aria-label={`Update status for ${label}`}
-                          className="min-h-11"
-                          disabled={pending || !trackable || role.status === "offer_accepted" || selectedStatus === role.status}
-                          onClick={() => onStatusUpdate(role.id)}
-                        >{pending ? "Updating…" : "Update status"}</Button>
-                      </div>
-                      {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p>}
-                    </Card>
-                  );
-                })}
-              </div>
-            </section>
+                            {role.apply_url && (
+                              <a className={LINK_BUTTON_CN} href={role.apply_url} target="_blank" rel="noopener noreferrer">
+                                <ExternalLink className="size-3.5" />Open apply page
+                              </a>
+                            )}
+                            {role.source_url && (
+                              <a className={LINK_BUTTON_CN} href={role.source_url} target="_blank" rel="noopener noreferrer">
+                                <ExternalLink className="size-3.5" />Open source
+                              </a>
+                            )}
+                          </div>
+                          {inQueue && (
+                            <Button
+                              aria-label={`Mark ${label} applied`}
+                              className="mt-3 min-h-11 w-full sm:w-auto"
+                              disabled={pending}
+                              onClick={() => onStatusUpdate(role.id, "applied")}
+                              prefix={<CheckCircle2 />}
+                            >{pending ? "Updating…" : "Mark applied"}</Button>
+                          )}
+                          <details className="mt-3">
+                            <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-text-secondary transition-colors hover:text-midground">
+                              Details and packet
+                            </summary>
+                            <div className="space-y-3 border-l border-current/15 pl-3 text-sm">
+                              <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Fit</h4><p className="mt-0.5">{role.fit_rationale}</p></section>
+                              {role.gaps.length > 0 && <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Gaps</h4><ul className="mt-0.5 list-disc pl-5">{role.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></section>}
+                              {role.blockers.length > 0 && <section><h4 className="text-xs tracking-wide text-warning uppercase">Blockers</h4><ul className="mt-0.5 list-disc pl-5">{role.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></section>}
+                              <section><h4 className="text-xs tracking-wide text-text-tertiary uppercase">Next</h4><p className="mt-0.5">{role.recommended_action}</p></section>
+                              <section>
+                                <h4 className="text-xs tracking-wide text-text-tertiary uppercase">Packet</h4>
+                                <div className="mt-1 flex flex-wrap gap-2">{role.assets.map((asset) => (
+                                  <span key={asset.id} className="contents">
+                                    <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.open_url, "inline", asset.name)}>
+                                      <FileText className="size-3.5" />Open {asset.name}
+                                    </button>
+                                    <button type="button" className={LINK_BUTTON_CN} onClick={() => onAsset(asset.download_url, "attachment", asset.name)}>
+                                      <Download className="size-3.5" />Download {asset.name}
+                                    </button>
+                                  </span>
+                                ))}</div>
+                              </section>
+                            </div>
+                          </details>
+                          <div className="mt-auto grid gap-2 pt-4 sm:grid-cols-[1fr_auto] sm:items-end">
+                            <label className="grid gap-1 text-xs text-text-secondary">
+                              Status for {label}
+                              <select
+                                aria-label={`Status for ${label}`}
+                                className={SELECT_CN}
+                                value={selectedStatus}
+                                disabled={pending || !trackable || role.status === "offer_accepted"}
+                                onChange={(event) => onStatusSelect(role.id, event.target.value as JobStatus)}
+                              >
+                                {!trackable && <option value={role.status}>{statusLabel(role.status)}</option>}
+                                {JOB_STATUSES.map((status) => (
+                                  <option key={status} value={status}>{statusLabel(status)}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <Button
+                              aria-label={`Update status for ${label}`}
+                              className="min-h-11"
+                              disabled={pending || !trackable || role.status === "offer_accepted" || selectedStatus === role.status}
+                              onClick={() => onStatusUpdate(role.id)}
+                            >{pending ? "Updating…" : "Update status"}</Button>
+                          </div>
+                          {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p>}
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })
           )}
         </>
       )}
@@ -432,34 +480,44 @@ export default function JobsPage() {
 
   const load = useCallback(async () => {
     setState("loading");
-    try {
-      const [list, nextSummary] = await Promise.all([
-        api.getJobs(filters),
-        api.getJobsSummary(),
-      ]);
-      setRoles(list.items);
-      setSummary(nextSummary);
-      setSummaryStale(false);
-      setAvailableStatuses(list.filters.statuses);
-      setAvailableLanes(list.filters.lanes);
-      setSelected(
-        Object.fromEntries(
-          list.items
-            .filter((role) => JOB_STATUSES.includes(role.status as JobStatus))
-            .map((role) => [role.id, role.status as JobStatus]),
-        ),
-      );
-      setState("ready");
-    } catch (err) {
-      // The backend answers 503 "Jobs data is not configured" until the
-      // job-search vault paths are set — that's a setup state, not an error.
-      if (/not configured|503/i.test(String(err))) {
+    // The roles list is the page's core content; the summary is a
+    // secondary readout. Fetch them independently so a flaky summary
+    // (e.g. a 500) degrades to a "stale" banner instead of blanking the
+    // whole pipeline the user came to work.
+    const [listResult, summaryResult] = await Promise.allSettled([
+      api.getJobs(filters),
+      api.getJobsSummary(),
+    ]);
+
+    if (listResult.status === "rejected") {
+      if (/not configured|503/i.test(String(listResult.reason))) {
         setState("unconfigured");
         return;
       }
       setError("Jobs could not load.");
       setState("error");
+      return;
     }
+
+    const list = listResult.value;
+    setRoles(list.items);
+    setAvailableStatuses(list.filters.statuses);
+    setAvailableLanes(list.filters.lanes);
+    setSelected(
+      Object.fromEntries(
+        list.items
+          .filter((role) => JOB_STATUSES.includes(role.status as JobStatus))
+          .map((role) => [role.id, role.status as JobStatus]),
+      ),
+    );
+
+    if (summaryResult.status === "fulfilled") {
+      setSummary(summaryResult.value);
+      setSummaryStale(false);
+    } else {
+      setSummaryStale(true);
+    }
+    setState("ready");
   }, [filters]);
 
   useEffect(() => {
@@ -467,6 +525,35 @@ export default function JobsPage() {
     const timer = window.setTimeout(() => void load(), 250);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  // Mobile card-snap: the page scrolls inside the shared app <main>, so
+  // scope snapping to the jobs route by toggling it on that ancestor here
+  // (and only on small screens). `proximity` pulls the nearest card into
+  // view once you scroll a little, without trapping the summary/filters at
+  // the top the way `mandatory` would. scroll-padding clears the sticky
+  // header so a snapped card isn't hidden under it.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const main = rootRef.current?.closest("main");
+    if (!main) return;
+    const mql = window.matchMedia("(max-width: 1023px)");
+    const apply = () => {
+      if (mql.matches) {
+        main.style.scrollSnapType = "y proximity";
+        main.style.scrollPaddingTop = "4.5rem";
+      } else {
+        main.style.scrollSnapType = "";
+        main.style.scrollPaddingTop = "";
+      }
+    };
+    apply();
+    mql.addEventListener("change", apply);
+    return () => {
+      mql.removeEventListener("change", apply);
+      main.style.scrollSnapType = "";
+      main.style.scrollPaddingTop = "";
+    };
+  }, []);
 
   const reloadSummary = async () => {
     try {
@@ -480,9 +567,11 @@ export default function JobsPage() {
   };
 
 
-  const updateStatus = async (jobId: number) => {
+  const updateStatus = async (jobId: number, override?: JobStatus) => {
     const role = roles.find((item) => item.id === jobId);
-    const target = selected[jobId];
+    // An explicit target (the queue's "Mark applied" quick action) wins
+    // over the per-card status <select>.
+    const target = override ?? selected[jobId];
     if (!role || !target || target === role.status) return;
     setPendingJobId(jobId);
     setUpdateError("");
@@ -535,7 +624,7 @@ export default function JobsPage() {
   };
 
   return (
-    <div>
+    <div ref={rootRef}>
       <JobsView
         state={state}
         error={error}
@@ -555,7 +644,7 @@ export default function JobsPage() {
         onRetry={() => void load()}
         onSummaryRetry={() => void reloadSummary()}
         onStatusSelect={(jobId, status) => setSelected((current) => ({ ...current, [jobId]: status }))}
-        onStatusUpdate={(jobId) => void updateStatus(jobId)}
+        onStatusUpdate={(jobId, status) => void updateStatus(jobId, status)}
         onAsset={(url, disposition, name) => void openAsset(url, disposition, name)}
       />
     </div>

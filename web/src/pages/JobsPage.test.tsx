@@ -199,6 +199,29 @@ describe("JobsView", () => {
     expect(html).not.toContain("Submit application");
   });
 
+  it("groups roles into an apply pipeline and offers a mark-applied quick action", () => {
+    const applied: JobRole = { ...role, id: 2, role_title: "Data Analyst", status: "applied" };
+    const rejected: JobRole = { ...role, id: 3, role_title: "SRE", status: "rejected" };
+    const html = renderToStaticMarkup(
+      <JobsView
+        state="ready"
+        summary={summary}
+        roles={[role, applied, rejected]}
+        filters={{ status: "", lane: "", freshness: "", query: "" }}
+        {...handlers}
+      />,
+    );
+
+    // Three pipeline areas, each with a heading.
+    expect(html).toContain("Up next");
+    expect(html).toContain("In motion");
+    expect(html).toContain("Closed");
+    // The packet-ready role gets the one-tap Mark applied action.
+    expect(html).toContain('aria-label="Mark Support Engineer at Example Co applied"');
+    // Cards are snap targets for mobile card-by-card scrolling.
+    expect(html).toContain("snap-start");
+  });
+
   it("announces accepted-offer stop state without execution controls", () => {
     const accepted = { ...summary, campaign_stop: true, counts: { ...summary.counts, offer_accepted: 1 } };
     const html = renderToStaticMarkup(
