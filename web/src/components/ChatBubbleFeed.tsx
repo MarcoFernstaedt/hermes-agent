@@ -296,7 +296,7 @@ export function ChatBubbleFeed({
 
   return (
     <section
-      className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-current/15 bg-background-base/80"
+      className="relative flex min-h-0 flex-1 flex-col overflow-hidden border-0 bg-background-base/80 lg:rounded-lg lg:border lg:border-current/15"
       aria-label="Chat conversation"
       onPaste={(event) => {
         const files = Array.from(event.clipboardData.files).filter((file) =>
@@ -606,7 +606,11 @@ export function ChatBubbleFeed({
         </Button>
       )}
 
-      <div className="shrink-0 border-t border-current/15 bg-background-base/95 p-2.5 backdrop-blur sm:p-3 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] sm:pb-3">
+      {/* No top border or filled bar — the composer floats as a rounded card
+          on the same flat background as the transcript, so when the software
+          keyboard opens/closes the surface reads as one continuous sheet
+          (Claude-style) instead of a seam sliding up and down. */}
+      <div className="shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] sm:px-4 sm:pb-3">
         <div className="relative mx-auto max-w-3xl">
           <SlashPopover
             ref={slashRef}
@@ -618,7 +622,7 @@ export function ChatBubbleFeed({
             }}
           />
 
-          <div className="flex items-end gap-2 rounded-xl border border-current/20 bg-foreground/5 p-2 focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/30">
+          <div className="flex items-end gap-2 rounded-3xl border border-current/15 bg-foreground/[0.07] p-2 shadow-[0_2px_20px_rgba(0,0,0,0.28)] backdrop-blur-sm transition-colors focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/25">
             {/* Explicit attach affordance — paste and drag-drop don't exist
                 on touch devices, so the paperclip is the only image path
                 on phones. */}

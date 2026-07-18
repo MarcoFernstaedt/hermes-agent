@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, MessagesSquare, PanelRight, RotateCcw, X } from "lucide-react";
+import { PanelRight, RotateCcw, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -38,7 +38,6 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
-import { ChatModeTransition } from "@/components/ChatModeTransition";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -220,13 +219,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const writeApprovalsInFlightRef = useRef(new Set<string>());
   const [feedState, setFeedState] = useState<ChatFeedState>(EMPTY_CHAT_FEED);
   const [composer, setComposer] = useState("");
-  const [rawConsoleOpen, setRawConsoleOpen] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
   // Count of in-flight history fetches — drives the feed's "Loading
   // conversation…" state while a selected session hydrates.
   const [hydrationsInFlight, setHydrationsInFlight] = useState(0);
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetTokenRef = useRef(0);
   const optimisticCounterRef = useRef(0);
   const hydratedSessionIdsRef = useRef(new Set<string>());
   const hydrationGenerationRef = useRef(0);
@@ -1087,22 +1083,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send("\x03");
-  }, []);
-
-  const handleCopyLast = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send("/copy");
-    window.setTimeout(() => {
-      const current = wsRef.current;
-      if (current?.readyState === WebSocket.OPEN) current.send("\r");
-    }, 100);
-    setCopyState("copied");
-    const resetToken = ++copyResetTokenRef.current;
-    window.setTimeout(() => {
-      if (copyResetTokenRef.current === resetToken) setCopyState("idle");
-    }, 1500);
-    termRef.current?.focus();
   }, []);
 
   const retryMessage = useCallback(
@@ -2063,7 +2043,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      copyResetTokenRef.current += 1;
     };
   }, [
     channel,
@@ -2087,14 +2066,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
-        if (rawConsoleOpen) termRef.current?.focus();
       });
     });
     return () => {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [isActive, rawConsoleOpen]);
+  }, [isActive]);
 
   const maybeReconnectOnPageResume = useCallback(() => {
     const visibilityState =
@@ -2247,8 +2225,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                rawConsoleOpen={rawConsoleOpen}
-                onToggleRawConsole={() => setRawConsoleOpen((v) => !v)}
               />
             </div>
             <ChatSessionList
@@ -2275,87 +2251,43 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.28)]">
-          <ChatModeTransition
-            activeMode={rawConsoleOpen ? "console" : "feed"}
-            feed={
-              <ChatBubbleFeed
-                messages={feedState.messages}
-                composer={composer}
-                disabled={ptyState !== "open"}
-                writeApprovalDisabled={false}
-                hydrating={hydrationsInFlight > 0}
-                hasOlderHistory={olderHistory.available}
-                loadingOlderHistory={olderHistory.loading}
-                historyWindowed={olderHistory.windowed}
-                onLoadOlderHistory={loadOlderHistory}
-                isWorking={agentRunning}
-                focusSignal={reconnectNonce}
-                onComposerChange={setComposer}
-                onSubmit={submitComposer}
-                onStop={stopAgent}
-                onRetry={retryMessage}
-                onApproval={answerApproval}
-                onWriteApproval={answerWriteApproval}
-                onClarify={answerClarify}
-                onImages={(files) => imageAttachRef.current(files)}
-              />
-            }
-            console={
-              <div
-                className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-2 sm:p-3"
-                style={{
-                  backgroundColor: terminalBg,
-                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-                }}
-              >
-                <div
-                  ref={hostRef}
-                  className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-                />
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden shadow-none lg:rounded-lg lg:shadow-[0_8px_32px_rgba(0,0,0,0.28)]">
+          {/* PTY execution + input engine. sendPtyText() drives term.paste()
+              and the terminal negotiates its size with the gateway TUI, so it
+              stays mounted and sized — but hidden behind the bubble feed. The
+              feed (a projection of the structured event stream) is the only
+              chat surface the user ever sees. */}
+          {/* `inert` (not just aria-hidden) keeps xterm's helper textarea out
+              of the tab order and the accessibility tree — the terminal is a
+              headless engine here. term.paste() is a programmatic call, so it
+              still delivers input through the inert subtree. */}
+          <div
+            inert
+            className="pointer-events-none absolute inset-0 -z-10 overflow-hidden opacity-0"
+          >
+            <div ref={hostRef} className="hermes-chat-xterm-host h-full w-full" />
+          </div>
 
-              <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1.5 sm:bottom-3 sm:right-3 lg:bottom-4 lg:right-4">
-                <Button
-                  ghost
-                  onClick={handleCopyLast}
-                  title="Copy last assistant response as raw markdown"
-                  aria-label="Copy last assistant response"
-                  className={cn(
-                    "normal-case tracking-normal font-normal",
-                    "rounded border border-current/30 bg-black/20",
-                    "opacity-70 hover:opacity-100 hover:border-current/60",
-                    "transition-opacity duration-150 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
-                  )}
-                  style={{ color: terminalFg }}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Copy className="h-3 w-3 shrink-0" />
-                    <span className="hidden min-[400px]:inline tracking-wide">
-                      {copyState === "copied" ? "copied" : "copy last response"}
-                    </span>
-                  </span>
-                </Button>
-                <Button
-                  ghost
-                  onClick={() => setRawConsoleOpen(false)}
-                  title="Return to Chat Feed"
-                  aria-label="Return to Chat Feed"
-                  className={cn(
-                    "normal-case tracking-normal font-normal",
-                    "rounded border border-current/30 bg-black/20",
-                    "opacity-70 hover:opacity-100 hover:border-current/60",
-                    "transition-opacity duration-150 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
-                  )}
-                  style={{ color: terminalFg }}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <MessagesSquare className="h-3 w-3 shrink-0" />
-                    <span className="hidden min-[400px]:inline tracking-wide">Chat Feed</span>
-                  </span>
-                </Button>
-              </div>
-              </div>
-            }
+          <ChatBubbleFeed
+            messages={feedState.messages}
+            composer={composer}
+            disabled={ptyState !== "open"}
+            writeApprovalDisabled={false}
+            hydrating={hydrationsInFlight > 0}
+            hasOlderHistory={olderHistory.available}
+            loadingOlderHistory={olderHistory.loading}
+            historyWindowed={olderHistory.windowed}
+            onLoadOlderHistory={loadOlderHistory}
+            isWorking={agentRunning}
+            focusSignal={reconnectNonce}
+            onComposerChange={setComposer}
+            onSubmit={submitComposer}
+            onStop={stopAgent}
+            onRetry={retryMessage}
+            onApproval={answerApproval}
+            onWriteApproval={answerWriteApproval}
+            onClarify={answerClarify}
+            onImages={(files) => imageAttachRef.current(files)}
           />
 
           {showReconnectOverlay && (
@@ -2409,8 +2341,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                rawConsoleOpen={rawConsoleOpen}
-                onToggleRawConsole={() => setRawConsoleOpen((v) => !v)}
               />
             </div>
 

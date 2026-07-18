@@ -65,9 +65,6 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
-  /** Lossless terminal fallback state + toggle (panel-only affordance). */
-  rawConsoleOpen?: boolean;
-  onToggleRawConsole?: () => void;
 }
 
 export function ChatSidebar({
@@ -76,8 +73,6 @@ export function ChatSidebar({
   className,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
-  rawConsoleOpen = false,
-  onToggleRawConsole,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -334,16 +329,6 @@ export function ChatSidebar({
             aria-label="Show tool activity in the chat feed"
           />
         </div>
-        {onToggleRawConsole && (
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm text-text-secondary">Raw console</div>
-            <Switch
-              checked={rawConsoleOpen}
-              onCheckedChange={() => onToggleRawConsole()}
-              aria-label="Show the lossless raw console instead of the chat feed"
-            />
-          </div>
-        )}
       </Card>
 
       {supportsReasoning && (
