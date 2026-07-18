@@ -987,18 +987,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const activeClarify = feedState.activeClarifyId
       ? feedState.messages.find((message) => message.id === feedState.activeClarifyId)
       : null;
-    if (!isSlashCommand) {
-      setFeedState((state) => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          {
-            ...createOptimisticUserMessage(text, id, now),
-            status: agentRunning ? "waiting" : "sending",
-          },
-        ],
-      }));
-    }
+    // Show EVERY submitted line as a user bubble, slash commands included —
+    // the user should see the command they sent, and it still dispatches to
+    // the agent below. A plain message typed mid-run queues ("waiting");
+    // slash commands dispatch immediately, so they open as "sending".
+    setFeedState((state) => ({
+      ...state,
+      messages: [
+        ...state.messages,
+        {
+          ...createOptimisticUserMessage(text, id, now),
+          status: agentRunning && !isSlashCommand ? "waiting" : "sending",
+        },
+      ],
+    }));
     setComposer("");
 
     let sent = false;
@@ -1029,8 +1031,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     if (!sent) {
-      if (!isSlashCommand) markOptimisticFailed(id);
+      markOptimisticFailed(id);
       return;
+    }
+
+    // Slash commands are dispatched straight to the PTY and usually produce
+    // no assistant reply to acknowledge the bubble, so settle it to "sent"
+    // now that it's on the wire. Plain messages keep "sending" until the
+    // agent's response acknowledges them.
+    if (isSlashCommand) {
+      setFeedState((state) => ({
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === id ? { ...message, status: "sent" } : message,
+        ),
+      }));
     }
 
     if (activeClarify) {
