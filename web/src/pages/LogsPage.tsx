@@ -235,7 +235,11 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
+            // Keyboard users must be able to focus and scroll the log output.
+            tabIndex={0}
+            role="log"
+            aria-label={`${file}.log output`}
+            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">

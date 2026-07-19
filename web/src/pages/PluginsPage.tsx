@@ -14,7 +14,8 @@ import type {
 } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { SelectOption } from "@nous-research/ui/ui/components/select";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock, CopyButton } from "@nous-research/ui/ui/components/command-block";
@@ -551,7 +552,8 @@ export default function PluginsPage() {
                       )}
                     </div>
 
-                    <Select
+                    <LabeledSelect
+                      label={t.pluginsPage.memoryProviderLabel}
                       id="mem-provider"
                       className="w-full"
                       value={memorySel}
@@ -566,7 +568,7 @@ export default function PluginsPage() {
                           {o.name}
                         </SelectOption>
                       ))}
-                    </Select>
+                    </LabeledSelect>
                   </div>
 
                   {!selectedMemoryName && (
@@ -640,7 +642,8 @@ export default function PluginsPage() {
                             </div>
 
                             {field.kind === "select" ? (
-                              <Select
+                              <LabeledSelect
+                                label={field.label}
                                 id={`memory-${field.key}`}
                                 className="w-full"
                                 value={String(value ?? "")}
@@ -653,13 +656,14 @@ export default function PluginsPage() {
                                     {option.label}
                                   </SelectOption>
                                 ))}
-                              </Select>
+                              </LabeledSelect>
                             ) : field.kind === "boolean" ? (
                               <Switch
                                 checked={Boolean(value)}
                                 onCheckedChange={(next) =>
                                   setMemoryValues((current) => ({ ...current, [field.key]: next }))
                                 }
+                                aria-label={field.label}
                               />
                             ) : (
                               <div className="flex items-center gap-2">
@@ -724,7 +728,8 @@ export default function PluginsPage() {
                 <div className="grid content-start gap-3 min-w-0">
                   <Label htmlFor="ctx-engine">{t.pluginsPage.contextEngineLabel}</Label>
 
-                  <Select
+                  <LabeledSelect
+                    label={t.pluginsPage.contextEngineLabel}
                     id="ctx-engine"
                     className="w-full"
                     value={contextSel}
@@ -739,7 +744,7 @@ export default function PluginsPage() {
                           {o.name}
                         </SelectOption>
                       ))}
-                  </Select>
+                  </LabeledSelect>
 
                   <Button
                     className="w-fit uppercase"
@@ -786,7 +791,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installForce} onCheckedChange={setInstallForce} />
+                <Switch
+                  checked={installForce}
+                  onCheckedChange={setInstallForce}
+                  aria-label={t.pluginsPage.forceReinstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.forceReinstall}
@@ -795,7 +804,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
+                <Switch
+                  checked={installEnable}
+                  onCheckedChange={setInstallEnable}
+                  aria-label={t.pluginsPage.enableAfterInstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.enableAfterInstall}
