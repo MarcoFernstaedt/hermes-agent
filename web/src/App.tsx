@@ -54,6 +54,7 @@ import {
   Sparkles,
   Star,
   Terminal,
+  Trophy,
   Users,
   Webhook,
   Wrench,
@@ -196,12 +197,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Analytics",
     icon: BarChart3,
   },
-  {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
-  },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
@@ -213,14 +208,28 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
   { path: "/settings", label: "Settings", icon: SlidersHorizontal },
-  {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
-  },
+];
+
+/**
+ * Routes that are reachable only through the Settings hub, never as their
+ * own sidebar or mobile-nav entry. Their pages/routes still exist (see
+ * BUILTIN_ROUTES and the /achievements plugin) and SettingsPage links to
+ * each — this set just keeps them out of the primary navigation so Settings
+ * is the single home for models, system, docs, and achievements.
+ */
+const SETTINGS_ONLY_PATHS = new Set(["/models", "/system", "/docs", "/achievements"]);
+
+/**
+ * The settings-only destinations, re-exposed in the command palette so
+ * power users can still jump straight to them (Cmd/Ctrl+K) even though they
+ * no longer occupy a sidebar slot. Kept in sync with SETTINGS_ONLY_PATHS.
+ */
+const SETTINGS_ONLY_NAV: NavItem[] = [
+  { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
+  { path: "/system", label: "System", icon: Wrench },
+  { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
+  { path: "/achievements", label: "Achievements", icon: Trophy },
 ];
 
 /**
@@ -262,17 +271,11 @@ const NAV_SECTIONS: Array<{
     id: "settings",
     labelKey: "settings",
     label: "Settings",
-    paths: [
-      "/settings",
-      "/models",
-      "/config",
-      "/env",
-      "/system",
-      "/docs",
-      // Plugin-provided page; claimed here so it sits with the other
-      // admin/meta surfaces instead of a floating plugin cluster.
-      "/achievements",
-    ],
+    // Models, System, Documentation and Achievements deliberately do NOT
+    // appear here — they live one level down, inside the Settings hub
+    // (see SETTINGS_ONLY_PATHS and SettingsPage), keeping the sidebar to a
+    // single "Settings" entry point for all admin/meta surfaces.
+    paths: ["/settings", "/config", "/env"],
   },
 ];
 
@@ -348,13 +351,18 @@ function partitionSidebarNav(
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
   const merged = buildNavItems(builtIn, manifests);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
-  // Plugin pages a NAV_SECTIONS entry claims (e.g. /achievements under
-  // Settings) render inside that section like a built-in; only truly
-  // unclaimed plugin pages fall into the separate plugin cluster.
+  // Plugin pages a NAV_SECTIONS entry claims render inside that section like
+  // a built-in; only truly unclaimed plugin pages fall into the separate
+  // plugin cluster.
   const sectionClaimed = new Set(NAV_SECTIONS.flatMap((s) => s.paths));
   const coreItems: NavItem[] = [];
   const pluginItems: NavItem[] = [];
   for (const item of merged) {
+    // Settings-only surfaces (models/system/docs/achievements) are reached
+    // through the Settings hub, so they never render in the sidebar — even
+    // the /achievements plugin, which would otherwise land in the plugin
+    // cluster.
+    if (SETTINGS_ONLY_PATHS.has(item.path)) continue;
     if (builtinPaths.has(item.path) || sectionClaimed.has(item.path)) {
       coreItems.push(item);
     } else {
@@ -675,6 +683,7 @@ export default function App() {
         closeMobile();
       },
     });
+    const settingsHint = t.app.navSections?.settings ?? "Settings";
     return [
       ...sidebarNav.coreItems.map((item) =>
         toItem(item, item.path === "/chat" ? undefined : sectionOf(item.path)),
@@ -682,6 +691,9 @@ export default function App() {
       ...sidebarNav.pluginItems.map((item) =>
         toItem(item, t.app.pluginNavSection),
       ),
+      // Settings-only pages keep a palette entry even though they're no
+      // longer in the sidebar.
+      ...SETTINGS_ONLY_NAV.map((item) => toItem(item, settingsHint)),
     ];
   }, [sidebarNav, t, navigate, closeMobile]);
 
@@ -1083,7 +1095,7 @@ export default function App() {
 
 /** Primary destinations surfaced in the mobile bottom tab bar. Everything
  *  else stays one tap away behind the Menu drawer. */
-const MOBILE_PRIMARY_PATHS = ["/chat", "/sessions", "/channels", "/system"];
+const MOBILE_PRIMARY_PATHS = ["/chat", "/sessions", "/channels", "/settings"];
 
 /**
  * Fixed bottom tab bar on phone/tablet widths — the modern mobile-nav

@@ -1254,6 +1254,71 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  // Native-style touch gesture for the Model & tools panel, mirroring the
+  // sidebar drawer in App.tsx but on the opposite edge: on the chat feed,
+  // swipe right→left to open the panel (it slides in from the right), and
+  // left→right to close it. Only runs while chat is the active tab at
+  // phone/tablet widths. Vertical movement cancels the gesture so the
+  // message list and code blocks keep scrolling, and touches on the hidden
+  // terminal or on horizontally-scrollable content are ignored.
+  const mobilePanelOpenRef = useRef(mobilePanelOpen);
+  useEffect(() => {
+    mobilePanelOpenRef.current = mobilePanelOpen;
+  }, [mobilePanelOpen]);
+  useEffect(() => {
+    if (!isActive || !narrow) return;
+    let startX = 0;
+    let startY = 0;
+    let tracking: "open" | "close" | null = null;
+
+    const onTouchStart = (event: TouchEvent) => {
+      tracking = null;
+      if (window.innerWidth >= 1024) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const target = event.target as HTMLElement | null;
+      // Don't hijack the terminal, code blocks, or anything that scrolls
+      // horizontally on its own.
+      if (target?.closest?.(".xterm, .hermes-chat-xterm-host, pre, [data-no-swipe]"))
+        return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      tracking = mobilePanelOpenRef.current ? "close" : "open";
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (Math.abs(dy) > 60) {
+        tracking = null;
+        return;
+      }
+      if (tracking === "open" && dx < -56) {
+        setMobilePanelOpenRaw(true);
+        tracking = null;
+      } else if (tracking === "close" && dx > 56) {
+        setMobilePanelOpenRaw(false);
+        tracking = null;
+      }
+    };
+
+    const onTouchEnd = () => {
+      tracking = null;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [isActive, narrow]);
+
   useEffect(() => {
     // When hidden (non-chat tab) or wide, another page owns the header's
     // end slot. Only clear it when WE set it — the persistent chat host
