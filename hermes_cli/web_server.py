@@ -491,11 +491,54 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+_DASHBOARD_HOST_LABEL_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+)
+
+
+def _dashboard_allowed_hosts_from_env() -> tuple[str, ...]:
+    """Return the one explicit reverse-proxy hostname allowed by the operator.
+
+    The dashboard may bind to a stable interface address while a private
+    reverse proxy presents a DNS hostname to browsers.  The hostname is an
+    exact-match security input: URLs, ports, paths, wildcards, and whitespace
+    are rejected instead of being normalized into broader authority.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOST", "")
+    if not raw:
+        return ()
+    if raw != raw.strip():
+        raise ValueError("value must not contain surrounding whitespace")
+    host = raw.lower().rstrip(".")
+    if not host:
+        raise ValueError("value is empty")
+    if (
+        any(ch.isspace() for ch in host)
+        or "://" in host
+        or ":" in host
+        or "/" in host
+        or "\\" in host
+        or "*" in host
+    ):
+        raise ValueError("value must be one exact hostname without scheme, port, path, or wildcard")
+    if len(host) > 253 or any(
+        not label or not _DASHBOARD_HOST_LABEL_RE.fullmatch(label)
+        for label in host.split(".")
+    ):
+        raise ValueError("value is not a valid DNS hostname")
+    return (host,)
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: tuple[str, ...] = (),
+) -> bool:
+    """True if the Host header targets the bind or an explicit proxy hostname.
 
     Accepts:
     - Exact bound host (with or without port suffix)
+    - One exact reverse-proxy hostname configured at server startup
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
@@ -531,8 +574,8 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    # Explicit non-loopback bind: require exact bind or configured proxy match.
+    return host_only == bound_lc or host_only in allowed_hosts
 
 
 @app.middleware("http")
@@ -552,7 +595,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", ())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -17237,6 +17281,15 @@ def start_server(
         start_nous_auth_keepalive()
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
+
+    # Freeze the optional reverse-proxy Host exception at startup. Invalid
+    # security configuration aborts before provider checks or socket binding.
+    try:
+        app.state.allowed_hosts = _dashboard_allowed_hosts_from_env()
+    except ValueError as exc:
+        raise SystemExit(
+            f"Invalid HERMES_DASHBOARD_ALLOWED_HOST: {exc}"
+        ) from exc
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5

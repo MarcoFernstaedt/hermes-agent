@@ -77,6 +77,52 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
     assert r.status_code == 400
 
 
+def test_explicit_external_host_allows_tailnet_proxy_without_wildcard():
+    """A proxy hostname explicitly configured at startup is accepted exactly."""
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_allowed = getattr(web_server.app.state, "allowed_hosts", None)
+    web_server.app.state.bound_host = "100.119.218.113"
+    web_server.app.state.allowed_hosts = ("srv1522777.tail72f980.ts.net",)
+    try:
+        client = TestClient(
+            web_server.app,
+            base_url="https://srv1522777.tail72f980.ts.net:10000",
+        )
+        assert client.get("/login").status_code != 400
+        assert client.get(
+            "/login", headers={"Host": "evil.example"}
+        ).status_code == 400
+    finally:
+        web_server.app.state.bound_host = prev_host
+        if prev_allowed is None:
+            if hasattr(web_server.app.state, "allowed_hosts"):
+                del web_server.app.state.allowed_hosts
+        else:
+            web_server.app.state.allowed_hosts = prev_allowed
+
+
+@pytest.mark.parametrize(
+    "invalid_host",
+    [
+        "https://example.com",
+        "*.example.com",
+        "example.com:10000",
+        "example.com/path",
+        " example.com",
+    ],
+)
+def test_invalid_explicit_external_host_fails_closed(monkeypatch, invalid_host):
+    """Non-exact allowlist values must abort server startup."""
+    monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOST", invalid_host)
+    with pytest.raises(SystemExit, match="HERMES_DASHBOARD_ALLOWED_HOST"):
+        web_server.start_server(
+            host="100.119.218.113",
+            port=9119,
+            open_browser=False,
+            allow_public=False,
+        )
+
+
 # ---------------------------------------------------------------------------
 # should_require_auth predicate (Task 0.2)
 # ---------------------------------------------------------------------------
@@ -162,6 +208,31 @@ def _stub_uvicorn_run(monkeypatch):
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
+
+
+def test_start_server_loads_explicit_external_host(monkeypatch):
+    """The trusted proxy hostname is frozen into app state at startup."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    _stub_uvicorn_run(monkeypatch)
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_ALLOWED_HOST", "srv1522777.tail72f980.ts.net"
+    )
+    try:
+        web_server.start_server(
+            host="100.119.218.113",
+            port=9119,
+            open_browser=False,
+            allow_public=False,
+        )
+        assert web_server.app.state.allowed_hosts == (
+            "srv1522777.tail72f980.ts.net",
+        )
+    finally:
+        clear_providers()
 
 
 def test_start_server_loopback_sets_auth_required_false(monkeypatch):
