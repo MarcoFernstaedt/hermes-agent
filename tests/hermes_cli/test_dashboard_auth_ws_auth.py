@@ -544,6 +544,81 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="https://fly-app.fly.dev", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is True
 
+    def test_gated_explicit_proxy_host_and_origin_allowed(self, gated_app):
+        prev_host = web_server.app.state.bound_host
+        prev_allowed = getattr(web_server.app.state, "allowed_hosts", None)
+        web_server.app.state.bound_host = "100.119.218.113"
+        web_server.app.state.allowed_hosts = (
+            "srv1522777.tail72f980.ts.net",
+        )
+        try:
+            ws = self._ws(
+                origin="https://srv1522777.tail72f980.ts.net:10000",
+                host="srv1522777.tail72f980.ts.net:10000",
+            )
+            assert web_server._ws_host_origin_reason(ws) is None
+            assert web_server._ws_request_is_allowed(ws) is True
+        finally:
+            web_server.app.state.bound_host = prev_host
+            if prev_allowed is None:
+                if hasattr(web_server.app.state, "allowed_hosts"):
+                    del web_server.app.state.allowed_hosts
+            else:
+                web_server.app.state.allowed_hosts = prev_allowed
+
+    def test_gated_explicit_proxy_rejects_hostile_origin(self, gated_app):
+        prev_host = web_server.app.state.bound_host
+        prev_allowed = getattr(web_server.app.state, "allowed_hosts", None)
+        web_server.app.state.bound_host = "100.119.218.113"
+        web_server.app.state.allowed_hosts = (
+            "srv1522777.tail72f980.ts.net",
+        )
+        try:
+            ws = self._ws(
+                origin="https://evil.example",
+                host="srv1522777.tail72f980.ts.net:10000",
+            )
+            reason = web_server._ws_host_origin_reason(ws)
+            assert reason is not None and reason.startswith("origin_mismatch")
+            assert web_server._ws_request_is_allowed(ws) is False
+        finally:
+            web_server.app.state.bound_host = prev_host
+            if prev_allowed is None:
+                if hasattr(web_server.app.state, "allowed_hosts"):
+                    del web_server.app.state.allowed_hosts
+            else:
+                web_server.app.state.allowed_hosts = prev_allowed
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://[proxy.example]",
+            "https://[]",
+            "https://[::1",
+            "https://[:]",
+            "https://[::1]junk",
+            "https://fly-app.fly.dev/",
+            "https://fly-app.fly.dev/path",
+            "https://fly-app.fly.dev?query=1",
+            "https://fly-app.fly.dev#fragment",
+            "https://user@fly-app.fly.dev",
+            "https://exa|mple.dev",
+            "https://fly-app.fly.dev:１２３",
+            " https://fly-app.fly.dev",
+            "https://fly-app.fly.dev ",
+            "https://[fe80::1%eth0]",
+            "https://[fe80::1%25eth0]",
+            "https://fly-app.fly.dev?",
+            "https://fly-app.fly.dev#",
+            "https://fly-app.fly.dev?#",
+        ],
+    )
+    def test_malformed_web_origin_rejected_cleanly(self, gated_app, origin):
+        ws = self._ws(origin=origin, host="fly-app.fly.dev")
+        reason = web_server._ws_host_origin_reason(ws)
+        assert reason is not None and reason.startswith("origin_mismatch")
+        assert web_server._ws_request_is_allowed(ws) is False
+
 
 class TestSidecarUrl:
     def test_loopback_uses_session_token(self, loopback_app):

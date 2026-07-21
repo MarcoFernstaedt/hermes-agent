@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -529,43 +530,89 @@ def _dashboard_allowed_hosts_from_env() -> tuple[str, ...]:
     return (host,)
 
 
+def _is_valid_authority_port(port: str) -> bool:
+    """Return whether ``port`` is an ASCII decimal TCP port."""
+    return (
+        port.isascii()
+        and port.isdigit()
+        and len(port) <= 5
+        and 1 <= int(port) <= 65535
+    )
+
+
+def _host_from_authority(authority: str) -> Optional[str]:
+    """Return a normalized host from a valid HTTP authority, else ``None``.
+
+    A port is optional but, when present, must be decimal and within the TCP
+    port range. Surrounding whitespace and malformed bracket/port suffixes are
+    rejected rather than normalized into an accepted hostname.
+    """
+    if not authority or authority != authority.strip():
+        return None
+    value = authority
+    bracketed = value.startswith("[")
+    if bracketed:
+        close = value.find("]")
+        if close <= 1:
+            return None
+        host_only = value[1:close]
+        if "%" in host_only:
+            return None
+        try:
+            ipaddress.IPv6Address(host_only)
+        except ValueError:
+            return None
+        suffix = value[close + 1 :]
+        if suffix:
+            if not suffix.startswith(":"):
+                return None
+            port = suffix[1:]
+            if not _is_valid_authority_port(port):
+                return None
+    else:
+        if value.count(":") > 1:
+            return None
+        if ":" in value:
+            host_only, port = value.rsplit(":", 1)
+            if not _is_valid_authority_port(port):
+                return None
+        else:
+            host_only = value
+    host_only = host_only.lower()
+    if not bracketed and (
+        not host_only.isascii()
+        or len(host_only) > 253
+        or any(
+            not label or not _DASHBOARD_HOST_LABEL_RE.fullmatch(label)
+            for label in host_only.split(".")
+        )
+    ):
+        return None
+    if not bracketed and "." in host_only and all(
+        ch == "." or ch.isdigit() for ch in host_only
+    ):
+        try:
+            if str(ipaddress.IPv4Address(host_only)) != host_only:
+                return None
+        except ValueError:
+            return None
+    return host_only
+
+
 def _is_accepted_host(
     host_header: str,
     bound_host: str,
     allowed_hosts: tuple[str, ...] = (),
 ) -> bool:
-    """True if the Host header targets the bind or an explicit proxy hostname.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - One exact reverse-proxy hostname configured at server startup
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
-    if not host_header:
+    """True if a valid Host authority targets the bind or allowed proxy."""
+    host_only = _host_from_authority(host_header)
+    if host_only is None:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
+    # (requires --insecure per web_server.start_server). A syntactically valid
+    # Host is accepted; authentication and operator network controls remain
+    # the security boundary in this mode.
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
@@ -14511,24 +14558,35 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    allowed_hosts = tuple(getattr(app.state, "allowed_hosts", ()))
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
+    if origin != origin.strip() or any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F for ch in origin
+    ):
+        return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    parsed = urllib.parse.urlparse(origin)
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:
+        return f"origin_mismatch origin={origin} bound={bound_host}"
     if parsed.scheme not in {"http", "https"}:
         # Non-web origin (packaged Electron: file://, null, app://). The
         # upstream credential check is the real auth boundary; trust it.
         # See _ws_host_origin_is_allowed for the full rationale.
         return None
 
-    if not parsed.netloc:
+    if (
+        not parsed.netloc
+        or origin != f"{parsed.scheme}://{parsed.netloc}"
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
