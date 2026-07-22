@@ -31,6 +31,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { FileBrowser } from "@/components/FileBrowser";
 import { PluginSlot } from "@/plugins";
 
 const SCOPES: { value: GitReviewScope; label: string }[] = [
@@ -611,6 +612,8 @@ export default function GitPage() {
           </Card>
         </div>
       </div>
+
+      {repoPath && <FileBrowser key={repoPath} root={repoPath} />}
 
       <DeleteConfirmDialog
         open={confirmState !== null}

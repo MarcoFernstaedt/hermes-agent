@@ -519,6 +519,25 @@ export interface GitShipInfo {
   pr: { url: string; state?: string; number?: number } | null;
 }
 
+export interface ComputerUseStatus {
+  platform: string;
+  platform_supported: boolean;
+  installed: boolean;
+  version: string | null;
+  ready: boolean | null;
+  can_grant: boolean;
+  checks: { label: string; status: string; message: string }[];
+  error: string | null;
+  accessibility: boolean | null;
+  screen_recording: boolean | null;
+}
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+}
+
 export interface LearningNode {
   id: string;
   label: string;
@@ -1006,6 +1025,31 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, worktreePath, force }),
+    }),
+
+  // Computer Use readiness (macOS grants elsewhere driver health).
+  getComputerUseStatus: () =>
+    fetchJSON<ComputerUseStatus>("/api/tools/computer-use/status"),
+  grantComputerUsePermissions: () =>
+    fetchJSON<{ ok?: boolean; action?: string }>(
+      "/api/tools/computer-use/permissions/grant",
+      { method: "POST" },
+    ),
+
+  // Filesystem browser (raw server paths — the coding-rail explorer).
+  fsList: (path: string) =>
+    fetchJSON<{ entries: FsEntry[]; error?: string }>(
+      `/api/fs/list?path=${encodeURIComponent(path)}`,
+    ),
+  fsReadText: (path: string) =>
+    fetchJSON<{ text: string; binary: boolean; truncated: boolean; language: string }>(
+      `/api/fs/read-text?path=${encodeURIComponent(path)}`,
+    ),
+  fsWriteText: (path: string, content: string) =>
+    fetchJSON<{ ok?: boolean }>("/api/fs/write-text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
     }),
 
   // Learning graph — learned (non-base) skills + memory chunks, profile-scoped.

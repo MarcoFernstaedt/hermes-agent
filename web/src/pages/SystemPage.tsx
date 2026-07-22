@@ -42,6 +42,7 @@ import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { ComputerUseSection } from "@/components/ComputerUseSection";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -1034,6 +1035,9 @@ export default function SystemPage() {
           </CardContent>
         </Card>
       </section>
+
+      {/* ── Computer Use ──────────────────────────────────────────── */}
+      <ComputerUseSection />
 
       {/* ── Gateway ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
