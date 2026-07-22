@@ -519,6 +519,35 @@ export interface GitShipInfo {
   pr: { url: string; state?: string; number?: number } | null;
 }
 
+export interface LearningNode {
+  id: string;
+  label: string;
+  kind: "skill" | "memory";
+  category: string;
+  useCount: number;
+  state: string;
+  createdBy: string | null;
+  pinned: boolean;
+  timestamp: number | null;
+  memorySource?: string;
+}
+
+export interface LearningGraph {
+  nodes: LearningNode[];
+  edges: { source: string; target: string }[];
+  clusters: { category: string; count: number }[];
+  memory: Record<string, unknown>[];
+  stats: Record<string, number>;
+}
+
+export interface LearningNodeDetail {
+  ok: boolean;
+  kind: "skill" | "memory";
+  id: string;
+  label: string;
+  content: string;
+}
+
 /** Shared body shape for the per-file git review POSTs (stage/unstage/revert). */
 function gitFileOp(endpoint: string, path: string, file: string) {
   return fetchJSON<{ ok?: boolean }>(endpoint, {
@@ -977,6 +1006,26 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, worktreePath, force }),
+    }),
+
+  // Learning graph — learned (non-base) skills + memory chunks, profile-scoped.
+  getLearningGraph: (profile = getManagementProfile()) =>
+    fetchJSON<LearningGraph>(appendProfileParam("/api/learning/graph", profile)),
+  getLearningNode: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<LearningNodeDetail>(
+      appendProfileParam(`/api/learning/node?id=${encodeURIComponent(id)}`, profile),
+    ),
+  updateLearningNode: (id: string, content: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>("/api/learning/node", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, content, profile: profile || undefined }),
+    }),
+  deleteLearningNode: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>("/api/learning/node", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, profile: profile || undefined }),
     }),
 
   // Cron jobs

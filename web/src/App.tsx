@@ -24,6 +24,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Brain,
   BriefcaseBusiness,
   Clock,
   Code,
@@ -94,6 +95,7 @@ const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
+const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
@@ -157,6 +159,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/jobs": JobsPage,
   "/files": FilesPage,
   "/git": GitPage,
+  "/learning": LearningPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -204,6 +207,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/learning", label: "Learning", icon: Brain },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
@@ -261,7 +265,7 @@ const NAV_SECTIONS: Array<{
     id: "automate",
     labelKey: "automate",
     label: "Automate",
-    paths: ["/cron", "/skills", "/plugins", "/mcp", "/webhooks"],
+    paths: ["/cron", "/skills", "/learning", "/plugins", "/mcp", "/webhooks"],
   },
   {
     id: "connect",
