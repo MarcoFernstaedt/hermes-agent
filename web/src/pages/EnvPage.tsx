@@ -14,6 +14,10 @@ import {
   Zap,
   ChevronDown,
   ChevronRight,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  ShieldCheck,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
@@ -127,6 +131,32 @@ function EnvVarRow({
 }) {
   const { t } = useI18n();
   const isEditing = edits[varKey] !== undefined;
+  // Live key-validation state for the edit flow (probe before save).
+  const [check, setCheck] = useState<{
+    state: "idle" | "testing" | "ok" | "bad" | "unknown";
+    message: string;
+  }>({ state: "idle", message: "" });
+
+  const runTest = async () => {
+    const value = (edits[varKey] ?? "").trim();
+    if (!value) return;
+    setCheck({ state: "testing", message: "" });
+    try {
+      const res = await api.validateProviderKey(varKey, value);
+      if (res.ok && res.reachable) {
+        setCheck({ state: "ok", message: "Key verified." });
+      } else if (!res.ok && res.reachable) {
+        setCheck({ state: "bad", message: res.message || "That key was rejected." });
+      } else {
+        setCheck({
+          state: "unknown",
+          message: res.message || "Couldn't verify — save if you're sure.",
+        });
+      }
+    } catch {
+      setCheck({ state: "unknown", message: "Couldn't verify — save if you're sure." });
+    }
+  };
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
     ? revealed[varKey]
@@ -291,40 +321,76 @@ function EnvVarRow({
       )}
 
       {isEditing && (
-        <div className="flex items-center gap-2">
-          <Input
-            autoFocus
-            type="text"
-            value={edits[varKey]}
-            onChange={(e) =>
-              setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))
-            }
-            placeholder={
-              info.is_set
-                ? t.env.replaceCurrentValue.replace(
-                    "{preview}",
-                    info.redacted_value ?? "---",
-                  )
-                : t.env.enterValue
-            }
-            className="flex-1 font-mono-ui text-xs"
-          />
-          <Button
-            size="sm"
-            onClick={() => onSave(varKey)}
-            prefix={<Save />}
-            disabled={saving === varKey || !edits[varKey]}
-          >
-            {saving === varKey ? "..." : t.common.save}
-          </Button>
-          <Button
-            size="sm"
-            outlined
-            prefix={<X />}
-            onClick={() => onCancelEdit(varKey)}
-          >
-            {t.common.cancel}
-          </Button>
+        <div className="grid gap-1.5">
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              type="text"
+              value={edits[varKey]}
+              onChange={(e) => {
+                const next = e.target.value;
+                setEdits((prev) => ({ ...prev, [varKey]: next }));
+                // A new value invalidates any earlier probe result.
+                setCheck((c) => (c.state === "idle" ? c : { state: "idle", message: "" }));
+              }}
+              placeholder={
+                info.is_set
+                  ? t.env.replaceCurrentValue.replace(
+                      "{preview}",
+                      info.redacted_value ?? "---",
+                    )
+                  : t.env.enterValue
+              }
+              className="flex-1 font-mono-ui text-xs"
+            />
+            <Button
+              size="sm"
+              outlined
+              onClick={runTest}
+              prefix={check.state === "testing" ? <Spinner /> : <ShieldCheck />}
+              disabled={check.state === "testing" || !edits[varKey]}
+              aria-label={`Test ${varKey}`}
+            >
+              {check.state === "testing" ? "Testing…" : "Test"}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => onSave(varKey)}
+              prefix={<Save />}
+              disabled={saving === varKey || !edits[varKey]}
+            >
+              {saving === varKey ? "..." : t.common.save}
+            </Button>
+            <Button
+              size="sm"
+              outlined
+              prefix={<X />}
+              onClick={() => onCancelEdit(varKey)}
+            >
+              {t.common.cancel}
+            </Button>
+          </div>
+          {check.state !== "idle" && check.state !== "testing" && (
+            <p
+              role="status"
+              className={`flex items-center gap-1.5 text-xs ${
+                check.state === "ok"
+                  ? "text-success"
+                  : check.state === "bad"
+                    ? "text-destructive"
+                    : "text-warning"
+              }`}
+            >
+              {check.state === "ok" ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              ) : check.state === "bad" ? (
+                <XCircle className="h-3.5 w-3.5 shrink-0" />
+              ) : (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              )}
+              {check.message}
+            </p>
+          )}
         </div>
       )}
     </div>

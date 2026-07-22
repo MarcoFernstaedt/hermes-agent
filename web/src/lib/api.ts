@@ -789,6 +789,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, value }),
     }),
+  /**
+   * Live-probe a provider credential before it is saved. `ok` means the
+   * provider accepted it; `ok:false, reachable:true` means the key is bad;
+   * `reachable:false` means the probe couldn't run (offline, or no probe
+   * exists for this provider — do not hard-block).
+   */
+  validateProviderKey: (key: string, value: string) =>
+    fetchJSON<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>(
+      "/api/providers/validate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      },
+    ),
   deleteEnvVar: (key: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
       method: "DELETE",
