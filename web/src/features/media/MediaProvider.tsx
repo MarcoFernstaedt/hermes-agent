@@ -455,6 +455,29 @@ export function PlayerDockView({
   onTimeUpdate,
 }: PlayerDockProps) {
   const playing = state.nowPlaying;
+
+  // Publish the dock's real pixel height so routed content and the chat
+  // composer can reserve exactly that much space — no guesswork, no dead
+  // gap. Cleared to 0 whenever the dock is absent.
+  const dockRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const root = document.documentElement;
+    const node = dockRef.current;
+    if (!node) {
+      root.style.setProperty("--app-media-dock-h", "0px");
+      return;
+    }
+    const measure = () =>
+      root.style.setProperty("--app-media-dock-h", `${node.offsetHeight}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty("--app-media-dock-h", "0px");
+    };
+  }, [playing?.id, playing?.provider]);
+
   if (!playing) return null;
   const spotifyDevice = spotify?.playback?.device?.id ?? undefined;
   const isAudiobook = playing.provider === "audiobook";
@@ -463,11 +486,23 @@ export function PlayerDockView({
   const repeatState = spotify?.playback?.repeat_state ?? "off";
   const nextRepeat =
     repeatState === "off" ? "context" : repeatState === "context" ? "track" : "off";
+  const progressPct =
+    playing.durationSeconds > 0
+      ? Math.min(100, (playing.positionSeconds / playing.durationSeconds) * 100)
+      : 0;
   return (
     <section
+      ref={dockRef}
       aria-label="Persistent media player"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-midground/30 bg-background-base/95 px-3 pb-[calc(.5rem+env(safe-area-inset-bottom,0px))] pt-2 shadow-2xl backdrop-blur lg:left-64"
+      className="player-dock fixed inset-x-0 z-40 border-t border-midground/30 bg-background-base/95 px-3 pt-2 shadow-2xl backdrop-blur lg:left-64"
     >
+      {/* Slim Spotify-style progress line across the very top of the bar. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-midground/15"
+      >
+        <div className="h-full bg-primary transition-[width] duration-500" style={{ width: `${progressPct}%` }} />
+      </div>
       <div className="mx-auto flex max-w-5xl items-center gap-3">
         {artwork && (
           <img

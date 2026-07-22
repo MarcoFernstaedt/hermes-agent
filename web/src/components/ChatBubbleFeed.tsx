@@ -610,7 +610,7 @@ export function ChatBubbleFeed({
           on the same flat background as the transcript, so when the software
           keyboard opens/closes the surface reads as one continuous sheet
           (Claude-style) instead of a seam sliding up and down. */}
-      <div className="shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] sm:px-4 sm:pb-3">
+      <div className="chat-dock-inset shrink-0 px-3 pt-2 sm:px-4">
         <div className="relative mx-auto max-w-3xl">
           <SlashPopover
             ref={slashRef}

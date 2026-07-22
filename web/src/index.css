@@ -288,8 +288,52 @@ code { font-size: 0.875rem; }
     2px 2px;
 }
 
-/* Keep native routed content and mobile chat controls above the persistent media dock. */
-html[data-media-dock="active"] .media-dock-inset {
-  padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
+/* ------------------------------------------------------------------ *
+ *  Bottom-anchored chrome: mobile tab bar + persistent media mini-player
+ *
+ *  Spotify-style stacking — the mini-player docks directly ABOVE the tab
+ *  bar rather than covering it, and routed content / the chat composer
+ *  clear both with no dead gap. Heights are measured at runtime (the tab
+ *  bar and dock write their own pixel heights into these variables), so
+ *  the spacing is always exact regardless of safe-area insets or wrapping.
+ * ------------------------------------------------------------------ */
+:root {
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Set by MobileBottomNav (0 when hidden — e.g. desktop or /chat). */
+  --app-bottom-nav-h: 0px;
+  /* Set by the media mini-player while it is mounted (0 otherwise). */
+  --app-media-dock-h: 0px;
+}
+
+/* The mini-player rides on top of the tab bar (or the very bottom when no
+   bar is present, e.g. the chat route or desktop). */
+.player-dock {
+  bottom: var(--app-bottom-nav-h);
+  padding-bottom: var(--app-safe-bottom);
+}
+/* When it sits above the tab bar, the bar already owns the safe-area gap. */
+html[data-mobile-nav="visible"] .player-dock {
+  padding-bottom: 0;
+}
+
+/* Routed (non-chat) content scrolls clear of the tab bar + mini-player. */
+.media-dock-inset {
+  padding-bottom: calc(var(--app-bottom-nav-h) + var(--app-media-dock-h));
+}
+@media (min-width: 1024px) {
+  /* Desktop has no tab bar; keep a little breathing room plus dock height. */
+  .media-dock-inset {
+    padding-bottom: calc(2rem + var(--app-media-dock-h));
+  }
+}
+
+/* Chat composer floats flush above the mini-player — no extra spacing.
+   While the keyboard is up the dock is hidden behind it, so the composer
+   drops back to its normal inset and sits right on the keyboard. */
+.chat-dock-inset {
+  padding-bottom: max(0.5rem, var(--app-safe-bottom));
+}
+html[data-media-dock="active"]:not([data-keyboard="open"]) .chat-dock-inset {
+  padding-bottom: var(--app-media-dock-h);
 }
 

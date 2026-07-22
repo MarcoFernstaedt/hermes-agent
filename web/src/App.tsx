@@ -520,8 +520,13 @@ export default function App() {
       const keyboardHeight = window.innerHeight - viewport.height;
       if (keyboardHeight > 80) {
         root.style.setProperty("--app-vvh", `${viewport.height}px`);
+        // The media mini-player is fixed to the layout viewport, so it's
+        // hidden behind the software keyboard — the composer must stop
+        // reserving space for it while the keyboard is up.
+        root.dataset.keyboard = "open";
       } else {
         root.style.removeProperty("--app-vvh");
+        delete root.dataset.keyboard;
       }
     };
     viewport.addEventListener("resize", update);
@@ -531,6 +536,7 @@ export default function App() {
       viewport.removeEventListener("resize", update);
       viewport.removeEventListener("scroll", update);
       root.style.removeProperty("--app-vvh");
+      delete root.dataset.keyboard;
     };
   }, []);
 
@@ -1007,11 +1013,12 @@ export default function App() {
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "media-dock-inset w-full min-w-0",
-                  // Mobile keeps extra bottom inset so content scrolls clear
-                  // of the fixed bottom tab bar; desktop has no bar.
-                  !isChatRoute &&
-                    "pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                  "w-full min-w-0",
+                  // Non-chat pages reserve space for the tab bar + mini-player
+                  // (heights measured at runtime). Chat handles its own
+                  // bottom inset on the composer so it can float flush above
+                  // the mini-player with no dead gap.
+                  !isChatRoute && "media-dock-inset",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -1117,6 +1124,30 @@ function MobileBottomNav({
     items.find((i) => i.path === p),
   ).filter((i): i is NavItem => Boolean(i));
 
+  // Publish the tab bar's real height so the media mini-player can dock
+  // directly above it (Spotify-style) and routed content clears both.
+  // `lg:hidden` makes this 0 on desktop, so the dock falls to the bottom.
+  const navRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const node = navRef.current;
+    const root = document.documentElement;
+    if (!node) return;
+    const sync = () => {
+      const h = node.offsetHeight;
+      root.style.setProperty("--app-bottom-nav-h", `${h}px`);
+      if (h > 0) root.dataset.mobileNav = "visible";
+      else delete root.dataset.mobileNav;
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty("--app-bottom-nav-h", "0px");
+      delete root.dataset.mobileNav;
+    };
+  }, []);
+
   const linkClass = (isActive: boolean) =>
     cn(
       "relative flex min-h-[3.25rem] w-full flex-col items-center justify-center gap-0.5 px-1 py-1.5",
@@ -1130,6 +1161,7 @@ function MobileBottomNav({
 
   return (
     <nav
+      ref={navRef}
       aria-label={t.app.navigation}
       className={cn(
         "lg:hidden fixed bottom-0 left-0 right-0 z-40",
