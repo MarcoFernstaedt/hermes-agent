@@ -97,6 +97,7 @@ const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
+const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
@@ -157,6 +158,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/media": MediaPage,
   "/jobs": JobsPage,
+  "/progress": ProgressPage,
   "/files": FilesPage,
   "/git": GitPage,
   "/learning": LearningPage,
@@ -196,6 +198,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   { path: "/media", label: "Media", icon: Music },
   { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
+  { path: "/progress", label: "Progress", icon: Activity },
   { path: "/files", label: "Files", icon: FolderOpen },
   { path: "/git", label: "Git", icon: GitBranch },
   {
@@ -259,7 +262,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/media", "/jobs", "/files", "/git", "/analytics", "/logs"],
+    paths: ["/sessions", "/media", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
   },
   {
     id: "automate",

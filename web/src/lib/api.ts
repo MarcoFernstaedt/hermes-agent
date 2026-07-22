@@ -29,6 +29,14 @@ import type {
   JobsListResponse,
   JobsSummary,
 } from "@/lib/jobs";
+import type {
+  LifeHabit,
+  LifeHabitCreate,
+  LifeHabitUpdate,
+  LifeHistoryDay,
+  LifeReflectionUpdate,
+  LifeToday,
+} from "@/lib/life";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -656,6 +664,44 @@ export const api = {
     }
     return response.blob();
   },
+  getLifeToday: (day?: string) =>
+    fetchJSON<LifeToday>(
+      `/api/life/today${day ? `?day=${encodeURIComponent(day)}` : ""}`,
+    ),
+  getLifeHistory: (days = 14, endDay?: string) => {
+    const query = new URLSearchParams({ days: String(days) });
+    if (endDay) query.set("end_day", endDay);
+    return fetchJSON<{ items: LifeHistoryDay[] }>(
+      `/api/life/history?${query.toString()}`,
+    );
+  },
+  createLifeHabit: (habit: LifeHabitCreate) =>
+    fetchJSON<LifeHabit>("/api/life/habits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(habit),
+    }),
+  updateLifeHabit: (habitId: number, habit: LifeHabitUpdate) =>
+    fetchJSON<LifeHabit>(`/api/life/habits/${habitId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(habit),
+    }),
+  setLifeEntry: (habitId: number, day: string, value: number, note = "") =>
+    fetchJSON<LifeToday>(`/api/life/entries/${habitId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ day, value, note }),
+    }),
+  setLifeReflection: (day: string, reflection: LifeReflectionUpdate) =>
+    fetchJSON<LifeToday>(
+      `/api/life/reflections/${encodeURIComponent(day)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reflection),
+      },
+    ),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
