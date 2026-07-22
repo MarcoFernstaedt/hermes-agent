@@ -457,6 +457,77 @@ export type SpotifyMediaCommand =
   | { action: "shuffle"; shuffle_state: boolean; device_id?: string }
   | { action: "repeat"; repeat_state: SpotifyRepeatState; device_id?: string };
 
+export type GitReviewScope = "uncommitted" | "branch" | "lastTurn";
+
+export interface GitStatusFile {
+  path: string;
+  added: number;
+  removed: number;
+  status: string;
+  staged: boolean;
+  unstaged?: boolean;
+  untracked?: boolean;
+  conflicted?: boolean;
+}
+
+export interface GitStatus {
+  branch: string | null;
+  defaultBranch: string | null;
+  detached: boolean;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  changed: number;
+  added: number;
+  removed: number;
+  files: GitStatusFile[];
+}
+
+export interface GitReviewFile {
+  path: string;
+  added: number;
+  removed: number;
+  status: string;
+  staged: boolean;
+}
+
+export interface GitReviewList {
+  files: GitReviewFile[];
+  base: string | null;
+}
+
+export interface GitBranch {
+  name: string;
+  checkedOut: boolean;
+  isDefault: boolean;
+  worktreePath: string | null;
+}
+
+export interface GitWorktree {
+  path: string;
+  branch: string | null;
+  isMain: boolean;
+  detached: boolean;
+  locked: boolean;
+}
+
+export interface GitShipInfo {
+  ghReady: boolean;
+  pr: { url: string; state?: string; number?: number } | null;
+}
+
+/** Shared body shape for the per-file git review POSTs (stage/unstage/revert). */
+function gitFileOp(endpoint: string, path: string, file: string) {
+  return fetchJSON<{ ok?: boolean }>(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, file }),
+  });
+}
+
 export interface AudiobookChapter {
   id: string;
   title: string;
@@ -841,6 +912,72 @@ export const api = {
     fetchJSON<{ voices: { voice_id: string; label: string }[] }>(
       "/api/audio/elevenlabs/voices",
     ),
+
+  // Git review / worktree / PR suite. Every call is scoped to a repo `path`.
+  getGitDefaultCwd: () =>
+    fetchJSON<{ cwd: string; branch: string | null }>("/api/fs/default-cwd"),
+  getGitRoot: (path: string) =>
+    fetchJSON<{ root: string | null }>(`/api/fs/git-root?path=${encodeURIComponent(path)}`),
+  getGitStatus: (path: string) =>
+    fetchJSON<GitStatus | null>(`/api/git/status?path=${encodeURIComponent(path)}`),
+  getGitBranches: (path: string) =>
+    fetchJSON<{ branches: GitBranch[] }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
+  getGitWorktrees: (path: string) =>
+    fetchJSON<{ worktrees: GitWorktree[] }>(`/api/git/worktrees?path=${encodeURIComponent(path)}`),
+  getGitReviewList: (path: string, scope: GitReviewScope = "uncommitted") =>
+    fetchJSON<GitReviewList>(
+      `/api/git/review/list?path=${encodeURIComponent(path)}&scope=${scope}`,
+    ),
+  getGitReviewDiff: (path: string, file: string, scope: GitReviewScope, staged: boolean) =>
+    fetchJSON<{ diff: string }>(
+      `/api/git/review/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}` +
+        `&scope=${scope}&staged=${staged}`,
+    ),
+  getGitCommitContext: (path: string) =>
+    fetchJSON<{ diff: string; recent: string }>(
+      `/api/git/review/commit-context?path=${encodeURIComponent(path)}`,
+    ),
+  getGitShipInfo: (path: string) =>
+    fetchJSON<GitShipInfo>(`/api/git/review/ship-info?path=${encodeURIComponent(path)}`),
+  gitStageFile: (path: string, file: string) => gitFileOp("/api/git/review/stage", path, file),
+  gitUnstageFile: (path: string, file: string) => gitFileOp("/api/git/review/unstage", path, file),
+  gitRevertFile: (path: string, file: string) => gitFileOp("/api/git/review/revert", path, file),
+  gitCommit: (path: string, message: string, push: boolean) =>
+    fetchJSON<{ ok?: boolean; sha?: string }>("/api/git/review/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, message, push }),
+    }),
+  gitPush: (path: string) =>
+    fetchJSON<{ ok?: boolean }>("/api/git/review/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  gitCreatePr: (path: string) =>
+    fetchJSON<{ url?: string }>("/api/git/review/create-pr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  gitSwitchBranch: (path: string, branch: string) =>
+    fetchJSON<{ branch: string }>("/api/git/branch/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, branch }),
+    }),
+  gitAddWorktree: (path: string, opts: { name?: string; branch?: string; base?: string; existingBranch?: string }) =>
+    fetchJSON<{ path?: string }>("/api/git/worktree/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, ...opts }),
+    }),
+  gitRemoveWorktree: (path: string, worktreePath: string, force = false) =>
+    fetchJSON<{ ok?: boolean }>("/api/git/worktree/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, worktreePath, force }),
+    }),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
