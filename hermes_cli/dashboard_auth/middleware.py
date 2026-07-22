@@ -35,11 +35,10 @@ from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
 
-# Prefixes that bypass the auth gate. Match via ``path == prefix`` or
-# ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
-# matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
-# (login page, OAuth round trip, provider listing) and static asset
-# mounts go here.
+# Paths that bypass the auth gate. Entries ending in ``/`` are static mount
+# prefixes; every other entry is an exact route or exact file. This prevents
+# allowlisted files such as ``/favicon.ico`` from exposing suffixes like
+# ``/favicon.ico/../api/sessions`` while still allowing ``/assets/foo.css``.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
@@ -49,6 +48,10 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers",
     "/assets/",
     "/favicon.ico",
+    "/manifest.webmanifest",
+    "/icons/imperator-180.png",
+    "/icons/imperator-192.png",
+    "/icons/imperator-512.png",
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
@@ -64,15 +67,14 @@ def _path_is_public(path: str) -> bool:
       the legacy ``_SESSION_TOKEN`` middleware also honours. Matched
       exactly (no prefix expansion) so adding ``/api/status`` doesn't
       accidentally expose ``/api/status/secret-extension``.
-    * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
-      mounts. Prefix-matched so ``/assets/foo.css`` lights up via
-      ``/assets/``.
+    * :data:`_GATE_PUBLIC_PREFIXES` — exact auth-bootstrap routes and files,
+      plus static mount prefixes that explicitly end in ``/``.
     """
     if path in PUBLIC_API_PATHS:
         return True
     return any(
-        path == prefix or path.startswith(prefix)
-        for prefix in _GATE_PUBLIC_PREFIXES
+        path == entry or (entry.endswith("/") and path.startswith(entry))
+        for entry in _GATE_PUBLIC_PREFIXES
     )
 
 

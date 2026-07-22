@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.middleware import _path_is_public
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -139,6 +140,45 @@ def test_gated_static_asset_path_is_public(gated_app):
     # 404 not 401 — proves middleware let the request through to the
     # static-files mount, which then 404'd because the file isn't there.
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        ("/manifest.webmanifest", "application/manifest+json"),
+        ("/icons/imperator-180.png", "image/png"),
+        ("/icons/imperator-192.png", "image/png"),
+        ("/icons/imperator-512.png", "image/png"),
+    ],
+)
+def test_gated_pwa_install_metadata_is_public(gated_app, path, content_type):
+    """iOS must fetch install metadata without an authenticated cookie.
+
+    Add to Home Screen may retrieve the manifest and icons outside Safari's
+    authenticated tab.  Redirecting those non-sensitive static files to the
+    login page makes iOS ignore the manifest's HTTPS-relative ``start_url``
+    and fall back to whichever page URL was open during installation.
+    """
+    r = gated_app.get(path, follow_redirects=False)
+    assert r.status_code == 200, (
+        f"{path} must be directly available to the OS installer, got "
+        f"{r.status_code} with location={r.headers.get('location')}"
+    )
+    assert r.headers["content-type"].startswith(content_type)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/icons/../api/sessions",
+        "/icons/%2e%2e/api/sessions",
+        "/icons/imperator-180.png/../api/sessions",
+        "/icons/future-active-content.svg",
+    ],
+)
+def test_gated_pwa_allowlist_rejects_prefix_expansion(path):
+    """Only the required install files are public, never an icon directory."""
+    assert _path_is_public(path) is False
 
 
 # ---------------------------------------------------------------------------
