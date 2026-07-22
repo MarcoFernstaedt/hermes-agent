@@ -6,10 +6,12 @@ import {
   Copy,
   ListPlus,
   LoaderCircle,
+  Mic,
   Paperclip,
   RotateCcw,
   SendHorizontal,
   Square,
+  Volume2,
 } from "lucide-react";
 import {
   useCallback,
@@ -26,7 +28,9 @@ import {
 } from "@/components/SlashPopover";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { Markdown } from "@/components/Markdown";
+import { api } from "@/lib/api";
 import { useAppSettings } from "@/lib/app-settings";
+import { useDictation } from "@/lib/use-dictation";
 import { formatMessageTime } from "@/lib/format";
 import { getChatWelcome, type ChatFeedMessage } from "@/lib/chat-feed-model";
 import { GatewayClient } from "@/lib/gatewayClient";
@@ -159,6 +163,18 @@ export function ChatBubbleFeed({
     composer.trim().length > 0 &&
     !composer.trimStart().startsWith("/");
   const { showToolCalls } = useAppSettings();
+
+  // Voice dictation → composer. A ref keeps the callback reading the latest
+  // draft so a transcript appends instead of clobbering typed text.
+  const composerValueRef = useRef(composer);
+  useEffect(() => {
+    composerValueRef.current = composer;
+  }, [composer]);
+  const dictation = useDictation((text) => {
+    const current = composerValueRef.current;
+    onComposerChange(current.trim() ? `${current.trimEnd()} ${text}` : text);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  });
 
   // "Show tool activity" (chat panel setting) hides operational rows only —
   // conversation, approvals, and clarifications always render.
@@ -293,6 +309,29 @@ export function ChatBubbleFeed({
       window.setTimeout(() => setCopiedId(null), 1500);
     });
   }, []);
+
+  // Opt-in text-to-speech playback of an assistant reply. Manual only — never
+  // auto-plays, so it can't fight a screen reader. One clip plays at a time.
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const speak = useCallback(async (message: ChatFeedMessage) => {
+    ttsAudioRef.current?.pause();
+    if (speakingId === message.id) {
+      setSpeakingId(null);
+      return;
+    }
+    setSpeakingId(message.id);
+    try {
+      const res = await api.speakText(message.text);
+      const audio = new Audio(res.data_url);
+      ttsAudioRef.current = audio;
+      audio.onended = () => setSpeakingId((id) => (id === message.id ? null : id));
+      audio.onerror = () => setSpeakingId((id) => (id === message.id ? null : id));
+      await audio.play();
+    } catch {
+      setSpeakingId((id) => (id === message.id ? null : id));
+    }
+  }, [speakingId]);
 
   return (
     <section
@@ -586,6 +625,26 @@ export function ChatBubbleFeed({
                           )}
                         </Button>
                       )}
+                      {message.role === "assistant" && message.text && (
+                        <Button
+                          ghost
+                          size="icon"
+                          onClick={() => void speak(message)}
+                          aria-label={
+                            speakingId === message.id
+                              ? "Stop playback"
+                              : "Play agent message aloud"
+                          }
+                          aria-pressed={speakingId === message.id}
+                          title="Play aloud"
+                        >
+                          {speakingId === message.id ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : (
+                            <Volume2 className="size-3.5" />
+                          )}
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </article>
@@ -653,6 +712,40 @@ export function ChatBubbleFeed({
             >
               <Paperclip className="size-4" />
             </Button>
+            {dictation.supported && (
+              <Button
+                ghost
+                size="icon"
+                disabled={disabled || dictation.state === "transcribing"}
+                onClick={() =>
+                  dictation.state === "recording"
+                    ? dictation.stop()
+                    : void dictation.start()
+                }
+                aria-label={
+                  dictation.state === "recording"
+                    ? "Stop dictation"
+                    : dictation.state === "transcribing"
+                      ? "Transcribing…"
+                      : "Dictate a message"
+                }
+                aria-pressed={dictation.state === "recording"}
+                title="Dictate a message"
+                className={`mb-0.5 shrink-0 ${
+                  dictation.state === "recording"
+                    ? "text-destructive"
+                    : "text-text-secondary hover:text-foreground"
+                }`}
+              >
+                {dictation.state === "transcribing" ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : dictation.state === "recording" ? (
+                  <Square className="size-3.5 animate-pulse fill-current" />
+                ) : (
+                  <Mic className="size-4" />
+                )}
+              </Button>
+            )}
             <textarea
               ref={composerRef}
               value={composer}
@@ -726,6 +819,22 @@ export function ChatBubbleFeed({
               </span>
             </span>
 
+            {/* Voice dictation feedback — errors announced politely. */}
+            <span
+              className={cn(
+                "truncate text-right",
+                dictation.error ? "text-warning" : "text-text-tertiary",
+              )}
+              aria-live="polite"
+            >
+              {dictation.error
+                ? dictation.error
+                : dictation.state === "recording"
+                  ? "Listening…"
+                  : dictation.state === "transcribing"
+                    ? "Transcribing…"
+                    : ""}
+            </span>
           </div>
         </div>
       </div>

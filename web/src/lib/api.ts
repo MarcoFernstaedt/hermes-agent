@@ -817,6 +817,31 @@ export const api = {
       body: JSON.stringify({ key }),
     }),
 
+  // Voice — speech-to-text (dictation) and text-to-speech (playback).
+  // Backed by the agent's configured transcription/TTS provider chain.
+  transcribeAudio: (dataUrl: string, mimeType?: string) =>
+    fetchJSON<{ ok: boolean; transcript: string; provider?: string }>(
+      "/api/audio/transcribe",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data_url: dataUrl, mime_type: mimeType }),
+      },
+    ),
+  speakText: (text: string) =>
+    fetchJSON<{ ok: boolean; data_url: string; mime_type: string; provider?: string }>(
+      "/api/audio/speak",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+    ),
+  getElevenLabsVoices: () =>
+    fetchJSON<{ voices: { voice_id: string; label: string }[] }>(
+      "/api/audio/elevenlabs/voices",
+    ),
+
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
