@@ -105,10 +105,10 @@ describe("media API", () => {
     const fetchMock = jsonFetchMock({ provider: "spotify", query: "focus & calm", items: [] });
     vi.stubGlobal("fetch", fetchMock);
 
-    await api.searchSpotifyMedia("focus & calm", 20);
+    await api.searchSpotifyMedia("focus & calm", 20, ["track", "album"]);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/media/spotify/search?q=focus%20%26%20calm&limit=20",
+      "/api/media/spotify/search?q=focus%20%26%20calm&limit=20&types=track%2Calbum",
       expect.objectContaining({ credentials: "include" }),
     );
   });

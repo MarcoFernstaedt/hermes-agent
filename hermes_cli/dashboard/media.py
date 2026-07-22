@@ -96,12 +96,17 @@ class SpotifyControl(BaseModel):
 
     action: Literal[
         "play", "pause", "previous", "next", "seek", "volume",
-        "transfer", "queue", "play_uri",
+        "transfer", "queue", "play_uri", "play_context", "shuffle", "repeat",
     ]
     device_id: str | None = Field(default=None, min_length=1, max_length=128)
     position_ms: int | None = Field(default=None, ge=0, le=86_400_000)
     volume_percent: int | None = Field(default=None, ge=0, le=100)
     uri: str | None = Field(default=None, pattern=r"^spotify:track:[A-Za-z0-9]+$")
+    context_uri: str | None = Field(
+        default=None, pattern=r"^spotify:(album|playlist|artist):[A-Za-z0-9]+$"
+    )
+    shuffle_state: bool | None = None
+    repeat_state: Literal["off", "context", "track"] | None = None
     play: bool = False
 
     @model_validator(mode="after")
@@ -112,6 +117,9 @@ class SpotifyControl(BaseModel):
             "transfer": self.device_id,
             "queue": self.uri,
             "play_uri": self.uri,
+            "play_context": self.context_uri,
+            "shuffle": self.shuffle_state,
+            "repeat": self.repeat_state,
         }
         if self.action in required and required[self.action] is None:
             raise ValueError(f"{self.action} requires its command value")
@@ -125,6 +133,9 @@ class SpotifyControl(BaseModel):
             "transfer": {"action", "device_id", "play"},
             "queue": {"action", "device_id", "uri"},
             "play_uri": {"action", "device_id", "uri"},
+            "play_context": {"action", "device_id", "context_uri"},
+            "shuffle": {"action", "device_id", "shuffle_state"},
+            "repeat": {"action", "device_id", "repeat_state"},
         }[self.action]
         if self.model_fields_set - allowed:
             raise ValueError(f"{self.action} received incompatible command fields")
@@ -142,8 +153,12 @@ class SpotifyClientProtocol(Protocol):
     def search(self, **kwargs: Any) -> Any: ...
     def seek(self, *, position_ms: int, device_id: str | None = None) -> Any: ...
     def set_volume(self, *, volume_percent: int, device_id: str | None = None) -> Any: ...
+    def set_shuffle(self, *, state: bool, device_id: str | None = None) -> Any: ...
+    def set_repeat(self, *, state: str, device_id: str | None = None) -> Any: ...
     def transfer_playback(self, *, device_id: str, play: bool = False) -> Any: ...
     def add_to_queue(self, *, uri: str, device_id: str | None = None) -> Any: ...
+    def get_my_playlists(self, *, limit: int = 20, offset: int = 0) -> Any: ...
+    def get_recently_played(self, *, limit: int = 20) -> Any: ...
 
 
 def _default_spotify_client() -> SpotifyClientProtocol:
@@ -343,6 +358,25 @@ def _save_progress(runtime_root: Path, profile: str, progress: AudiobookProgress
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
+def _first_image_url(container: Any) -> str | None:
+    """Pick the first image URL from a Spotify object's ``images`` list."""
+    images = container.get("images") if isinstance(container, dict) else None
+    if not isinstance(images, list):
+        return None
+    for image in images:
+        if isinstance(image, dict) and image.get("url"):
+            return str(image["url"])
+    return None
+
+
+# Spotify's repeat modes are a closed set; anything else is coerced to "off"
+# so the UI never has to reason about an unknown value.
+_REPEAT_STATES = ("off", "context", "track")
+
+# Spotify object kinds the dashboard knows how to render and play.
+_SEARCH_KINDS = ("track", "album", "artist", "playlist")
+
+
 def _normalized_playback(payload: dict[str, Any]) -> dict[str, Any]:
     raw_item = payload.get("item")
     item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
@@ -350,14 +384,20 @@ def _normalized_playback(payload: dict[str, Any]) -> dict[str, Any]:
     artists: list[Any] = raw_artists if isinstance(raw_artists, list) else []
     raw_device = payload.get("device")
     device: dict[str, Any] = raw_device if isinstance(raw_device, dict) else {}
+    album = item.get("album") if isinstance(item.get("album"), dict) else {}
+    repeat_state = payload.get("repeat_state")
     return {
         "is_playing": bool(payload.get("is_playing")),
         "progress_ms": payload.get("progress_ms"),
+        "shuffle_state": bool(payload.get("shuffle_state")),
+        "repeat_state": repeat_state if repeat_state in _REPEAT_STATES else "off",
         "item": {
             "name": item.get("name"),
             "uri": item.get("uri"),
             "duration_ms": item.get("duration_ms"),
             "artists": [artist.get("name") for artist in artists if isinstance(artist, dict) and artist.get("name")],
+            "album": album.get("name"),
+            "image_url": _first_image_url(album),
         }
         if item
         else None,
@@ -371,27 +411,78 @@ def _normalized_playback(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _artist_names(item: dict[str, Any]) -> list[str]:
+    artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+    return [
+        artist.get("name")
+        for artist in artists
+        if isinstance(artist, dict) and artist.get("name")
+    ]
+
+
 def _normalized_track(item: Any, *, search_result: bool = False) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
-    artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+    album = item.get("album") if isinstance(item.get("album"), dict) else {}
     normalized: dict[str, Any] = {
+        "type": "track",
         "name": item.get("name"),
         "uri": item.get("uri"),
         "duration_ms": item.get("duration_ms"),
-        "artists": [
-            artist.get("name")
-            for artist in artists
-            if isinstance(artist, dict) and artist.get("name")
-        ],
+        "artists": _artist_names(item),
+        "album": album.get("name"),
+        "image_url": _first_image_url(album),
     }
-    if search_result:
-        album = item.get("album") if isinstance(item.get("album"), dict) else {}
-        images = album.get("images") if isinstance(album.get("images"), list) else []
-        first_image = images[0] if images and isinstance(images[0], dict) else {}
-        normalized["album"] = album.get("name")
-        normalized["image_url"] = first_image.get("url")
     return normalized
+
+
+def _normalized_search_entry(item: Any, kind: str) -> dict[str, Any] | None:
+    """Normalize a track/album/artist/playlist search hit into one shape.
+
+    Every entry carries a ``uri`` so the UI can play a track directly or a
+    context (album/playlist/artist) via the ``play_context`` control, a
+    ``subtitle`` for the secondary line, and an ``image_url`` for artwork.
+    """
+    if not isinstance(item, dict) or not item.get("uri"):
+        return None
+    if kind == "track":
+        return _normalized_track(item)
+    if kind == "album":
+        return {
+            "type": "album",
+            "name": item.get("name"),
+            "uri": item.get("uri"),
+            "subtitle": ", ".join(_artist_names(item)) or "Album",
+            "image_url": _first_image_url(item),
+        }
+    if kind == "artist":
+        followers = item.get("followers") if isinstance(item.get("followers"), dict) else {}
+        total = followers.get("total")
+        return {
+            "type": "artist",
+            "name": item.get("name"),
+            "uri": item.get("uri"),
+            "subtitle": f"{total:,} followers" if isinstance(total, int) else "Artist",
+            "image_url": _first_image_url(item),
+        }
+    if kind == "playlist":
+        owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+        tracks = item.get("tracks") if isinstance(item.get("tracks"), dict) else {}
+        total = tracks.get("total")
+        by = owner.get("display_name")
+        subtitle = "Playlist"
+        if isinstance(total, int) and by:
+            subtitle = f"{total} tracks · {by}"
+        elif by:
+            subtitle = f"By {by}"
+        return {
+            "type": "playlist",
+            "name": item.get("name"),
+            "uri": item.get("uri"),
+            "subtitle": subtitle,
+            "image_url": _first_image_url(item),
+        }
+    return None
 
 
 def _normalized_devices(payload: Any) -> list[dict[str, Any]]:
@@ -420,6 +511,11 @@ _SPOTIFY_CAPABILITIES = {
     "transfer": True,
     "seek": True,
     "volume": True,
+    "shuffle": True,
+    "repeat": True,
+    "context": True,
+    "recently_played": True,
+    "playlists": True,
 }
 
 
@@ -513,6 +609,21 @@ def create_media_router(
                 elif command.action == "queue":
                     assert command.uri is not None
                     client.add_to_queue(uri=command.uri, device_id=command.device_id)
+                elif command.action == "play_context":
+                    assert command.context_uri is not None
+                    client.start_playback(
+                        device_id=command.device_id, context_uri=command.context_uri
+                    )
+                elif command.action == "shuffle":
+                    assert command.shuffle_state is not None
+                    client.set_shuffle(
+                        state=command.shuffle_state, device_id=command.device_id
+                    )
+                elif command.action == "repeat":
+                    assert command.repeat_state is not None
+                    client.set_repeat(
+                        state=command.repeat_state, device_id=command.device_id
+                    )
                 else:
                     assert command.uri is not None
                     client.start_playback(device_id=command.device_id, uris=[command.uri])
@@ -526,17 +637,22 @@ def create_media_router(
     async def spotify_search(
         q: str = Query(min_length=1, max_length=120),
         limit: int = Query(default=10, ge=1, le=50),
+        types: str = Query(default="track"),
         profile: str | None = Query(default=None),
     ) -> SpotifySearchResults:
         query = q.strip()
         if not query:
             raise HTTPException(status_code=422, detail="Search query is required")
+        # Only the object kinds the UI can render/play; unknown values are
+        # dropped rather than forwarded to Spotify.
+        requested = [t.strip() for t in types.split(",") if t.strip()]
+        search_types = [t for t in requested if t in _SEARCH_KINDS] or ["track"]
         try:
             with _spotify_profile_scope(profile):
                 client = spotify_client_factory()
                 payload = client.search(
                     query=query,
-                    search_types=["track"],
+                    search_types=search_types,
                     limit=min(limit, 20),
                     offset=0,
                     market="US",
@@ -548,16 +664,80 @@ def create_media_router(
                 status_code=503,
                 detail="Spotify search is temporarily unavailable",
             ) from exc
-        tracks = payload.get("tracks") if isinstance(payload, dict) else {}
-        raw_items = tracks.get("items") if isinstance(tracks, dict) else []
+        if not isinstance(payload, dict):
+            payload = {}
+        items: list[dict[str, Any]] = []
+        # Interleave the result groups (tracks, albums, artists, playlists) in
+        # the order the caller asked for so the most relevant kind leads.
+        for kind in search_types:
+            group = payload.get(f"{kind}s")
+            raw_items = group.get("items") if isinstance(group, dict) else []
+            if not isinstance(raw_items, list):
+                continue
+            for item in raw_items:
+                entry = _normalized_search_entry(item, kind)
+                if entry is not None:
+                    items.append(entry)
+        return SpotifySearchResults(query=query, items=items)
+
+    @router.get("/spotify/recently-played", response_model=SpotifySearchResults)
+    async def spotify_recently_played(
+        limit: int = Query(default=20, ge=1, le=50),
+        profile: str | None = Query(default=None),
+    ) -> SpotifySearchResults:
+        # Browse surfaces degrade to an empty 200 rather than 401/503: they
+        # are fetched automatically on page load, and a 401 here would be
+        # read by the SPA as a stale dashboard session (triggering a reload
+        # loop), while any outage should simply hide the panel.
+        try:
+            with _spotify_profile_scope(profile):
+                client = spotify_client_factory()
+                payload = client.get_recently_played(limit=min(limit, 50))
+        except Exception:
+            return SpotifySearchResults(query="recently-played", items=[])
+        raw_items = payload.get("items") if isinstance(payload, dict) else []
+        if not isinstance(raw_items, list):
+            raw_items = []
+        # Recently-played returns play-history objects wrapping a `track`;
+        # de-duplicate consecutive repeats so the list reads cleanly.
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in raw_items:
+            track = entry.get("track") if isinstance(entry, dict) else None
+            normalized = _normalized_track(track)
+            if normalized is None:
+                continue
+            uri = normalized.get("uri")
+            if isinstance(uri, str):
+                if uri in seen:
+                    continue
+                seen.add(uri)
+            items.append(normalized)
+        return SpotifySearchResults(query="recently-played", items=items)
+
+    @router.get("/spotify/playlists", response_model=SpotifySearchResults)
+    async def spotify_playlists(
+        limit: int = Query(default=20, ge=1, le=50),
+        profile: str | None = Query(default=None),
+    ) -> SpotifySearchResults:
+        # See recently-played: passive browse surfaces return an empty 200 on
+        # any failure so a load-time fetch can never trigger the SPA's
+        # stale-session reload path.
+        try:
+            with _spotify_profile_scope(profile):
+                client = spotify_client_factory()
+                payload = client.get_my_playlists(limit=min(limit, 50), offset=0)
+        except Exception:
+            return SpotifySearchResults(query="playlists", items=[])
+        raw_items = payload.get("items") if isinstance(payload, dict) else []
         if not isinstance(raw_items, list):
             raw_items = []
         items = [
-            track
+            entry
             for item in raw_items
-            if (track := _normalized_track(item, search_result=True))
+            if (entry := _normalized_search_entry(item, "playlist"))
         ]
-        return SpotifySearchResults(query=query, items=items)
+        return SpotifySearchResults(query="playlists", items=items)
 
     @router.get("/audiobooks", response_model=AudiobookIndex)
     async def audiobook_index(

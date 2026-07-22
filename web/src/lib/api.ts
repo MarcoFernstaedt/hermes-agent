@@ -371,14 +371,20 @@ export type MediaProviderStatus =
   | "needs_device"
   | "degraded";
 
+export type SpotifyRepeatState = "off" | "context" | "track";
+
 export interface SpotifyPlaybackSummary {
   is_playing: boolean;
   progress_ms: number | null;
+  shuffle_state: boolean;
+  repeat_state: SpotifyRepeatState;
   item: {
     name: string | null;
     uri: string | null;
     duration_ms: number | null;
     artists: string[];
+    album?: string | null;
+    image_url?: string | null;
   } | null;
   device: {
     id: string | null;
@@ -396,13 +402,18 @@ export interface SpotifyMediaDevice {
   volume_percent: number | null;
 }
 
+export type SpotifyItemType = "track" | "album" | "artist" | "playlist";
+
 export interface SpotifyMediaItem {
+  type?: SpotifyItemType;
   name: string | null;
   uri: string | null;
-  duration_ms: number | null;
-  artists: string[];
+  duration_ms?: number | null;
+  artists?: string[];
   album?: string | null;
   image_url?: string | null;
+  /** Secondary line for non-track results (album/artist/playlist). */
+  subtitle?: string;
 }
 
 export interface SpotifyMediaCapabilities {
@@ -413,6 +424,11 @@ export interface SpotifyMediaCapabilities {
   transfer: boolean;
   seek: boolean;
   volume: boolean;
+  shuffle: boolean;
+  repeat: boolean;
+  context: boolean;
+  recently_played: boolean;
+  playlists: boolean;
 }
 
 export interface SpotifyMediaState {
@@ -436,7 +452,10 @@ export type SpotifyMediaCommand =
   | { action: "seek"; position_ms: number; device_id?: string }
   | { action: "volume"; volume_percent: number; device_id?: string }
   | { action: "transfer"; device_id: string; play?: boolean }
-  | { action: "queue" | "play_uri"; uri: string; device_id?: string };
+  | { action: "queue" | "play_uri"; uri: string; device_id?: string }
+  | { action: "play_context"; context_uri: string; device_id?: string }
+  | { action: "shuffle"; shuffle_state: boolean; device_id?: string }
+  | { action: "repeat"; repeat_state: SpotifyRepeatState; device_id?: string };
 
 export interface AudiobookChapter {
   id: string;
@@ -469,9 +488,23 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(command),
     }),
-  searchSpotifyMedia: (query: string, limit = 10) =>
+  searchSpotifyMedia: (
+    query: string,
+    limit = 10,
+    types: SpotifyItemType[] = ["track"],
+  ) =>
     fetchJSON<SpotifySearchResults>(
-      `/api/media/spotify/search?q=${encodeURIComponent(query)}&limit=${Math.min(Math.max(limit, 1), 20)}`,
+      `/api/media/spotify/search?q=${encodeURIComponent(query)}` +
+        `&limit=${Math.min(Math.max(limit, 1), 20)}` +
+        `&types=${encodeURIComponent(types.join(","))}`,
+    ),
+  getSpotifyRecentlyPlayed: (limit = 20) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/recently-played?limit=${Math.min(Math.max(limit, 1), 50)}`,
+    ),
+  getSpotifyPlaylists: (limit = 20) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/playlists?limit=${Math.min(Math.max(limit, 1), 50)}`,
     ),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),

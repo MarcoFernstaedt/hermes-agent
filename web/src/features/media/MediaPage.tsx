@@ -1,19 +1,28 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   BookOpen,
+  Disc3,
   Headphones,
+  ListMusic,
   Music,
+  Music2,
   Pause,
   Play,
+  Plus,
   RefreshCw,
+  Repeat,
+  Repeat1,
   Search,
+  Shuffle,
   SkipBack,
   SkipForward,
+  User,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 
 import { cn } from "@/lib/utils";
+import type { SpotifyItemType, SpotifyMediaItem } from "@/lib/api";
 import { useMedia } from "./MediaProvider";
 import {
   MEDIA_SOURCES,
@@ -24,25 +33,137 @@ import {
   type MediaSource,
 } from "./media-source";
 
+const SEARCH_TYPES: { value: SpotifyItemType; label: string }[] = [
+  { value: "track", label: "Tracks" },
+  { value: "album", label: "Albums" },
+  { value: "artist", label: "Artists" },
+  { value: "playlist", label: "Playlists" },
+];
+
+const TYPE_ICON: Record<SpotifyItemType, typeof Music2> = {
+  track: Music2,
+  album: Disc3,
+  artist: User,
+  playlist: ListMusic,
+};
+
+/** Artwork thumbnail; artists render as a circle, everything else a square. */
+function Artwork({ item, size = "h-11 w-11" }: { item: SpotifyMediaItem; size?: string }) {
+  const Icon = TYPE_ICON[item.type ?? "track"];
+  const rounded = item.type === "artist" ? "rounded-full" : "rounded";
+  if (!item.image_url) {
+    return (
+      <span
+        aria-hidden
+        className={cn(size, rounded, "grid shrink-0 place-items-center bg-muted text-text-tertiary")}
+      >
+        <Icon className="h-4 w-4" />
+      </span>
+    );
+  }
+  return (
+    <img
+      src={item.image_url}
+      alt=""
+      aria-hidden
+      loading="lazy"
+      className={cn(size, rounded, "shrink-0 object-cover")}
+    />
+  );
+}
+
+/**
+ * One playable row shared by search results, playlists and history. Tracks
+ * play by URI and can be queued; albums/artists/playlists play as a context.
+ */
+function ResultRow({
+  item,
+  onPlay,
+  onQueue,
+  disabled,
+}: {
+  item: SpotifyMediaItem;
+  onPlay: (item: SpotifyMediaItem) => void;
+  onQueue?: (item: SpotifyMediaItem) => void;
+  disabled: boolean;
+}) {
+  const isTrack = !item.type || item.type === "track";
+  const subtitle = isTrack ? (item.artists ?? []).join(", ") : (item.subtitle ?? "");
+  return (
+    <li className="flex items-center justify-between gap-3 rounded-md border border-border p-2.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <Artwork item={item} />
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{item.name ?? "Unknown"}</p>
+          <p className="truncate text-xs text-muted-foreground">{subtitle || "—"}</p>
+        </div>
+      </div>
+      <div className="flex shrink-0 gap-1">
+        <Button
+          size="sm"
+          disabled={!item.uri || disabled}
+          onClick={() => onPlay(item)}
+          aria-label={`Play ${item.name ?? "item"}`}
+        >
+          <Play className="h-4 w-4" /> Play
+        </Button>
+        {isTrack && onQueue && (
+          <Button
+            size="sm"
+            ghost
+            disabled={!item.uri || disabled}
+            onClick={() => onQueue(item)}
+            aria-label={`Queue ${item.name ?? "track"}`}
+          >
+            <Plus className="h-4 w-4" /> Queue
+          </Button>
+        )}
+      </div>
+    </li>
+  );
+}
+
 function SpotifyPanel() {
   const {
     state,
     spotify,
     searchResults,
     searchPending,
+    playlists,
+    recentlyPlayed,
     refreshSpotify,
     controlSpotify,
     searchSpotify,
+    playItem,
   } = useMedia();
   const [query, setQuery] = useState("");
+  const [types, setTypes] = useState<SpotifyItemType[]>(["track"]);
   const deviceId = spotify?.playback?.device?.id ?? undefined;
   const pending = state.pendingCommand !== null;
   const status = state.spotify;
   const canControl = status.status === "ready" && !pending;
+  const nowItem = spotify?.playback?.item;
+  const shuffleOn = Boolean(spotify?.playback?.shuffle_state);
+  const repeatState = spotify?.playback?.repeat_state ?? "off";
+  const nextRepeat =
+    repeatState === "off" ? "context" : repeatState === "context" ? "track" : "off";
+
+  const toggleType = (value: SpotifyItemType) => {
+    setTypes((current) => {
+      const next = current.includes(value)
+        ? current.filter((t) => t !== value)
+        : [...current, value];
+      return next.length ? next : current; // keep at least one selected
+    });
+  };
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
-    void searchSpotify(query);
+    void searchSpotify(query, types);
+  };
+
+  const queueTrack = (item: SpotifyMediaItem) => {
+    if (item.uri) void controlSpotify({ action: "queue", uri: item.uri, device_id: deviceId });
   };
 
   return (
@@ -77,21 +198,42 @@ function SpotifyPanel() {
               </p>
             )}
 
-            {spotify?.playback?.item && (
-              <div>
-                <p className="font-medium">{spotify.playback.item.name}</p>
-                <p className="text-sm text-muted-foreground">
-                  {spotify.playback.item.artists.join(", ") || "Unknown artist"}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {spotify.playback.device?.name
-                    ? `Playing on ${spotify.playback.device.name}`
-                    : "Choose a playback device"}
-                </p>
+            {nowItem && (
+              <div className="flex items-center gap-3">
+                <Artwork
+                  item={{ type: "track", name: nowItem.name, uri: nowItem.uri, image_url: nowItem.image_url }}
+                  size="h-16 w-16"
+                />
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{nowItem.name}</p>
+                  <p className="truncate text-sm text-muted-foreground">
+                    {nowItem.artists.join(", ") || "Unknown artist"}
+                  </p>
+                  {nowItem.album && (
+                    <p className="truncate text-xs text-text-tertiary">{nowItem.album}</p>
+                  )}
+                  <p className="truncate text-xs text-muted-foreground">
+                    {spotify?.playback?.device?.name
+                      ? `Playing on ${spotify.playback.device.name}`
+                      : "Choose a playback device"}
+                  </p>
+                </div>
               </div>
             )}
 
             <div className="flex items-center gap-2" aria-label="Spotify playback controls">
+              {spotify?.capabilities.shuffle && (
+                <Button
+                  size="icon"
+                  ghost
+                  disabled={!canControl}
+                  aria-label={shuffleOn ? "Turn shuffle off" : "Turn shuffle on"}
+                  aria-pressed={shuffleOn}
+                  onClick={() => void controlSpotify({ action: "shuffle", shuffle_state: !shuffleOn, device_id: deviceId })}
+                >
+                  <Shuffle className={shuffleOn ? "text-primary" : "opacity-60"} />
+                </Button>
+              )}
               <Button size="icon" onClick={() => void controlSpotify({ action: "previous", device_id: deviceId })} disabled={!canControl} aria-label="Spotify previous track">
                 <SkipBack />
               </Button>
@@ -109,6 +251,22 @@ function SpotifyPanel() {
               <Button size="icon" onClick={() => void controlSpotify({ action: "next", device_id: deviceId })} disabled={!canControl} aria-label="Spotify next track">
                 <SkipForward />
               </Button>
+              {spotify?.capabilities.repeat && (
+                <Button
+                  size="icon"
+                  ghost
+                  disabled={!canControl}
+                  aria-label={`Repeat: ${repeatState}. Switch to ${nextRepeat}.`}
+                  aria-pressed={repeatState !== "off"}
+                  onClick={() => void controlSpotify({ action: "repeat", repeat_state: nextRepeat, device_id: deviceId })}
+                >
+                  {repeatState === "track" ? (
+                    <Repeat1 className="text-primary" />
+                  ) : (
+                    <Repeat className={repeatState === "context" ? "text-primary" : "opacity-60"} />
+                  )}
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -116,40 +274,56 @@ function SpotifyPanel() {
         <Card>
           <CardContent className="space-y-4 py-6">
             <h2 className="font-semibold">Search Spotify</h2>
-            <form className="flex gap-2" role="search" onSubmit={submitSearch}>
-              <label className="min-w-0 flex-1">
-                <span className="sr-only">Search tracks</span>
-                <input
-                  className="min-h-11 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  value={query}
-                  maxLength={120}
-                  onChange={(event) => setQuery(event.currentTarget.value)}
-                  placeholder="Track or artist"
-                />
-              </label>
-              <Button type="submit" disabled={!query.trim() || searchPending} aria-label="Search Spotify">
-                <Search /> Search
-              </Button>
+            <form className="space-y-3" role="search" onSubmit={submitSearch}>
+              <div className="flex gap-2">
+                <label className="min-w-0 flex-1">
+                  <span className="sr-only">Search Spotify</span>
+                  <input
+                    className="min-h-11 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    value={query}
+                    maxLength={120}
+                    onChange={(event) => setQuery(event.currentTarget.value)}
+                    placeholder="Tracks, albums, artists, playlists…"
+                  />
+                </label>
+                <Button type="submit" disabled={!query.trim() || searchPending} aria-label="Search Spotify">
+                  <Search /> Search
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Search result types">
+                {SEARCH_TYPES.map(({ value, label }) => {
+                  const on = types.includes(value);
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => toggleType(value)}
+                      className={cn(
+                        "min-h-8 rounded-full border px-3 text-xs font-medium transition-colors",
+                        on
+                          ? "border-primary bg-primary/15 text-foreground"
+                          : "border-border text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </form>
             <p className="sr-only" aria-live="polite">
               {searchPending ? "Searching Spotify." : `${searchResults.length} Spotify results.`}
             </p>
             <ul className="space-y-2" aria-label="Spotify search results">
-              {searchResults.map((item) => (
-                <li key={item.uri ?? `${item.name}-${item.artists.join("-")}`} className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{item.name ?? "Unknown track"}</p>
-                    <p className="truncate text-xs text-muted-foreground">{item.artists.join(", ")}</p>
-                  </div>
-                  <div className="flex shrink-0 gap-1">
-                    <Button size="sm" disabled={!item.uri} onClick={() => item.uri && void controlSpotify({ action: "play_uri", uri: item.uri, device_id: deviceId }, true)}>
-                      Play
-                    </Button>
-                    <Button size="sm" ghost disabled={!item.uri} onClick={() => item.uri && void controlSpotify({ action: "queue", uri: item.uri, device_id: deviceId })}>
-                      Queue
-                    </Button>
-                  </div>
-                </li>
+              {searchResults.map((item, index) => (
+                <ResultRow
+                  key={item.uri ?? `${item.name}-${index}`}
+                  item={item}
+                  onPlay={playItem}
+                  onQueue={queueTrack}
+                  disabled={pending}
+                />
               ))}
             </ul>
           </CardContent>
@@ -189,9 +363,12 @@ function SpotifyPanel() {
             {spotify?.queue.length ? (
               <ol className="space-y-2">
                 {spotify.queue.map((item, index) => (
-                  <li key={`${item.uri}-${index}`} className="text-sm">
-                    <span className="font-medium">{item.name ?? "Unknown track"}</span>
-                    <span className="block text-xs text-muted-foreground">{item.artists.join(", ")}</span>
+                  <li key={`${item.uri}-${index}`} className="flex items-center gap-2 text-sm">
+                    <Artwork item={item} size="h-8 w-8" />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{item.name ?? "Unknown track"}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{(item.artists ?? []).join(", ")}</span>
+                    </span>
                   </li>
                 ))}
               </ol>
@@ -200,6 +377,43 @@ function SpotifyPanel() {
             )}
           </CardContent>
         </Card>
+
+        {playlists.length > 0 && (
+          <Card>
+            <CardContent className="space-y-3 py-5">
+              <h2 className="font-semibold">Your playlists</h2>
+              <ul className="space-y-2" aria-label="Your Spotify playlists">
+                {playlists.map((item, index) => (
+                  <ResultRow
+                    key={item.uri ?? `playlist-${index}`}
+                    item={item}
+                    onPlay={playItem}
+                    disabled={pending}
+                  />
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+
+        {recentlyPlayed.length > 0 && (
+          <Card>
+            <CardContent className="space-y-3 py-5">
+              <h2 className="font-semibold">Recently played</h2>
+              <ul className="space-y-2" aria-label="Recently played tracks">
+                {recentlyPlayed.map((item, index) => (
+                  <ResultRow
+                    key={item.uri ?? `recent-${index}`}
+                    item={item}
+                    onPlay={playItem}
+                    onQueue={queueTrack}
+                    disabled={pending}
+                  />
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

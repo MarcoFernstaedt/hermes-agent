@@ -9,7 +9,16 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Pause, Play, SkipBack, SkipForward, Volume2 } from "lucide-react";
+import {
+  Pause,
+  Play,
+  Repeat,
+  Repeat1,
+  Shuffle,
+  SkipBack,
+  SkipForward,
+  Volume2,
+} from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -18,6 +27,7 @@ import {
   buildAuthedAssetUrl,
   type AudiobookChapter,
   type AudiobookIndex,
+  type SpotifyItemType,
   type SpotifyMediaCommand,
   type SpotifyMediaItem,
   type SpotifyMediaState,
@@ -40,9 +50,12 @@ interface MediaContextValue {
   audiobookRate: number;
   searchResults: SpotifyMediaItem[];
   searchPending: boolean;
+  playlists: SpotifyMediaItem[];
+  recentlyPlayed: SpotifyMediaItem[];
   refreshSpotify(): Promise<void>;
   controlSpotify(command: SpotifyMediaCommand, optimisticPlaying?: boolean): Promise<void>;
-  searchSpotify(query: string): Promise<void>;
+  searchSpotify(query: string, types?: SpotifyItemType[]): Promise<void>;
+  playItem(item: SpotifyMediaItem): Promise<void>;
   selectAudiobook(chapterId: string, autoplay?: boolean): void;
   setAudiobookRate(rate: number): void;
 }
@@ -56,9 +69,12 @@ const MediaContext = createContext<MediaContextValue>({
   audiobookRate: 1,
   searchResults: [],
   searchPending: false,
+  playlists: [],
+  recentlyPlayed: [],
   refreshSpotify: noopAsync,
   controlSpotify: noopAsync,
   searchSpotify: noopAsync,
+  playItem: noopAsync,
   selectAudiobook: () => undefined,
   setAudiobookRate: () => undefined,
 });
@@ -95,6 +111,8 @@ export function MediaProvider({ children }: { children: ReactNode }) {
   const [autoplayChapterId, setAutoplayChapterId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SpotifyMediaItem[]>([]);
   const [searchPending, setSearchPending] = useState(false);
+  const [playlists, setPlaylists] = useState<SpotifyMediaItem[]>([]);
+  const [recentlyPlayed, setRecentlyPlayed] = useState<SpotifyMediaItem[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cancelDeferredRef = useRef<(() => void) | null>(null);
   const commandIdRef = useRef(0);
@@ -118,6 +136,22 @@ export function MediaProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Playlists and recently-played are read-only browse surfaces; a single
+  // fetch per profile is enough and any failure just leaves them empty (the
+  // panels degrade gracefully rather than erroring the whole page).
+  const refreshLibrary = useCallback(async () => {
+    const [playlistsResult, recentResult] = await Promise.allSettled([
+      api.getSpotifyPlaylists(30),
+      api.getSpotifyRecentlyPlayed(30),
+    ]);
+    setPlaylists(
+      playlistsResult.status === "fulfilled" ? playlistsResult.value.items : [],
+    );
+    setRecentlyPlayed(
+      recentResult.status === "fulfilled" ? recentResult.value.items : [],
+    );
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -133,7 +167,10 @@ export function MediaProvider({ children }: { children: ReactNode }) {
           nowPlaying: null,
         },
       });
+      setPlaylists([]);
+      setRecentlyPlayed([]);
       void refreshSpotify();
+      void refreshLibrary();
     });
     api.getAudiobookIndex().then((value) => {
       if (cancelled) return;
@@ -171,7 +208,7 @@ export function MediaProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       cancelDeferredRef.current?.();
     };
-  }, [profile, refreshSpotify]);
+  }, [profile, refreshSpotify, refreshLibrary]);
 
   const controlSpotify = useCallback(async (
     command: SpotifyMediaCommand,
@@ -209,7 +246,10 @@ export function MediaProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const searchSpotify = useCallback(async (query: string) => {
+  const searchSpotify = useCallback(async (
+    query: string,
+    types: SpotifyItemType[] = ["track"],
+  ) => {
     const trimmed = query.trim();
     const requestId = searchGateRef.current.next();
     if (!trimmed) {
@@ -219,7 +259,7 @@ export function MediaProvider({ children }: { children: ReactNode }) {
     }
     setSearchPending(true);
     try {
-      const value = await api.searchSpotifyMedia(trimmed, 20);
+      const value = await api.searchSpotifyMedia(trimmed, 20, types);
       if (searchGateRef.current.isCurrent(requestId)) {
         setSearchResults(value.items);
       }
@@ -235,6 +275,25 @@ export function MediaProvider({ children }: { children: ReactNode }) {
       if (searchGateRef.current.isCurrent(requestId)) setSearchPending(false);
     }
   }, []);
+
+  // A single entry point for "play this result", picking the right control
+  // for the item's kind: tracks play by URI, everything else (album, artist,
+  // playlist) plays as a context.
+  const playItem = useCallback(async (item: SpotifyMediaItem) => {
+    if (!item.uri) return;
+    const device_id = spotify?.playback?.device?.id ?? undefined;
+    if (item.type && item.type !== "track") {
+      await controlSpotify(
+        { action: "play_context", context_uri: item.uri, device_id },
+        true,
+      );
+    } else {
+      await controlSpotify(
+        { action: "play_uri", uri: item.uri, device_id },
+        true,
+      );
+    }
+  }, [controlSpotify, spotify?.playback?.device?.id]);
 
   const selectAudiobook = useCallback((chapterId: string, autoplay = true) => {
     if (!audiobook) return;
@@ -346,14 +405,18 @@ export function MediaProvider({ children }: { children: ReactNode }) {
     audiobookRate,
     searchResults,
     searchPending,
+    playlists,
+    recentlyPlayed,
     refreshSpotify,
     controlSpotify,
     searchSpotify,
+    playItem,
     selectAudiobook,
     setAudiobookRate,
   }), [
-    audiobook, audiobookRate, controlSpotify, refreshSpotify, searchPending, searchResults,
-    searchSpotify, selectAudiobook, selectedChapter, setAudiobookRate, spotify, state,
+    audiobook, audiobookRate, controlSpotify, playItem, playlists, recentlyPlayed,
+    refreshSpotify, searchPending, searchResults, searchSpotify, selectAudiobook,
+    selectedChapter, setAudiobookRate, spotify, state,
   ]);
 
   return (
@@ -395,17 +458,43 @@ export function PlayerDockView({
   if (!playing) return null;
   const spotifyDevice = spotify?.playback?.device?.id ?? undefined;
   const isAudiobook = playing.provider === "audiobook";
+  const artwork = !isAudiobook ? spotify?.playback?.item?.image_url : null;
+  const shuffleOn = Boolean(spotify?.playback?.shuffle_state);
+  const repeatState = spotify?.playback?.repeat_state ?? "off";
+  const nextRepeat =
+    repeatState === "off" ? "context" : repeatState === "context" ? "track" : "off";
   return (
     <section
       aria-label="Persistent media player"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-midground/30 bg-background-base/95 px-3 pb-[calc(.5rem+env(safe-area-inset-bottom,0px))] pt-2 shadow-2xl backdrop-blur lg:left-64"
     >
       <div className="mx-auto flex max-w-5xl items-center gap-3">
+        {artwork && (
+          <img
+            src={artwork}
+            alt=""
+            aria-hidden
+            className="h-10 w-10 shrink-0 rounded object-cover shadow"
+            loading="lazy"
+          />
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold">{playing.title}</p>
           <p className="truncate text-xs text-text-secondary">{playing.subtitle}</p>
         </div>
         <div className="flex items-center gap-1" aria-label={`${playing.provider} player controls`}>
+          {!isAudiobook && spotify?.capabilities.shuffle && (
+            <Button
+              className="hidden min-h-11 min-w-11 sm:inline-flex"
+              size="icon"
+              ghost
+              aria-label={shuffleOn ? "Turn shuffle off" : "Turn shuffle on"}
+              aria-pressed={shuffleOn}
+              onClick={() => void onControlSpotify({ action: "shuffle", shuffle_state: !shuffleOn, device_id: spotifyDevice })}
+            >
+              <Shuffle className={shuffleOn ? "text-primary" : "opacity-60"} />
+            </Button>
+          )}
           {!isAudiobook && (
             <Button className="min-h-11 min-w-11" size="icon" ghost aria-label="Previous track" onClick={() => void onControlSpotify({ action: "previous", device_id: spotifyDevice })}>
               <SkipBack />
@@ -436,6 +525,22 @@ export function PlayerDockView({
           }}>
             <SkipForward />
           </Button>
+          {!isAudiobook && spotify?.capabilities.repeat && (
+            <Button
+              className="hidden min-h-11 min-w-11 sm:inline-flex"
+              size="icon"
+              ghost
+              aria-label={`Repeat: ${repeatState}. Switch to ${nextRepeat}.`}
+              aria-pressed={repeatState !== "off"}
+              onClick={() => void onControlSpotify({ action: "repeat", repeat_state: nextRepeat, device_id: spotifyDevice })}
+            >
+              {repeatState === "track" ? (
+                <Repeat1 className="text-primary" />
+              ) : (
+                <Repeat className={repeatState === "context" ? "text-primary" : "opacity-60"} />
+              )}
+            </Button>
+          )}
         </div>
         {playing.durationSeconds > 0 && (
           <label className="flex min-w-20 flex-1 items-center gap-2 md:min-w-32">

@@ -215,6 +215,11 @@ def test_spotify_state_normalizes_no_device_without_exposing_credentials(tmp_pat
             "transfer": True,
             "seek": True,
             "volume": True,
+            "shuffle": True,
+            "repeat": True,
+            "context": True,
+            "recently_played": True,
+            "playlists": True,
         },
         "devices": [],
         "queue": [],
@@ -345,7 +350,11 @@ def test_spotify_state_normalizes_devices_queue_and_capabilities(tmp_path: Path)
     assert payload["capabilities"] == {
         "playback": True, "search": True, "queue": True, "devices": True,
         "transfer": True, "seek": True, "volume": True,
+        "shuffle": True, "repeat": True, "context": True,
+        "recently_played": True, "playlists": True,
     }
+    assert payload["playback"]["shuffle_state"] is False
+    assert payload["playback"]["repeat_state"] == "off"
     assert payload["devices"] == [{
         "id": "device-1", "name": "Office", "type": "Computer",
         "is_active": True, "is_restricted": False, "volume_percent": 35,
@@ -385,6 +394,7 @@ def test_spotify_search_is_allowlisted_normalized_and_bounded(tmp_path: Path):
     assert response.json() == {
         "provider": "spotify", "query": "focus",
         "items": [{
+            "type": "track",
             "name": "Result", "uri": "spotify:track:result", "duration_ms": 123,
             "artists": ["Artist"], "album": "Album",
             "image_url": "https://image.invalid",
@@ -464,6 +474,193 @@ def test_spotify_control_rejects_missing_or_unsafe_command_fields(tmp_path: Path
     response = TestClient(app).post("/api/media/spotify/control", json=payload)
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_call"),
+    [
+        ({"action": "shuffle", "shuffle_state": True}, ("shuffle", True, None)),
+        ({"action": "repeat", "repeat_state": "track", "device_id": "dev"}, ("repeat", "track", "dev")),
+        (
+            {"action": "play_context", "context_uri": "spotify:album:abc123"},
+            ("play_context", "spotify:album:abc123", None),
+        ),
+        (
+            {"action": "play_context", "context_uri": "spotify:playlist:xyz789", "device_id": "dev"},
+            ("play_context", "spotify:playlist:xyz789", "dev"),
+        ),
+    ],
+)
+def test_spotify_control_dispatches_shuffle_repeat_and_context(
+    tmp_path: Path,
+    payload: dict,
+    expected_call: tuple,
+):
+    calls = []
+
+    class FakeSpotifyClient:
+        def set_shuffle(self, *, state, device_id=None):
+            calls.append(("shuffle", state, device_id))
+
+        def set_repeat(self, *, state, device_id=None):
+            calls.append(("repeat", state, device_id))
+
+        def start_playback(self, *, device_id=None, context_uri=None, **kwargs):
+            calls.append(("play_context", context_uri, device_id))
+
+        def get_playback_state(self, *, market=None):
+            return {"empty": True, "message": "No active device"}
+
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state"),
+        spotify_client_factory=FakeSpotifyClient,
+    ))
+
+    response = TestClient(app).post("/api/media/spotify/control", json=payload)
+
+    assert response.status_code == 200
+    assert calls == [expected_call]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"action": "shuffle"},
+        {"action": "repeat", "repeat_state": "sideways"},
+        {"action": "play_context", "context_uri": "spotify:track:abc"},
+        {"action": "play_context", "context_uri": "https://attacker.invalid"},
+        {"action": "shuffle", "shuffle_state": True, "repeat_state": "off"},
+    ],
+)
+def test_spotify_control_rejects_bad_shuffle_repeat_context(tmp_path: Path, payload: dict):
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state")
+    ))
+    response = TestClient(app).post("/api/media/spotify/control", json=payload)
+    assert response.status_code == 422
+
+
+def test_spotify_search_supports_multiple_types_and_normalizes_each(tmp_path: Path):
+    calls = []
+
+    class FakeSpotifyClient:
+        def search(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "tracks": {"items": [{
+                    "name": "Song", "uri": "spotify:track:t1", "duration_ms": 1000,
+                    "artists": [{"name": "Band"}],
+                    "album": {"name": "LP", "images": [{"url": "https://img/t.jpg"}]},
+                }]},
+                "albums": {"items": [{
+                    "name": "Great Album", "uri": "spotify:album:a1",
+                    "artists": [{"name": "Band"}],
+                    "images": [{"url": "https://img/a.jpg"}],
+                }]},
+                "artists": {"items": [{
+                    "name": "Band", "uri": "spotify:artist:ar1",
+                    "followers": {"total": 12345},
+                    "images": [{"url": "https://img/ar.jpg"}],
+                }]},
+                "playlists": {"items": [{
+                    "name": "Focus", "uri": "spotify:playlist:p1",
+                    "owner": {"display_name": "DJ"}, "tracks": {"total": 42},
+                    "images": [{"url": "https://img/p.jpg"}],
+                }]},
+            }
+
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state"),
+        spotify_client_factory=FakeSpotifyClient,
+    ))
+    response = TestClient(app).get(
+        "/api/media/spotify/search",
+        params={"q": "focus", "types": "track,album,artist,playlist,evil"},
+    )
+
+    assert response.status_code == 200
+    # The unknown "evil" kind is dropped before hitting Spotify.
+    assert calls[0]["search_types"] == ["track", "album", "artist", "playlist"]
+    items = response.json()["items"]
+    kinds = [item["type"] for item in items]
+    assert kinds == ["track", "album", "artist", "playlist"]
+    by_type = {item["type"]: item for item in items}
+    assert by_type["album"]["subtitle"] == "Band"
+    assert by_type["artist"]["subtitle"] == "12,345 followers"
+    assert by_type["playlist"]["subtitle"] == "42 tracks · DJ"
+    assert by_type["playlist"]["uri"] == "spotify:playlist:p1"
+
+
+def test_spotify_recently_played_dedupes_and_normalizes(tmp_path: Path):
+    class FakeSpotifyClient:
+        def get_recently_played(self, *, limit=20):
+            return {"items": [
+                {"track": {"name": "A", "uri": "spotify:track:a", "duration_ms": 1, "artists": [{"name": "X"}]}},
+                {"track": {"name": "A", "uri": "spotify:track:a", "duration_ms": 1, "artists": [{"name": "X"}]}},
+                {"track": {"name": "B", "uri": "spotify:track:b", "duration_ms": 2, "artists": [{"name": "Y"}]}},
+            ]}
+
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state"),
+        spotify_client_factory=FakeSpotifyClient,
+    ))
+    response = TestClient(app).get("/api/media/spotify/recently-played")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["uri"] for item in items] == ["spotify:track:a", "spotify:track:b"]
+
+
+def test_spotify_playlists_are_normalized(tmp_path: Path):
+    class FakeSpotifyClient:
+        def get_my_playlists(self, *, limit=20, offset=0):
+            return {"items": [{
+                "name": "Roadtrip", "uri": "spotify:playlist:rt",
+                "owner": {"display_name": "Me"}, "tracks": {"total": 12},
+                "images": [{"url": "https://img/rt.jpg"}],
+            }]}
+
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state"),
+        spotify_client_factory=FakeSpotifyClient,
+    ))
+    response = TestClient(app).get("/api/media/spotify/playlists")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items[0]["type"] == "playlist"
+    assert items[0]["uri"] == "spotify:playlist:rt"
+    assert items[0]["image_url"] == "https://img/rt.jpg"
+
+
+@pytest.mark.parametrize("path", ["/api/media/spotify/playlists", "/api/media/spotify/recently-played"])
+def test_spotify_browse_surfaces_degrade_to_empty_200_on_failure(tmp_path: Path, path: str):
+    # These are fetched automatically on page load; a 401 here would be read
+    # by the SPA as a stale dashboard session and trigger a reload loop.
+    class SpotifyAuthRequiredError(Exception):
+        pass
+
+    class FakeSpotifyClient:
+        def get_my_playlists(self, *, limit=20, offset=0):
+            raise SpotifyAuthRequiredError("not connected")
+
+        def get_recently_played(self, *, limit=20):
+            raise SpotifyAuthRequiredError("not connected")
+
+    app = FastAPI()
+    app.include_router(create_media_router(
+        MediaSettings(audiobook_root=tmp_path, runtime_root=tmp_path / "state"),
+        spotify_client_factory=FakeSpotifyClient,
+    ))
+    response = TestClient(app).get(path)
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_query_token_auth_is_limited_to_opaque_audiobook_stream_paths():

@@ -36,6 +36,8 @@ describe("normalizeSpotifyProviderState", () => {
       playback: {
         is_playing: true,
         progress_ms: 1200,
+        shuffle_state: false,
+        repeat_state: "off",
         item: {
           name: "Track",
           uri: "spotify:track:opaque",
