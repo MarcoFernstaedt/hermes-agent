@@ -78,6 +78,16 @@
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
 
+  /* Motion tokens. One spring curve, reused everywhere, so every module's
+     transitions feel like one system. Durations split by intent: quick for
+     in-place state changes, slower for panels/sheets that travel. Under
+     reduced motion the html[data-motion="reduced"] rule below collapses all
+     of these to ~0ms, so consumers never branch on the preference themselves.
+     Usage: `transition: transform var(--motion-state) var(--ease-spring);` */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-state: 160ms; /* in-place state changes (120–200ms band) */
+  --motion-panel: 280ms; /* panels, sheets, overlays (240–320ms band) */
+
   /* Data-series accents — consumed by Analytics + Models pages for the
      input-vs-output token visualisations (chart bars, table values,
      legend swatches). Imperator gold input vs. violet output read as
