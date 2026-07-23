@@ -7069,9 +7069,18 @@ class TestPtyWebSocket:
 
         sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
 
-        # Every subscriber on the channel got the frame verbatim, exactly once.
-        assert sub_a1.sent == [frame]
-        assert sub_a2.sent == [frame]
+        # Every subscriber on the channel got the frame exactly once, stamped
+        # with a monotonic ``_seq`` (the replay cursor the client dedupes on);
+        # apart from that injected field the payload is delivered verbatim.
+        import json
+
+        original = json.loads(frame)
+        assert len(sub_a1.sent) == 1
+        assert len(sub_a2.sent) == 1
+        for got in (sub_a1.sent[0], sub_a2.sent[0]):
+            parsed = json.loads(got)
+            assert isinstance(parsed.pop("_seq", None), int)
+            assert parsed == original
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
 
@@ -7142,7 +7151,19 @@ class TestPtyWebSocket:
 
         healthy, stalled, remaining, frame = asyncio.run(_run())
 
-        assert healthy.sent == [frame, frame]
+        # The healthy subscriber received both broadcasts; each frame is the
+        # original payload plus an injected monotonic ``_seq``.
+        import json
+
+        original = json.loads(frame)
+        assert len(healthy.sent) == 2
+        seqs = []
+        for got in healthy.sent:
+            parsed = json.loads(got)
+            seqs.append(parsed.pop("_seq", None))
+            assert parsed == original
+        assert all(isinstance(seq, int) for seq in seqs)
+        assert seqs[1] > seqs[0]  # monotonic across broadcasts
         assert stalled.closed_with == 1011
         assert remaining == {healthy}
 
