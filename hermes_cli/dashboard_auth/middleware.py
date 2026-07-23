@@ -49,6 +49,11 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/assets/",
     "/favicon.ico",
     "/manifest.webmanifest",
+    # PWA offline shell: both are secret-free (the offline page carries no
+    # token; the worker is public JS) and must load before auth so an
+    # installed app can register the worker and show the offline fallback.
+    "/sw.js",
+    "/offline.html",
     "/icons/imperator-180.png",
     "/icons/imperator-192.png",
     "/icons/imperator-512.png",

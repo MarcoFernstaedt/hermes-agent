@@ -224,6 +224,28 @@ def test_gated_pwa_allowlist_rejects_prefix_expansion(path):
     assert _path_is_public(path) is False
 
 
+def test_offline_shell_files_are_public():
+    """The service worker and its offline fallback must load before auth so
+    an installed PWA can register the worker and show the offline page. Both
+    are secret-free (the offline page carries no token; the worker is public
+    JS), so exposing them pre-auth is safe."""
+    assert _path_is_public("/sw.js") is True
+    assert _path_is_public("/offline.html") is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/sessions/abc/regenerate-title",
+        "/api/dashboard/prefs",
+    ],
+)
+def test_session_and_prefs_endpoints_stay_gated(path):
+    """Endpoints added for Phase-3 (title regeneration, synced prefs) touch
+    session content and user settings — they must NOT be public."""
+    assert _path_is_public(path) is False
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------
