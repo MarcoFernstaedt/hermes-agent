@@ -16537,6 +16537,40 @@ async def set_dashboard_font(body: FontSetBody):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard user preferences — a single namespaced object under
+# ``config["dashboard"]["prefs"]`` (same persistence as theme/font above, so
+# no parallel store). Machine-wide, matching those neighbours; the client
+# nests any per-profile values (e.g. last-active-session keyed by profile)
+# inside this one object. Writes MERGE so a partial update never drops keys.
+# ---------------------------------------------------------------------------
+
+
+class DashboardPrefsBody(BaseModel):
+    prefs: Dict[str, Any]
+
+
+@app.get("/api/dashboard/prefs")
+async def get_dashboard_prefs():
+    """Return the persisted dashboard preferences object (``{}`` if unset)."""
+    config = load_config()
+    prefs = cfg_get(config, "dashboard", "prefs", default={})
+    return {"prefs": prefs if isinstance(prefs, dict) else {}}
+
+
+@app.put("/api/dashboard/prefs")
+async def set_dashboard_prefs(body: DashboardPrefsBody):
+    """Merge the supplied keys into the persisted preferences object."""
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    existing = config["dashboard"].get("prefs")
+    merged = {**(existing if isinstance(existing, dict) else {}), **body.prefs}
+    config["dashboard"]["prefs"] = merged
+    save_config(config)
+    return {"ok": True, "prefs": merged}
+
+
+# ---------------------------------------------------------------------------
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 

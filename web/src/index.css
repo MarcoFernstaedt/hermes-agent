@@ -327,6 +327,17 @@ html[data-mobile-nav="visible"] .player-dock {
   }
 }
 
+/* Opt-in reduced motion (the app setting, independent of the OS toggle):
+   collapse animations/transitions app-wide when the user asks for it. */
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
 /* Chat composer floats flush above the mini-player — no extra spacing.
    While the keyboard is up the dock is hidden behind it, so the composer
    drops back to its normal inset and sits right on the keyboard. */

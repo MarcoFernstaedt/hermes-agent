@@ -947,6 +947,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
     }),
+  // Dashboard preferences — single namespaced object persisted server-side
+  // (config.yaml `dashboard.prefs`); the source of truth for user settings.
+  getDashboardPrefs: () =>
+    fetchJSON<{ prefs: Record<string, unknown> }>("/api/dashboard/prefs"),
+  setDashboardPrefs: (prefs: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; prefs: Record<string, unknown> }>("/api/dashboard/prefs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prefs }),
+    }),
+
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
   setEnvVar: (key: string, value: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {

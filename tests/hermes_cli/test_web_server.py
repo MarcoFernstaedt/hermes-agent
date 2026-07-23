@@ -314,6 +314,28 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_dashboard_prefs_round_trip_and_merge(self):
+        # Empty to start.
+        assert self.client.get("/api/dashboard/prefs").json() == {"prefs": {}}
+
+        # First write persists.
+        r1 = self.client.put(
+            "/api/dashboard/prefs",
+            json={"prefs": {"density": "compact", "showTimestamps": False}},
+        )
+        assert r1.status_code == 200
+        assert r1.json()["prefs"]["density"] == "compact"
+
+        # A partial write MERGES rather than replacing.
+        r2 = self.client.put("/api/dashboard/prefs", json={"prefs": {"sound": True}})
+        merged = r2.json()["prefs"]
+        assert merged["sound"] is True
+        assert merged["density"] == "compact"
+        assert merged["showTimestamps"] is False
+
+        # And it survives a fresh read (persisted to config).
+        assert self.client.get("/api/dashboard/prefs").json()["prefs"] == merged
+
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
         import hermes_state

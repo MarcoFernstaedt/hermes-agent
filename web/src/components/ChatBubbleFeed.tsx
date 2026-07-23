@@ -162,7 +162,7 @@ export function ChatBubbleFeed({
     isWorking &&
     composer.trim().length > 0 &&
     !composer.trimStart().startsWith("/");
-  const { showToolCalls } = useAppSettings();
+  const { showToolCalls, showTimestamps } = useAppSettings();
 
   // Voice dictation → composer. A ref keeps the callback reading the latest
   // draft so a transcript appends instead of clobbering typed text.
@@ -473,7 +473,7 @@ export function ChatBubbleFeed({
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         <MessageStatus message={message} />
-                        <MessageTime message={message} />
+                        {showTimestamps && <MessageTime message={message} />}
                       </span>
                     </div>
 

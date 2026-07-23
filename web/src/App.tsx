@@ -122,6 +122,11 @@ import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import {
+  hydrateAppSettings,
+  setAppSetting,
+  useAppSettings,
+} from "@/lib/app-settings";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -446,8 +451,6 @@ function buildRoutes(
   return routes;
 }
 
-const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
-
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -572,22 +575,27 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      } catch { /* localStorage may be unavailable in private browsing */ }
-      return next;
-    });
+  // Settings are server-persisted (survive reload / new browser / device);
+  // hydrate once on mount, then apply the ones with a visual effect.
+  const appSettings = useAppSettings();
+  useEffect(() => {
+    void hydrateAppSettings();
   }, []);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--theme-spacing-mul",
+      appSettings.density === "compact" ? "0.9" : "1",
+    );
+    root.dataset.density = appSettings.density;
+    if (appSettings.motion === "reduced") root.dataset.motion = "reduced";
+    else delete root.dataset.motion;
+  }, [appSettings.density, appSettings.motion]);
+
+  const collapsed = appSettings.sidebarCollapsed;
+  const toggleCollapsed = useCallback(() => {
+    setAppSetting("sidebarCollapsed", !collapsed);
+  }, [collapsed]);
   const isMobile = useBelowBreakpoint(1024);
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
