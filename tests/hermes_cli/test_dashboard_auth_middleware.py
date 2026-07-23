@@ -14,14 +14,21 @@ without any external IDP.  Exercises:
 """
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import pytest
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
-from hermes_cli.dashboard_auth.middleware import _path_is_public
+from hermes_cli.dashboard_auth.middleware import (
+    _path_is_public,
+    gated_auth_middleware,
+)
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -44,6 +51,32 @@ def gated_app():
     web_server.app.state.bound_host = prev_host
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
+
+
+@pytest.fixture
+def gated_pwa_app(tmp_path, monkeypatch):
+    """Serve tracked PWA assets from a minimal built-SPA fixture.
+
+    ``hermes_cli/web_dist`` is generated and intentionally absent from a clean
+    checkout. Copy the tracked Vite public assets into a temporary dist so this
+    test exercises the auth gate and SPA file serving rather than depending on
+    build artifacts left by another test or developer command.
+    """
+    public_dir = Path(web_server.__file__).resolve().parents[1] / "web" / "public"
+    dist = tmp_path / "web_dist"
+    shutil.copytree(public_dir, dist)
+    (dist / "assets").mkdir()
+    (dist / "index.html").write_text(
+        "<html><head></head><body>Hermes</body></html>",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(web_server, "WEB_DIST", dist)
+    pwa_app = FastAPI()
+    pwa_app.state.auth_required = True
+    pwa_app.middleware("http")(gated_auth_middleware)
+    web_server.mount_spa(pwa_app)
+    return TestClient(pwa_app, base_url="https://fly-app.fly.dev")
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +184,9 @@ def test_gated_static_asset_path_is_public(gated_app):
         ("/icons/imperator-512.png", "image/png"),
     ],
 )
-def test_gated_pwa_install_metadata_is_public(gated_app, path, content_type):
+def test_gated_pwa_install_metadata_is_public(
+    gated_pwa_app, path, content_type
+):
     """iOS must fetch install metadata without an authenticated cookie.
 
     Add to Home Screen may retrieve the manifest and icons outside Safari's
@@ -159,12 +194,20 @@ def test_gated_pwa_install_metadata_is_public(gated_app, path, content_type):
     login page makes iOS ignore the manifest's HTTPS-relative ``start_url``
     and fall back to whichever page URL was open during installation.
     """
-    r = gated_app.get(path, follow_redirects=False)
+    r = gated_pwa_app.get(path, follow_redirects=False)
     assert r.status_code == 200, (
         f"{path} must be directly available to the OS installer, got "
         f"{r.status_code} with location={r.headers.get('location')}"
     )
     assert r.headers["content-type"].startswith(content_type)
+
+
+def test_gated_pwa_fixture_keeps_spa_routes_protected(gated_pwa_app):
+    """The isolated asset fixture must not bypass the auth middleware."""
+    r = gated_pwa_app.get("/sessions", follow_redirects=False)
+
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/login?next=")
 
 
 @pytest.mark.parametrize(
