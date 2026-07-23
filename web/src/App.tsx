@@ -38,6 +38,7 @@ import {
   Globe,
   Heart,
   KeyRound,
+  Mail,
   Menu,
   MessageSquare,
   Music,
@@ -115,6 +116,7 @@ const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 import ChatPage from "@/pages/ChatPage";
 const MediaPage = lazy(() => import("@/features/media/MediaPage"));
+const EmailPage = lazy(() => import("@/features/email/EmailPage"));
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -163,6 +165,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/media": MediaPage,
+  "/email": EmailPage,
   "/jobs": JobsPage,
   "/progress": ProgressPage,
   "/files": FilesPage,
@@ -203,6 +206,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/media", label: "Media", icon: Music },
+  { path: "/email", label: "Email", icon: Mail },
   { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { path: "/progress", label: "Progress", icon: Activity },
   { path: "/files", label: "Files", icon: FolderOpen },
@@ -268,7 +272,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/media", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
+    paths: ["/sessions", "/media", "/email", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
   },
   {
     id: "automate",

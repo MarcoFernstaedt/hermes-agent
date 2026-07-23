@@ -463,6 +463,57 @@ export interface SpotifyConnection {
   needs_reauth: boolean;
 }
 
+export interface GoogleConnection {
+  connected: boolean;
+  needs_reauth: boolean;
+  account: string | null;
+  scopes: string[];
+}
+
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+/** Flattened list-row shape from the backend's parse_metadata. */
+export interface EmailRow {
+  id: string;
+  thread_id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  starred: boolean;
+  has_attachment: boolean;
+  labels: string[];
+}
+
+export interface EmailListResponse {
+  messages: Array<{ id: string; threadId: string }>;
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
+}
+
+/** Raw Gmail message (format=full) — payload parsed client-side for the reader. */
+export interface GmailMessage {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  snippet?: string;
+  payload?: GmailPayload;
+}
+
+export interface GmailPayload {
+  mimeType?: string;
+  filename?: string;
+  headers?: Array<{ name: string; value: string }>;
+  body?: { size?: number; data?: string; attachmentId?: string };
+  parts?: GmailPayload[];
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -648,6 +699,37 @@ export const api = {
       "/api/media/spotify/disconnect",
       { method: "POST" },
     ),
+
+  // -- Email (Gmail) -------------------------------------------------------
+  getEmailConnection: () =>
+    fetchJSON<GoogleConnection>("/api/email/connection"),
+  getEmailLabels: () => fetchJSON<{ labels: GmailLabel[] }>("/api/email/labels"),
+  listEmail: (params: { q?: string; label?: string; maxResults?: number; pageToken?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.label) qs.set("label", params.label);
+    qs.set("max_results", String(params.maxResults ?? 25));
+    if (params.pageToken) qs.set("page_token", params.pageToken);
+    return fetchJSON<EmailListResponse>(`/api/email/messages?${qs.toString()}`);
+  },
+  getEmailMetadata: (ids: string[]) =>
+    fetchJSON<{ messages: EmailRow[] }>("/api/email/messages/metadata", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
+  getEmailMessage: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}?fmt=${fmt}`),
+  modifyEmail: (id: string, add: string[] = [], remove: string[] = []) =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/modify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ add, remove }),
+    }),
+  trashEmail: (id: string) =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/trash`, {
+      method: "POST",
+    }),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
   saveAudiobookProgress: (progress: AudiobookProgress) =>
