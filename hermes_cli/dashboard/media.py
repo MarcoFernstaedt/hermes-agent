@@ -91,6 +91,18 @@ class SpotifySearchResults(BaseModel):
     items: list[dict[str, Any]]
 
 
+class SpotifyConnection(BaseModel):
+    """Connection status for the connected-accounts UI: whether Spotify is
+    linked, the account label, granted scopes, and whether the token needs
+    reauthorising."""
+
+    provider: Literal["spotify"] = "spotify"
+    connected: bool = False
+    account: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    needs_reauth: bool = False
+
+
 class SpotifyControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -580,6 +592,40 @@ def create_media_router(
                 status="degraded",
                 message="Spotify is temporarily unavailable.",
             )
+
+    @router.get("/spotify/connection", response_model=SpotifyConnection)
+    async def spotify_connection() -> SpotifyConnection:
+        """Report whether Spotify is connected, for the connected-accounts UI.
+        Read-only: never touches the token, only reports its state."""
+        try:
+            from hermes_cli.auth import get_auth_status
+
+            status = get_auth_status("spotify") or {}
+        except Exception:
+            return SpotifyConnection(connected=False)
+        scopes = status.get("scopes") or []
+        if isinstance(scopes, str):
+            scopes = scopes.split()
+        account = (
+            status.get("account")
+            or status.get("display_name")
+            or status.get("user_id")
+        )
+        return SpotifyConnection(
+            connected=bool(status.get("logged_in")),
+            account=account,
+            scopes=list(scopes),
+            needs_reauth=bool(status.get("needs_reauth")),
+        )
+
+    @router.post("/spotify/disconnect")
+    async def spotify_disconnect() -> dict[str, Any]:
+        """Disconnect Spotify — clears the stored auth so playback controls go
+        back to a needs_auth state. Reconnect with `hermes auth spotify`."""
+        from hermes_cli.auth import clear_provider_auth
+
+        cleared = bool(clear_provider_auth("spotify"))
+        return {"ok": True, "cleared": cleared}
 
     @router.post("/spotify/control", response_model=SpotifyState)
     async def spotify_control(command: SpotifyControl, profile: str | None = Query(default=None)) -> SpotifyState:

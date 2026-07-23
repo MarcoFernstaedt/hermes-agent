@@ -362,6 +362,22 @@ class TestWebServerEndpoints:
         # And it survives a fresh read (persisted to config).
         assert self.client.get("/api/dashboard/prefs").json()["prefs"] == merged
 
+    def test_spotify_connection_reports_disconnected(self):
+        resp = self.client.get("/api/media/spotify/connection")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "spotify"
+        assert body["connected"] is False
+        assert body["scopes"] == []
+
+    def test_spotify_disconnect_is_idempotent(self):
+        resp = self.client.post("/api/media/spotify/disconnect")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        # Nothing was connected, so nothing was cleared — still a success.
+        assert body["cleared"] is False
+
     def test_audit_log_endpoint_lists_and_filters(self):
         from hermes_cli import audit_log
 

@@ -455,6 +455,14 @@ export interface SpotifySearchResults {
   items: SpotifyMediaItem[];
 }
 
+export interface SpotifyConnection {
+  provider: "spotify";
+  connected: boolean;
+  account: string | null;
+  scopes: string[];
+  needs_reauth: boolean;
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -632,6 +640,13 @@ export const api = {
   getSpotifyPlaylists: (limit = 20) =>
     fetchJSON<SpotifySearchResults>(
       `/api/media/spotify/playlists?limit=${Math.min(Math.max(limit, 1), 50)}`,
+    ),
+  getSpotifyConnection: () =>
+    fetchJSON<SpotifyConnection>("/api/media/spotify/connection"),
+  disconnectSpotify: () =>
+    fetchJSON<{ ok: boolean; cleared: boolean }>(
+      "/api/media/spotify/disconnect",
+      { method: "POST" },
     ),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
