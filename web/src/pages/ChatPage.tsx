@@ -38,6 +38,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
+import { ChatHeaderRename } from "@/components/ChatHeaderRename";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -450,7 +451,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd, setTitle } = usePageHeader();
+  const { setEnd, setTitle, setAfterTitle } = usePageHeader();
   /** True while chat's mobile panel button occupies the header end slot. */
   const headerEndOwnedRef = useRef(false);
   /** True while chat's session title occupies the header title slot. */
@@ -1177,19 +1178,41 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (headerTitleOwnedRef.current) {
         headerTitleOwnedRef.current = false;
         setTitle(null);
+        setAfterTitle(null);
       }
       return;
     }
 
     headerTitleOwnedRef.current = true;
     setTitle(sessionTitle);
+    // Inline rename beside the title once a session exists to rename.
+    const renameSessionId = resumeParam ?? activeStoredSessionIdRef.current;
+    setAfterTitle(
+      renameSessionId ? (
+        <ChatHeaderRename
+          sessionId={renameSessionId}
+          title={sessionTitle}
+          profile={scopedProfile}
+          onRenamed={handleSessionTitleChange}
+        />
+      ) : null,
+    );
     return () => {
       if (headerTitleOwnedRef.current) {
         headerTitleOwnedRef.current = false;
         setTitle(null);
+        setAfterTitle(null);
       }
     };
-  }, [isActive, sessionTitle, setTitle]);
+  }, [
+    isActive,
+    sessionTitle,
+    setTitle,
+    setAfterTitle,
+    resumeParam,
+    scopedProfile,
+    handleSessionTitleChange,
+  ]);
 
   // Unread-reply badge clears the moment the chat is actually in view.
   useEffect(() => {

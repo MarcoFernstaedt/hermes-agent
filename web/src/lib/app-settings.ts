@@ -43,6 +43,8 @@ export interface AppSettings {
   defaultProfile: string;
   /** Last active chat session id, keyed by management profile. */
   lastActiveSession: Record<string, string>;
+  /** Pinned session ids (sort to the top of session lists). Cross-device. */
+  pinnedSessions: string[];
 }
 
 const STORAGE_KEY = "imperator-app-settings";
@@ -61,6 +63,7 @@ const DEFAULTS: AppSettings = {
   defaultModel: "",
   defaultProfile: "",
   lastActiveSession: {},
+  pinnedSessions: [],
 };
 
 export type SaveStatus = "idle" | "saving" | "saved";
@@ -127,6 +130,9 @@ function coerce(raw: Record<string, unknown>): Partial<AppSettings> {
         .filter(([, v]) => typeof v === "string")
         .map(([k, v]) => [k, String(v)]),
     );
+  }
+  if (Array.isArray(raw.pinnedSessions)) {
+    out.pinnedSessions = raw.pinnedSessions.filter((v): v is string => typeof v === "string");
   }
   return out;
 }
@@ -205,6 +211,14 @@ export function setLastActiveSession(profile: string, sessionId: string): void {
 
 export function getLastActiveSession(profile: string): string | undefined {
   return cached.lastActiveSession[profile || "__own__"];
+}
+
+/** Toggle whether a session is pinned (sorted to the top of session lists). */
+export function togglePinnedSession(sessionId: string): void {
+  const pinned = cached.pinnedSessions.includes(sessionId)
+    ? cached.pinnedSessions.filter((id) => id !== sessionId)
+    : [...cached.pinnedSessions, sessionId];
+  setAppSetting("pinnedSessions", pinned);
 }
 
 export function subscribeAppSettings(listener: () => void): () => void {

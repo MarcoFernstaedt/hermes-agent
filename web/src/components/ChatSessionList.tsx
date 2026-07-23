@@ -21,12 +21,13 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { AlertCircle, MessageSquarePlus, Pin, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
+import { useAppSettings, togglePinnedSession } from "@/lib/app-settings";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
@@ -63,6 +64,7 @@ export function ChatSessionList({
   onNewChat,
 }: ChatSessionListProps) {
   const { t } = useI18n();
+  const { pinnedSessions } = useAppSettings();
   const [, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -177,25 +179,51 @@ export function ChatSessionList({
         </div>
       );
     }
+    // Pinned sessions sort to the top (stable within each group).
+    const pinnedSet = new Set(pinnedSessions);
+    const ordered = [...sessions].sort(
+      (a, b) => Number(pinnedSet.has(b.id)) - Number(pinnedSet.has(a.id)),
+    );
     return (
       <div className="flex flex-col gap-0.5">
-        {sessions.map((s) => {
+        {ordered.map((s) => {
           const isActive = s.id === activeSessionId;
+          const isPinned = pinnedSet.has(s.id);
           return (
             <ListItem
               key={s.id}
               onClick={() => pick(s.id)}
               aria-current={isActive ? "true" : undefined}
               className={cn(
-                "flex-col items-start gap-0.5 rounded px-2 py-1.5",
+                "group flex-col items-start gap-0.5 rounded px-2 py-1.5",
                 "normal-case tracking-normal",
                 isActive
                   ? "bg-primary/10 text-foreground border-l-2 border-primary"
                   : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
               )}
             >
-              <span className="w-full truncate text-sm font-medium">
-                {rowLabel(s, t.sessions.untitledSession)}
+              <span className="flex w-full min-w-0 items-center gap-1">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {rowLabel(s, t.sessions.untitledSession)}
+                </span>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    togglePinnedSession(s.id);
+                  }}
+                  aria-label={isPinned ? "Unpin session" : "Pin session"}
+                  aria-pressed={isPinned}
+                  className={cn(
+                    "shrink-0 rounded p-0.5 transition-opacity",
+                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
+                    isPinned
+                      ? "text-primary opacity-100"
+                      : "text-text-tertiary opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+                  )}
+                >
+                  <Pin className={cn("h-3.5 w-3.5", isPinned && "fill-current")} />
+                </button>
               </span>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
                 <span>{timeAgo(s.last_active)}</span>
@@ -217,7 +245,7 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, loading, pick, reload, sessions, t, pinnedSessions]);
 
   return (
     <aside
