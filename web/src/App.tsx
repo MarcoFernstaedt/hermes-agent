@@ -123,6 +123,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import {
+  getAppSettings,
   hydrateAppSettings,
   setAppSetting,
   useAppSettings,
@@ -709,6 +710,99 @@ export default function App() {
       },
     });
     const settingsHint = t.app.navSections?.settings ?? "Settings";
+
+    // Action commands — the palette isn't only a page jumper; the row and
+    // settings actions that otherwise need a mouse are reachable here too, so
+    // a keyboard/screen-reader user can drive the whole app from ⌘K. Labels
+    // reflect the current state so the outcome is unambiguous before running.
+    const actionHint = "Action";
+    const s = appSettings;
+    const actionItems: CommandPaletteItem[] = [
+      {
+        id: "action:new-chat",
+        label: "Start new chat",
+        hint: actionHint,
+        keywords: "new chat conversation session fresh compose",
+        icon: MessageSquare,
+        run: () => {
+          navigate("/chat");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:toggle-density",
+        label: s.density === "compact" ? "Use comfortable density" : "Use compact density",
+        hint: actionHint,
+        keywords: "density compact comfortable spacing layout",
+        icon: SlidersHorizontal,
+        run: () =>
+          setAppSetting(
+            "density",
+            getAppSettings().density === "compact" ? "comfortable" : "compact",
+          ),
+      },
+      {
+        id: "action:toggle-motion",
+        label: s.motion === "reduced" ? "Allow motion and animations" : "Reduce motion",
+        hint: actionHint,
+        keywords: "motion animation reduce accessibility",
+        icon: Zap,
+        run: () =>
+          setAppSetting(
+            "motion",
+            getAppSettings().motion === "reduced" ? "full" : "reduced",
+          ),
+      },
+      {
+        id: "action:toggle-notifications",
+        label: s.notificationsEnabled ? "Disable reply notifications" : "Enable reply notifications",
+        hint: actionHint,
+        keywords: "notifications browser push replies alerts",
+        icon: Radio,
+        run: () => setAppSetting("notificationsEnabled", !getAppSettings().notificationsEnabled),
+      },
+      {
+        id: "action:toggle-tool-activity",
+        label: s.showToolCalls ? "Hide tool activity in chat" : "Show tool activity in chat",
+        hint: actionHint,
+        keywords: "tool calls activity system rows chat feed",
+        icon: Wrench,
+        run: () => setAppSetting("showToolCalls", !getAppSettings().showToolCalls),
+      },
+      {
+        id: "action:toggle-timestamps",
+        label: s.showTimestamps ? "Hide message timestamps" : "Show message timestamps",
+        hint: actionHint,
+        keywords: "timestamps time chat feed",
+        icon: Clock,
+        run: () => setAppSetting("showTimestamps", !getAppSettings().showTimestamps),
+      },
+      {
+        id: "action:toggle-token-cost",
+        label: s.showTokenCost ? "Hide token and cost readouts" : "Show token and cost readouts",
+        hint: actionHint,
+        keywords: "token cost usage readout",
+        icon: SlidersHorizontal,
+        run: () => setAppSetting("showTokenCost", !getAppSettings().showTokenCost),
+      },
+      {
+        id: "action:toggle-sound",
+        label: s.sound ? "Mute reply sound cue" : "Play a sound on reply",
+        hint: actionHint,
+        keywords: "sound audio cue chime reply",
+        icon: Music,
+        run: () => setAppSetting("sound", !getAppSettings().sound),
+      },
+      {
+        id: "action:toggle-sidebar",
+        label: s.sidebarCollapsed ? "Expand the sidebar" : "Collapse the sidebar",
+        hint: actionHint,
+        keywords: "sidebar collapse expand rail navigation",
+        icon: s.sidebarCollapsed ? PanelLeftOpen : PanelLeftClose,
+        run: () => setAppSetting("sidebarCollapsed", !getAppSettings().sidebarCollapsed),
+      },
+    ];
+
     return [
       ...sidebarNav.coreItems.map((item) =>
         toItem(item, item.path === "/chat" ? undefined : sectionOf(item.path)),
@@ -719,8 +813,9 @@ export default function App() {
       // Settings-only pages keep a palette entry even though they're no
       // longer in the sidebar.
       ...SETTINGS_ONLY_NAV.map((item) => toItem(item, settingsHint)),
+      ...actionItems,
     ];
-  }, [sidebarNav, t, navigate, closeMobile]);
+  }, [sidebarNav, t, navigate, closeMobile, appSettings]);
 
   useEffect(() => {
     if (!mobileOpen) return;
