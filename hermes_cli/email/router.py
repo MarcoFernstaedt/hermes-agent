@@ -33,6 +33,19 @@ class MetadataBody(BaseModel):
     ids: List[str] = []
 
 
+class SendBody(BaseModel):
+    to: List[str]
+    subject: str = ""
+    body: str = ""
+    cc: List[str] = []
+    bcc: List[str] = []
+    html_body: Optional[str] = None
+    # Threading for replies — the referenced message's Message-ID + thread.
+    thread_id: Optional[str] = None
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+
+
 def _handle_google_errors(exc: Exception):
     if isinstance(exc, GoogleReauthRequired):
         raise HTTPException(status_code=409, detail="google_needs_reauth")
@@ -133,6 +146,53 @@ def create_email_router(
         scope we deliberately don't request)."""
         try:
             return client_factory().trash_message(message_id)
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    def _raw(body: SendBody) -> str:
+        from hermes_cli.google.compose import build_raw_message
+
+        return build_raw_message(
+            to=body.to,
+            subject=body.subject,
+            body=body.body,
+            cc=body.cc or None,
+            bcc=body.bcc or None,
+            html_body=body.html_body,
+            in_reply_to=body.in_reply_to,
+            references=body.references,
+        )
+
+    @router.post("/send", dependencies=dep)
+    async def send(body: SendBody = Body(...)) -> dict[str, Any]:
+        """Send a message I composed. This is the ME path — I clicked Send in
+        the UI (which confirms first). The agent's send tool is gated
+        separately and always requires approval."""
+        if not body.to:
+            raise HTTPException(status_code=422, detail="At least one recipient is required.")
+        try:
+            return client_factory().send_message(_raw(body), thread_id=body.thread_id)
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    @router.post("/drafts", dependencies=dep)
+    async def create_draft(body: SendBody = Body(...)) -> dict[str, Any]:
+        try:
+            return client_factory().create_draft(_raw(body), thread_id=body.thread_id)
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    @router.get("/drafts", dependencies=dep)
+    async def list_drafts() -> dict[str, Any]:
+        try:
+            return client_factory().list_drafts()
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    @router.post("/drafts/{draft_id}/send", dependencies=dep)
+    async def send_draft(draft_id: str) -> dict[str, Any]:
+        try:
+            return client_factory().send_draft(draft_id)
         except Exception as exc:
             _handle_google_errors(exc)
 

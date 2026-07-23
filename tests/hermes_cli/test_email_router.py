@@ -37,6 +37,21 @@ class _FakeClient:
         self.calls.append(("trash", mid))
         return {"id": mid, "labelIds": ["TRASH"]}
 
+    def send_message(self, raw, thread_id=None):
+        self.calls.append(("send", raw, thread_id))
+        return {"id": "sent1", "threadId": thread_id or "t9"}
+
+    def create_draft(self, raw, thread_id=None):
+        self.calls.append(("draft", raw, thread_id))
+        return {"id": "d1"}
+
+    def send_draft(self, draft_id):
+        self.calls.append(("send_draft", draft_id))
+        return {"id": "sent2"}
+
+    def list_drafts(self, max_results=25):
+        return {"drafts": []}
+
 
 def _client(fake):
     from hermes_cli.email.router import create_email_router
@@ -69,6 +84,28 @@ def test_modify_and_trash():
     assert c.post("/api/email/messages/m2/trash").status_code == 200
     assert ("modify", "m1", [], ["UNREAD"]) in fake.calls
     assert ("trash", "m2") in fake.calls
+
+
+def test_send_requires_recipient_and_sends():
+    fake = _FakeClient()
+    c = _client(fake)
+    # No recipient -> 422 before any client call.
+    assert c.post("/api/email/send", json={"subject": "x", "body": "y"}).status_code == 422
+    # With a recipient -> sends.
+    resp = c.post(
+        "/api/email/send",
+        json={"to": ["a@x.com"], "subject": "Hi", "body": "yo", "thread_id": "t1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "sent1"
+    assert any(call[0] == "send" and call[2] == "t1" for call in fake.calls)
+
+
+def test_draft_create_and_send():
+    fake = _FakeClient()
+    c = _client(fake)
+    assert c.post("/api/email/drafts", json={"to": ["a@x.com"], "body": "hi"}).json()["id"] == "d1"
+    assert c.post("/api/email/drafts/d1/send").json()["id"] == "sent2"
 
 
 def test_reauth_maps_to_409():

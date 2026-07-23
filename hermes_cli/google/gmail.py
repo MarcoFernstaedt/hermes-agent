@@ -131,6 +131,33 @@ class GmailClient:
     def untrash_message(self, message_id: str) -> Dict[str, Any]:
         return self._send("POST", f"/messages/{message_id}/untrash")
 
+    # -- send / drafts -----------------------------------------------------
+    def send_message(self, raw: str, *, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        """Send a base64url RFC 2822 message. ``thread_id`` keeps a reply in
+        its conversation (must match the referenced message's thread)."""
+        payload: Dict[str, Any] = {"raw": raw}
+        if thread_id:
+            payload["threadId"] = thread_id
+        return self._send("POST", "/messages/send", json=payload)
+
+    def create_draft(self, raw: str, *, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        message: Dict[str, Any] = {"raw": raw}
+        if thread_id:
+            message["threadId"] = thread_id
+        return self._send("POST", "/drafts", json={"message": message})
+
+    def update_draft(self, draft_id: str, raw: str, *, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        message: Dict[str, Any] = {"raw": raw}
+        if thread_id:
+            message["threadId"] = thread_id
+        return self._send("PUT", f"/drafts/{draft_id}", json={"message": message})
+
+    def send_draft(self, draft_id: str) -> Dict[str, Any]:
+        return self._send("POST", "/drafts/send", json={"id": draft_id})
+
+    def list_drafts(self, *, max_results: int = 25) -> Dict[str, Any]:
+        return self._send("GET", "/drafts", params={"maxResults": max(1, min(int(max_results), 100))})
+
 
 def _force_expire(account: str) -> Optional[Dict[str, Any]]:
     """Drop the cached access token so the next get_access_token refreshes.
