@@ -526,6 +526,52 @@ export interface EmailSendBody {
   references?: string;
 }
 
+export interface CalendarInfo {
+  id: string;
+  summary: string;
+  primary?: boolean;
+  backgroundColor?: string;
+}
+
+export interface CalendarEventTime {
+  dateTime?: string;
+  date?: string;
+  timeZone?: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  start: CalendarEventTime;
+  end: CalendarEventTime;
+  status?: string;
+  htmlLink?: string;
+  attendees?: Array<{ email: string; responseStatus?: string; self?: boolean }>;
+  recurringEventId?: string;
+}
+
+export interface CalendarEventBody {
+  summary: string;
+  start: string;
+  end: string;
+  timezone?: string;
+  all_day?: boolean;
+  description?: string;
+  location?: string;
+  attendees?: string[];
+  calendar_id?: string;
+}
+
+export interface GoogleTask {
+  id: string;
+  title: string;
+  notes?: string;
+  due?: string;
+  status?: string;
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -753,6 +799,38 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    }),
+
+  // -- Calendar + Tasks ----------------------------------------------------
+  getCalendarConnection: () => fetchJSON<GoogleConnection>("/api/calendar/connection"),
+  getCalendars: () => fetchJSON<{ items: CalendarInfo[] }>("/api/calendar/calendars"),
+  listCalendarEvents: (timeMin: string, timeMax: string, calendarId = "primary") =>
+    fetchJSON<{ items: CalendarEvent[] }>(
+      `/api/calendar/events?calendar_id=${encodeURIComponent(calendarId)}` +
+        `&time_min=${encodeURIComponent(timeMin)}&time_max=${encodeURIComponent(timeMax)}`,
+    ),
+  createCalendarEvent: (body: CalendarEventBody) =>
+    fetchJSON<CalendarEvent>("/api/calendar/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteCalendarEvent: (id: string, calendarId = "primary") =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/calendar/events/${encodeURIComponent(id)}?calendar_id=${encodeURIComponent(calendarId)}`,
+      { method: "DELETE" },
+    ),
+  listTasks: (showCompleted = false) =>
+    fetchJSON<{ items: GoogleTask[] }>(`/api/calendar/tasks?show_completed=${showCompleted}`),
+  createTask: (title: string, due?: string, notes?: string) =>
+    fetchJSON<GoogleTask>("/api/calendar/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, due, notes }),
+    }),
+  completeTask: (id: string) =>
+    fetchJSON<GoogleTask>(`/api/calendar/tasks/${encodeURIComponent(id)}/complete`, {
+      method: "POST",
     }),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
