@@ -28,6 +28,31 @@ def _spotify_client() -> SpotifyClient:
     return SpotifyClient()
 
 
+def _audit(action: str, target: str = "", detail: dict | None = None) -> None:
+    """Record a persistent Spotify write (playlist create/modify, library
+    save/remove) to the shared agent audit log so "what did the agent do on my
+    behalf?" is always answerable. Best-effort — an audit failure must never
+    break the tool. Transient playback control (play/pause/seek/volume/queue)
+    is intentionally not logged: it would flood the log without recording any
+    lasting change.
+    """
+    try:
+        from hermes_cli import audit_log
+
+        audit_log.record(
+            actor="agent",
+            module="media",
+            tool="spotify",
+            action=action,
+            target=target,
+            decision="auto",
+            outcome="ok",
+            detail=detail,
+        )
+    except Exception:
+        pass
+
+
 def _spotify_tool_error(exc: Exception) -> str:
     if isinstance(exc, (SpotifyError, SpotifyAuthRequiredError)):
         return tool_error(str(exc))
@@ -237,37 +262,48 @@ def _handle_spotify_playlists(args: dict, **kw) -> str:
             name = str(args.get("name") or "").strip()
             if not name:
                 return tool_error("name is required for action='create'")
-            return tool_result(client.create_playlist(
+            result = client.create_playlist(
                 name=name,
                 public=_coerce_bool(args.get("public")),
                 collaborative=_coerce_bool(args.get("collaborative")),
                 description=args.get("description"),
-            ))
+            )
+            _audit("playlist.create", target=name,
+                   detail={"public": _coerce_bool(args.get("public"))})
+            return tool_result(result)
         if action == "add_items":
             playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
             uris = normalize_spotify_uris(_as_list(args.get("uris")))
-            return tool_result(client.add_playlist_items(
+            result = client.add_playlist_items(
                 playlist_id=playlist_id,
                 uris=uris,
                 position=args.get("position"),
-            ))
+            )
+            _audit("playlist.add_items", target=playlist_id,
+                   detail={"count": len(uris)})
+            return tool_result(result)
         if action == "remove_items":
             playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
             uris = normalize_spotify_uris(_as_list(args.get("uris")))
-            return tool_result(client.remove_playlist_items(
+            result = client.remove_playlist_items(
                 playlist_id=playlist_id,
                 uris=uris,
                 snapshot_id=args.get("snapshot_id"),
-            ))
+            )
+            _audit("playlist.remove_items", target=playlist_id,
+                   detail={"count": len(uris)})
+            return tool_result(result)
         if action == "update_details":
             playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            return tool_result(client.update_playlist_details(
+            result = client.update_playlist_details(
                 playlist_id=playlist_id,
                 name=args.get("name"),
                 public=args.get("public"),
                 collaborative=args.get("collaborative"),
                 description=args.get("description"),
-            ))
+            )
+            _audit("playlist.update_details", target=playlist_id)
+            return tool_result(result)
         return tool_error(f"Unknown spotify_playlists action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)
@@ -310,14 +346,19 @@ def _handle_spotify_library(args: dict, **kw) -> str:
             return tool_result(client.get_saved_albums(limit=limit, offset=offset, market=market))
         if action == "save":
             uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), item_type)
-            return tool_result(client.save_library_items(uris=uris))
+            result = client.save_library_items(uris=uris)
+            _audit(f"library.save.{kind}", detail={"count": len(uris)})
+            return tool_result(result)
         if action == "remove":
             ids = [normalize_spotify_id(item, item_type) for item in _as_list(args.get("ids") or args.get("items"))]
             if not ids:
                 return tool_error("ids/items is required for action='remove'")
             if kind == "tracks":
-                return tool_result(client.remove_saved_tracks(track_ids=ids))
-            return tool_result(client.remove_saved_albums(album_ids=ids))
+                result = client.remove_saved_tracks(track_ids=ids)
+            else:
+                result = client.remove_saved_albums(album_ids=ids)
+            _audit(f"library.remove.{kind}", detail={"count": len(ids)})
+            return tool_result(result)
         return tool_error(f"Unknown spotify_library action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)
