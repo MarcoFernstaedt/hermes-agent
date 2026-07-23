@@ -26,6 +26,7 @@ import {
   SlashPopover,
   type SlashPopoverHandle,
 } from "@/components/SlashPopover";
+import { AgentLiveStatus } from "@/components/AgentLiveStatus";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { Markdown } from "@/components/Markdown";
 import { api } from "@/lib/api";
@@ -797,8 +798,11 @@ export function ChatBubbleFeed({
 
           <div className="mt-1.5 flex items-center justify-between gap-2 px-1 text-xs text-text-tertiary">
             {/* Always-on agent state: the user can tell at a glance whether
-                Imperator is mid-run, idle, or the link is down. */}
-            <span className="inline-flex min-w-0 items-center gap-1.5" role="status">
+                Imperator is mid-run, idle, or the link is down. This pill is
+                visual only — screen-reader announcements come from the
+                debounced AgentLiveStatus region below, which avoids the noisy
+                re-announcement a role="status" pill produces on every toggle. */}
+            <span className="inline-flex min-w-0 items-center gap-1.5">
               <span
                 aria-hidden
                 className={cn(
@@ -818,6 +822,9 @@ export function ChatBubbleFeed({
                     : "Idle — ready"}
               </span>
             </span>
+            <AgentLiveStatus
+              state={disabled ? "reconnecting" : isWorking ? "working" : "idle"}
+            />
 
             {/* Voice dictation feedback — errors announced politely. */}
             <span
