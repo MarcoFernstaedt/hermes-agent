@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pencil } from "lucide-react";
+import { Pencil, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 
 /**
@@ -7,6 +7,10 @@ import { api } from "@/lib/api";
  * edit; Enter commits, Escape reverts, blur commits. Persists via the
  * session patch endpoint and reports the new title so the header updates
  * optimistically. Rolls back on failure.
+ *
+ * A second affordance regenerates the title from the conversation's first
+ * exchange (the same auto-titler the agent runs after the first reply),
+ * for when a chat's topic has drifted from its original name.
  */
 export function ChatHeaderRename({
   sessionId,
@@ -21,6 +25,21 @@ export function ChatHeaderRename({
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(title ?? "");
+  const [regenerating, setRegenerating] = useState(false);
+
+  const regenerate = async () => {
+    if (regenerating) return;
+    setRegenerating(true);
+    const previous = title;
+    try {
+      const res = await api.regenerateSessionTitle(sessionId, profile);
+      if (res.title) onRenamed(res.title);
+    } catch {
+      onRenamed(previous); // no-op restore; keeps the header stable on failure
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const commit = async () => {
     const next = value.trim();
@@ -38,18 +57,31 @@ export function ChatHeaderRename({
 
   if (!editing) {
     return (
-      <button
-        type="button"
-        onClick={() => {
-          setValue(title ?? "");
-          setEditing(true);
-        }}
-        aria-label="Rename session"
-        title="Rename session"
-        className="rounded p-1 text-text-tertiary transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
-      >
-        <Pencil className="h-3.5 w-3.5" />
-      </button>
+      <span className="inline-flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => {
+            setValue(title ?? "");
+            setEditing(true);
+          }}
+          aria-label="Rename session"
+          title="Rename session"
+          className="rounded p-1 text-text-tertiary transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => void regenerate()}
+          disabled={regenerating}
+          aria-label="Regenerate title from the conversation"
+          title="Regenerate title"
+          aria-busy={regenerating}
+          className="rounded p-1 text-text-tertiary transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 disabled:opacity-50"
+        >
+          <Sparkles className={`h-3.5 w-3.5${regenerating ? " animate-pulse" : ""}`} />
+        </button>
+      </span>
     );
   }
 

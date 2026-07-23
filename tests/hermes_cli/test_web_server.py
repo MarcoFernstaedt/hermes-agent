@@ -362,6 +362,67 @@ class TestWebServerEndpoints:
         # And it survives a fresh read (persisted to config).
         assert self.client.get("/api/dashboard/prefs").json()["prefs"] == merged
 
+    def test_regenerate_session_title_from_first_exchange(self, monkeypatch):
+        """Regenerate reads the first user/assistant exchange, calls the
+        title generator, and persists the returned title."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="sess-regen", source="cli")
+            db.append_message("sess-regen", "user", content="How do I deploy?")
+            db.append_message(
+                "sess-regen", "assistant", content="Run the deploy script."
+            )
+        finally:
+            db.close()
+
+        captured = {}
+
+        def _fake_generate_title(user_message, assistant_response, *a, **k):
+            captured["user"] = user_message
+            captured["assistant"] = assistant_response
+            return "Deploying the app"
+
+        monkeypatch.setattr(
+            "agent.title_generator.generate_title", _fake_generate_title
+        )
+
+        resp = self.client.post("/api/sessions/sess-regen/regenerate-title", json={})
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Deploying the app"
+        assert captured["user"] == "How do I deploy?"
+        assert captured["assistant"] == "Run the deploy script."
+
+        # Persisted, so a subsequent detail read reflects the new title.
+        db = SessionDB()
+        try:
+            assert db.get_session_title("sess-regen") == "Deploying the app"
+        finally:
+            db.close()
+
+    def test_regenerate_session_title_requires_complete_exchange(self, monkeypatch):
+        """A session with only a user turn (no assistant reply) can't be
+        titled — the endpoint reports 422 rather than calling the model."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="sess-regen-partial", source="cli")
+            db.append_message("sess-regen-partial", "user", content="Hello?")
+        finally:
+            db.close()
+
+        def _boom(*a, **k):
+            raise AssertionError("generate_title must not run without an exchange")
+
+        monkeypatch.setattr("agent.title_generator.generate_title", _boom)
+
+        resp = self.client.post(
+            "/api/sessions/sess-regen-partial/regenerate-title", json={}
+        )
+        assert resp.status_code == 422
+
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
         import hermes_state

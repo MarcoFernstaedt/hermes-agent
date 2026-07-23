@@ -817,6 +817,15 @@ export const api = {
         body: JSON.stringify({ title, profile: profile || undefined }),
       },
     ),
+  regenerateSessionTitle: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}/regenerate-title`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: profile || undefined }),
+      },
+    ),
   archiveSession: (id: string, archived: boolean, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; archived: boolean }>(
       `/api/sessions/${encodeURIComponent(id)}`,

@@ -10052,6 +10052,97 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         db.close()
 
 
+def _first_text(content: Any) -> str:
+    """Flatten a stored message body to plain text.
+
+    Content is usually a string, but multimodal turns store a list of
+    ``{"type": "text", "text": ...}`` blocks; pull the text out of those.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
+class RegenerateTitleBody(BaseModel):
+    # Regenerate a session belonging to another (local) profile. Omit for the
+    # current/default profile.
+    profile: Optional[str] = None
+
+
+@app.post("/api/sessions/{session_id}/regenerate-title")
+async def regenerate_session_title_endpoint(
+    session_id: str, body: RegenerateTitleBody
+):
+    """Regenerate a session's title from its first user/assistant exchange.
+
+    The agent auto-titles a session in the background after its first reply;
+    this endpoint lets the user ask for a fresh title on demand (e.g. after
+    the conversation's topic drifted). It reuses the same
+    ``agent.title_generator.generate_title`` machinery and the auxiliary
+    ``title_generation`` model slot, so no new model configuration is
+    involved. Runs behind the standard session-token auth gate like every
+    other ``/api/...`` route. The generated title is returned in the response;
+    the client updates the header and refreshes the session list.
+    """
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sid = db.resolve_resume_session_id(sid)
+        messages = db.get_messages(sid, limit=50)
+    finally:
+        db.close()
+
+    user_message = ""
+    assistant_response = ""
+    for msg in messages:
+        role = msg.get("role")
+        text = _first_text(msg.get("content"))
+        if not text:
+            continue
+        if role == "user" and not user_message:
+            user_message = text
+        elif role == "assistant" and not assistant_response:
+            assistant_response = text
+        if user_message and assistant_response:
+            break
+
+    if not user_message or not assistant_response:
+        raise HTTPException(
+            status_code=422,
+            detail="Session has no complete exchange to title yet.",
+        )
+
+    from agent.title_generator import generate_title
+
+    title = await asyncio.to_thread(
+        generate_title, user_message, assistant_response
+    )
+    if not title:
+        raise HTTPException(
+            status_code=502, detail="Title generation failed. Try again."
+        )
+
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        try:
+            db.set_session_title(sid, title)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "title": db.get_session_title(sid) or title}
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""

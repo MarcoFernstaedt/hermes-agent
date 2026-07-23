@@ -541,6 +541,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+  // Latest-callback ref so the long-lived event socket can push live title
+  // updates (from the agent's auto-titler) without being torn down whenever
+  // the title scope changes.
+  const handleSessionTitleChangeRef = useRef(handleSessionTitleChange);
+  useEffect(() => {
+    handleSessionTitleChangeRef.current = handleSessionTitleChange;
+  }, [handleSessionTitleChange]);
 
   // ── Session-chain hydration ─────────────────────────────────────────
   // Resume runs continue under CHILD session ids (the store links them via
@@ -808,6 +815,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ) {
             return;
           }
+        }
+
+        // The agent auto-titles a session in the background after its first
+        // reply (and can be asked to regenerate). It pushes the result as a
+        // session.title frame so the header/sidebar rename live, without a
+        // list refetch. Apply it and stop — this isn't a feed event.
+        if (event.type === "session.title") {
+          const nextTitle = event.payload?.title;
+          if (typeof nextTitle === "string") {
+            handleSessionTitleChangeRef.current(normalizeSessionTitle(nextTitle));
+          }
+          return;
         }
 
         const feedEvent =
