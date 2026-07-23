@@ -9,7 +9,9 @@ import {
   Archive,
   MailOpen,
   Paperclip,
+  PenSquare,
   RefreshCw,
+  Reply,
   Search,
   Star,
   Trash2,
@@ -19,7 +21,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
 import { cn } from "@/lib/utils";
-import { parseSender, toRenderable } from "./email-model";
+import { getHeader, parseSender, toRenderable } from "./email-model";
+import { EmailComposer, type ComposerInitial } from "./EmailComposer";
 import { EmailReader } from "./EmailReader";
 
 export default function EmailPage() {
@@ -31,6 +34,7 @@ export default function EmailPage() {
   const [submitted, setSubmitted] = useState("is:unread");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingTrash, setPendingTrash] = useState<string | null>(null);
+  const [composer, setComposer] = useState<ComposerInitial | null>(null);
 
   const conn = useData("email:connection", api.getEmailConnection);
   const list = useData(
@@ -66,6 +70,22 @@ export default function EmailPage() {
     } catch {
       showToast("Action failed", "error");
     }
+  };
+
+  const openReply = () => {
+    if (!message.data || !renderable) return;
+    const messageId = getHeader(message.data.payload, "Message-ID");
+    const quoted = renderable.text
+      ? `\n\nOn ${renderable.date}, ${renderable.from.name} wrote:\n> ${renderable.text.replace(/\n/g, "\n> ")}`
+      : "";
+    setComposer({
+      to: renderable.from.email,
+      subject: /^re:/i.test(renderable.subject) ? renderable.subject : `Re: ${renderable.subject}`,
+      thread_id: message.data.threadId,
+      in_reply_to: messageId || undefined,
+      references: messageId || undefined,
+      body: quoted,
+    });
   };
 
   if (conn.isLoading) {
@@ -119,6 +139,9 @@ export default function EmailPage() {
         <Button type="submit" outlined>Search</Button>
         <Button ghost size="icon" onClick={refreshList} aria-label="Refresh" title="Refresh">
           <RefreshCw className={cn(list.isValidating && "animate-spin")} />
+        </Button>
+        <Button prefix={<PenSquare />} onClick={() => setComposer({})}>
+          Compose
         </Button>
       </form>
 
@@ -185,6 +208,9 @@ export default function EmailPage() {
                 </p>
                 <p className="text-xs text-text-tertiary">{renderable.date}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Button size="sm" prefix={<Reply />} onClick={openReply}>
+                    Reply
+                  </Button>
                   <Button size="sm" outlined prefix={<Archive />}
                     onClick={() => void act(() => api.modifyEmail(selectedId, [], ["INBOX"]), "Archived")}>
                     Archive
@@ -224,6 +250,13 @@ export default function EmailPage() {
         confirmLabel="Trash"
         cancelLabel="Cancel"
       />
+      {composer && (
+        <EmailComposer
+          initial={composer}
+          onClose={() => setComposer(null)}
+          onSent={refreshList}
+        />
+      )}
       <Toast toast={toast} />
     </div>
   );

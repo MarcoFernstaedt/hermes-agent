@@ -514,6 +514,18 @@ export interface GmailPayload {
   parts?: GmailPayload[];
 }
 
+export interface EmailSendBody {
+  to: string[];
+  subject?: string;
+  body?: string;
+  cc?: string[];
+  bcc?: string[];
+  html_body?: string;
+  thread_id?: string;
+  in_reply_to?: string;
+  references?: string;
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -729,6 +741,18 @@ export const api = {
   trashEmail: (id: string) =>
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/trash`, {
       method: "POST",
+    }),
+  sendEmail: (body: EmailSendBody) =>
+    fetchJSON<{ id: string; threadId: string }>("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createEmailDraft: (body: EmailSendBody) =>
+    fetchJSON<{ id: string }>("/api/email/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
