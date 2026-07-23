@@ -391,6 +391,11 @@ async def _static_cache_headers(request: Request, call_next):
     path = request.url.path
     if path.startswith("/assets/"):
         response.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE)
+    elif path in ("/sw.js", "/offline.html"):
+        # The service worker and its offline fallback must revalidate every
+        # load so a new deploy's worker is picked up promptly (a stale SW
+        # would keep serving old asset caches).
+        response.headers.setdefault("Cache-Control", "no-cache")
     elif path.startswith(("/icons/", "/fonts/", "/fonts-terminal/", "/ds-assets/")) or path in (
         "/favicon.ico",
         "/manifest.webmanifest",
