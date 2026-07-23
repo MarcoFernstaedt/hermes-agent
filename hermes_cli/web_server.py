@@ -15,6 +15,7 @@ import asyncio
 import atexit
 import base64
 import binascii
+import collections
 import concurrent.futures
 import functools
 from dataclasses import dataclass
@@ -240,6 +241,43 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+# Per-channel bounded replay buffer + monotonic sequence counter. Lets a
+# reconnecting or second-device subscriber request ``?since=<seq>`` and
+# receive the events it missed, so multi-device chat stays in sync without a
+# full history reload. Bounded, so an idle channel can't grow without limit.
+_EVENT_RING_MAX = 500
+
+
+def _get_event_rings(app: "FastAPI"):
+    """Return (event_rings, event_seq) from app.state, lazily initialised."""
+    try:
+        return app.state.event_rings, app.state.event_seq
+    except AttributeError:
+        app.state.event_rings = {}  # dict[str, deque[(seq, payload)]]
+        app.state.event_seq = {}  # dict[str, int]
+        return app.state.event_rings, app.state.event_seq
+
+
+def _stamp_and_buffer(rings, seqs, channel: str, payload: str) -> str:
+    """Stamp a monotonic ``_seq`` onto a JSON-object frame and buffer it.
+
+    Non-object payloads are broadcast unchanged (and not buffered — they
+    can't be deduped/replayed). Callers must hold the event lock.
+    """
+    try:
+        obj = json.loads(payload)
+    except (ValueError, TypeError):
+        return payload
+    if not isinstance(obj, dict):
+        return payload
+    seq = seqs.get(channel, 0) + 1
+    seqs[channel] = seq
+    obj["_seq"] = seq
+    stamped = json.dumps(obj, separators=(",", ":"))
+    rings.setdefault(channel, collections.deque(maxlen=_EVENT_RING_MAX)).append((seq, stamped))
+    return stamped
 
 
 def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
@@ -15025,13 +15063,17 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     instead of serially blocking every other subscriber on the channel.
     """
     event_channels, event_lock = _get_event_state(app)
+    rings, seqs = _get_event_rings(app)
     async with event_lock:
+        # Stamp + buffer under the same lock that snapshots subscribers, so
+        # sequence numbers stay monotonic and the ring stays consistent.
+        stamped = _stamp_and_buffer(rings, seqs, channel, payload)
         subs = list(event_channels.get(channel, ()))
     if not subs:
         return
 
     await asyncio.gather(
-        *(_send_event_or_evict(app, channel, sub, payload) for sub in subs)
+        *(_send_event_or_evict(app, channel, sub, stamped) for sub in subs)
     )
 
 
@@ -16019,9 +16061,29 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    # Optional catch-up: a reconnecting/second-device client passes the last
+    # sequence number it saw so we can replay what it missed.
+    since_raw = ws.query_params.get("since", "")
+    since = int(since_raw) if since_raw.isdigit() else None
+
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
         event_channels.setdefault(channel, set()).add(ws)
+        replay: list[str] = []
+        if since is not None:
+            rings, _seqs = _get_event_rings(ws.app)
+            replay = [payload for (seq, payload) in rings.get(channel, ()) if seq > since]
+
+    # Replay missed events to THIS subscriber only. Live events already fan
+    # out via _broadcast_event; the client dedupes by `_seq`, so an overlap
+    # between the replay snapshot and a concurrent live event is harmless.
+    for payload in replay:
+        try:
+            await asyncio.wait_for(
+                ws.send_text(payload), timeout=_EVENT_SEND_TIMEOUT_SECONDS
+            )
+        except Exception:
+            break
 
     try:
         while True:

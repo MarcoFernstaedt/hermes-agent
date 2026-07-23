@@ -31,13 +31,27 @@ interface HubEntry {
   connected: boolean;
   everConnected: boolean;
   terminal: EventSocketFailure | null;
+  /** Highest `_seq` seen on this channel; drives dedup + reconnect catch-up. */
+  lastSeq: number;
 }
 
 const entries = new Map<string, HubEntry>();
 
+/** Pull the server's monotonic `_seq` off a frame, or null (heartbeat/raw). */
+function extractSeq(data: unknown): number | null {
+  if (typeof data !== "string") return null;
+  try {
+    const obj = JSON.parse(data);
+    return obj && typeof obj._seq === "number" ? obj._seq : null;
+  } catch {
+    return null;
+  }
+}
+
 function openEntry(
   channel: string,
   listeners: Set<DashboardEventListener>,
+  lastSeq = 0,
 ): HubEntry {
   const entry: HubEntry = {
     stop: () => undefined,
@@ -45,11 +59,26 @@ function openEntry(
     connected: false,
     everConnected: false,
     terminal: null,
+    lastSeq,
   };
 
   entry.stop = connectResilientEventSocket({
-    buildUrl: () => api.buildWsUrl("/api/events", { channel }),
+    // On (re)connect, ask the server to replay everything past the last
+    // sequence we saw — invisible catch-up after a drop or on a 2nd device.
+    buildUrl: () =>
+      api.buildWsUrl(
+        "/api/events",
+        entry.lastSeq > 0
+          ? { channel, since: String(entry.lastSeq) }
+          : { channel },
+      ),
     onMessage: (event) => {
+      const seq = extractSeq(event.data);
+      if (seq !== null) {
+        // Drop duplicates from a replay/live overlap; advance the cursor.
+        if (seq <= entry.lastSeq) return;
+        entry.lastSeq = seq;
+      }
       for (const listener of [...entry.listeners]) listener.onMessage(event);
     },
     onConnected: (reconnected) => {
@@ -129,7 +158,9 @@ export function restartDashboardEvents(channel: string): void {
   const entry = entries.get(channel);
   if (!entry) return;
   entry.stop();
-  const next = openEntry(channel, entry.listeners);
+  // Carry the sequence cursor across the restart so the fresh socket
+  // replays only what was missed rather than re-delivering the stream.
+  const next = openEntry(channel, entry.listeners, entry.lastSeq);
   entries.set(channel, next);
 }
 

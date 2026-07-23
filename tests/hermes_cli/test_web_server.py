@@ -42,6 +42,32 @@ async def test_event_subscriber_emits_heartbeat_while_idle():
     ]
 
 
+def test_event_stamp_and_buffer_seq_ring_and_replay():
+    """Frames get a monotonic ``_seq`` + ring buffer; ``since`` replays the tail."""
+    from hermes_cli import web_server
+
+    rings: dict = {}
+    seqs: dict = {}
+    p1 = web_server._stamp_and_buffer(rings, seqs, "c", json.dumps({"method": "a"}))
+    p2 = web_server._stamp_and_buffer(rings, seqs, "c", json.dumps({"method": "b"}))
+    assert json.loads(p1)["_seq"] == 1
+    assert json.loads(p2)["_seq"] == 2
+
+    # `since=1` replays only what came after seq 1.
+    missed = [payload for (seq, payload) in rings["c"] if seq > 1]
+    assert [json.loads(m)["_seq"] for m in missed] == [2]
+
+    # Non-object frames pass through unstamped and are not buffered.
+    raw = web_server._stamp_and_buffer(rings, seqs, "c", "[1,2,3]")
+    assert raw == "[1,2,3]"
+    assert len(rings["c"]) == 2
+
+    # The ring is bounded.
+    for i in range(web_server._EVENT_RING_MAX + 50):
+        web_server._stamp_and_buffer(rings, seqs, "d", json.dumps({"n": i}))
+    assert len(rings["d"]) == web_server._EVENT_RING_MAX
+
+
 @pytest.mark.asyncio
 async def test_event_heartbeat_send_is_bounded_on_half_open_socket(monkeypatch):
     """A half-open subscriber that stalls the heartbeat *send* must raise
