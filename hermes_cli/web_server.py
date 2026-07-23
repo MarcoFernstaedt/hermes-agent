@@ -517,11 +517,13 @@ from hermes_cli.jobs.router import create_jobs_router as _create_jobs_router  # 
 from hermes_cli.life.router import create_life_router as _create_life_router  # noqa: E402
 from hermes_cli.email.router import create_email_router as _create_email_router  # noqa: E402
 from hermes_cli.calendar.router import create_calendar_router as _create_calendar_router  # noqa: E402
+from hermes_cli.vault.router import create_vault_router as _create_vault_router  # noqa: E402
 
 app.include_router(_create_jobs_router(_require_token, initialize=False))
 app.include_router(_create_life_router(_require_token, initialize=False))
 app.include_router(_create_email_router(_require_token))
 app.include_router(_create_calendar_router(_require_token))
+app.include_router(_create_vault_router(_require_token))
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks

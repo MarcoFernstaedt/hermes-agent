@@ -226,6 +226,63 @@ def append_to_note(rel: str, text: str, *, root: Path | None = None) -> Dict[str
     return {"path": rel, "mtime": path.stat().st_mtime}
 
 
+def search_notes(query: str, *, root: Path | None = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Case-insensitive search over note titles and content. Returns matches
+    with a small context snippet. On-the-fly scan — fine for a personal vault;
+    a SQLite FTS index is a later optimization."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    results: List[Dict[str, Any]] = []
+    for meta in list_notes(root=root):
+        try:
+            text = resolve_in_vault(meta["path"], root=root).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lower = text.lower()
+        title_hit = q in meta["title"].lower()
+        idx = lower.find(q)
+        if not title_hit and idx < 0:
+            continue
+        snippet = ""
+        if idx >= 0:
+            start = max(0, idx - 40)
+            snippet = text[start:idx + len(q) + 40].replace("\n", " ").strip()
+        results.append({"path": meta["path"], "title": meta["title"], "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _link_matches(link_target: str, note_path: str) -> bool:
+    """Obsidian resolves links by note NAME across the vault, not by path."""
+    name = Path(note_path).stem.lower()
+    return link_target.strip().lower() in {name, note_path.lower(), Path(note_path).as_posix().lower()}
+
+
+def backlinks(note_path: str, *, root: Path | None = None) -> List[Dict[str, Any]]:
+    """Notes that link to ``note_path`` (matched by note name), each with the
+    line of context around the link."""
+    out: List[Dict[str, Any]] = []
+    for meta in list_notes(root=root):
+        if meta["path"] == note_path:
+            continue
+        try:
+            text = resolve_in_vault(meta["path"], root=root).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for link in extract_links(text):
+            if link["target"] and _link_matches(link["target"], note_path):
+                context = ""
+                for line in text.splitlines():
+                    if f"[[{link['target']}" in line:
+                        context = line.strip()
+                        break
+                out.append({"path": meta["path"], "title": meta["title"], "context": context})
+                break
+    return out
+
+
 def create_note(rel: str, content: str = "", *, root: Path | None = None) -> Dict[str, Any]:
     """Create a new note. Raises VaultExists if it already exists (never
     overwrites via create)."""
