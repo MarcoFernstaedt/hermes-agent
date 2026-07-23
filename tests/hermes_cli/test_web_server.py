@@ -362,6 +362,38 @@ class TestWebServerEndpoints:
         # And it survives a fresh read (persisted to config).
         assert self.client.get("/api/dashboard/prefs").json()["prefs"] == merged
 
+    def test_audit_log_endpoint_lists_and_filters(self):
+        from hermes_cli import audit_log
+
+        audit_log.record(actor="agent", module="email", tool="email.send",
+                         action="send", outcome="ok")
+        audit_log.record(actor="agent", module="media", tool="media.play",
+                         action="play", outcome="ok")
+
+        resp = self.client.get("/api/audit")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 2
+        assert len(body["entries"]) >= 2
+
+        filtered = self.client.get("/api/audit?module=email").json()
+        assert all(e["module"] == "email" for e in filtered["entries"])
+        assert len(filtered["entries"]) >= 1
+
+    def test_audit_log_export_is_ndjson(self):
+        from hermes_cli import audit_log
+
+        audit_log.record(actor="agent", module="notes", tool="notes.append",
+                         action="append", outcome="ok")
+        resp = self.client.get("/api/audit/export")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-ndjson")
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) >= 1
+        import json
+
+        assert all("tool" in json.loads(ln) for ln in lines)
+
     def test_regenerate_session_title_from_first_exchange(self, monkeypatch):
         """Regenerate reads the first user/assistant exchange, calls the
         title generator, and persists the returned title."""

@@ -16742,6 +16742,52 @@ async def set_dashboard_prefs(body: DashboardPrefsBody):
 
 
 # ---------------------------------------------------------------------------
+# Agent audit log — a reviewable, filterable, exportable record of every
+# write the agent performs against an external service on my behalf. Read-only
+# over HTTP (the log is append-only; entries are written by module tools).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/audit")
+async def get_audit_log(
+    module: Optional[str] = None,
+    tool: Optional[str] = None,
+    actor: Optional[str] = None,
+    since: Optional[float] = None,
+    until: Optional[float] = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """Return audit entries (newest first) matching the optional filters."""
+    from hermes_cli import audit_log
+
+    entries = audit_log.query(
+        module=module,
+        tool=tool,
+        actor=actor,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return {"entries": entries, "total": audit_log.count()}
+
+
+@app.get("/api/audit/export")
+async def export_audit_log():
+    """Stream the full audit log as JSON Lines for download/archival."""
+    from fastapi.responses import StreamingResponse
+
+    from hermes_cli import audit_log
+
+    return StreamingResponse(
+        audit_log.export_jsonl(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="imperator-audit.jsonl"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
