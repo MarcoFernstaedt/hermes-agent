@@ -182,6 +182,19 @@ async def _lifespan(app: "FastAPI"):
 
     initialize_jobs()
     LifeRepository(default_database_path()).migrate()
+
+    # One-time, idempotent import of the Workspace skill's plaintext Google
+    # token into the encrypted store. Guarded so a bad/absent legacy file can
+    # never block startup. The plaintext file is left in place until the skill
+    # is cut over to read from the store (a later phase).
+    try:
+        from hermes_cli.secure_store import import_legacy_google_token
+
+        if import_legacy_google_token():
+            logger.info("Imported legacy Google token into the encrypted store.")
+    except Exception:
+        logger.debug("Legacy Google token import skipped", exc_info=True)
+
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
