@@ -68,6 +68,7 @@ import {
   takeNextQueuedSend,
   type QueuedSend,
 } from "@/lib/chat-send-queue";
+import { clearDraft, getDraft, setDraft } from "@/lib/chat-drafts";
 import {
   planInitialWindow,
   planOlderPage,
@@ -507,6 +508,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyAttachIdentity(rotateAlignedPtyAttachToken());
     resetFreshChatProjection();
   }, [ptyTargetKey, resetFreshChatProjection]);
+
+  // Composer draft: persist per session so an unsent message survives a
+  // reload, navigating away and back, or a rotation. The change handler
+  // writes through to localStorage keyed by the current session; the effect
+  // restores the right draft on mount and whenever the session switches.
+  const handleComposerChange = useCallback((value: string) => {
+    setComposer(value);
+    setDraft(ptyTargetKeyRef.current, value);
+  }, []);
+  useEffect(() => {
+    const draft = getDraft(ptyTargetKey);
+    queueMicrotask(() => setComposer(draft));
+  }, [ptyTargetKey]);
   // The PTY-side event publisher is fixed to the channel chosen when that
   // keep-alive process starts. Derive the subscriber from the same persistent
   // attach identity so reload/reattach cannot silently split the two streams.
@@ -964,6 +978,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // Messages composed while the agent was mid-run, waiting to start their
   // own turn. Flushed one per run-completion by the effect below.
   const queuedSendsRef = useRef<QueuedSend[]>([]);
+  // Messages submitted while the socket was down but a reconnect is expected.
+  // Held (bubble stays "sending") and flushed by ws.onopen instead of dropped.
+  const pendingReconnectSendsRef = useRef<QueuedSend[]>([]);
 
   const markOptimisticFailed = useCallback((id: string) => {
     setFeedState((state) => ({
@@ -998,6 +1015,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ],
     }));
     setComposer("");
+    clearDraft(ptyTargetKeyRef.current);
 
     let sent = false;
     if (activeClarify && activeClarify.choices?.length) {
@@ -1027,7 +1045,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     if (!sent) {
-      markOptimisticFailed(id);
+      // Socket down. If a reconnect is expected, hold the message (bubble
+      // stays "sending") and let ws.onopen flush it — never silently drop.
+      // Only give up when the session has truly ended.
+      if (ptyStateRef.current !== "ended") {
+        pendingReconnectSendsRef.current.push({ id, text });
+      } else {
+        markOptimisticFailed(id);
+      }
       return;
     }
 
@@ -1883,6 +1908,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setLastCloseCode(null);
       setPtyState("open");
       blockedInputNoticeRef.current = false;
+      // Flush any messages composed while the socket was down (buffered by
+      // submitComposer). Staggered so a burst doesn't collide in the PTY.
+      if (pendingReconnectSendsRef.current.length) {
+        const pending = pendingReconnectSendsRef.current;
+        pendingReconnectSendsRef.current = [];
+        pending.forEach((item, index) => {
+          window.setTimeout(() => {
+            if (!sendPtyText(item.text)) markOptimisticFailed(item.id);
+          }, 120 + index * 60);
+        });
+      }
       // Connected — cancel any pending reconnect from a prior transient drop.
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -2345,7 +2381,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onLoadOlderHistory={loadOlderHistory}
             isWorking={agentRunning}
             focusSignal={reconnectNonce}
-            onComposerChange={setComposer}
+            onComposerChange={handleComposerChange}
             onSubmit={submitComposer}
             onStop={stopAgent}
             onRetry={retryMessage}
