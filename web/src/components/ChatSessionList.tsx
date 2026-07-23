@@ -12,25 +12,55 @@
  * Best-effort, like ChatSidebar: a failed fetch surfaces a small inline
  * error with a retry affordance and the terminal pane keeps working.
  *
- * This is a navigation surface, NOT a session-management one — delete,
- * rename, export, and bulk actions live on the Sessions page. Keeping this
- * panel read-only (plus select / new) avoids duplicating that machinery and
- * keeps the chat context focused on switching conversations quickly.
+ * Beyond switching, each row exposes light management via a context menu
+ * (right-click / long-press / a keyboard-reachable kebab): pin, rename,
+ * archive, export, delete. Pin state is a synced app-setting; the rest call
+ * the same session endpoints the full Sessions page uses. This keeps the
+ * common actions one gesture away without leaving the chat context, while
+ * the Sessions page remains the home for bulk operations.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { AlertCircle, MessageSquarePlus, Pin, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import {
+  AlertCircle,
+  Archive,
+  ArchiveRestore,
+  Download,
+  MessageSquarePlus,
+  MoreVertical,
+  Pencil,
+  Pin,
+  PinOff,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import {
+  SessionContextMenu,
+  type ContextMenuAction,
+} from "@/components/SessionContextMenu";
 import { useI18n } from "@/i18n";
-import { api, type SessionInfo } from "@/lib/api";
+import { api, authedFetch, type SessionInfo } from "@/lib/api";
 import { useAppSettings, togglePinnedSession } from "@/lib/app-settings";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
+const LONG_PRESS_MS = 500;
+
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
@@ -64,6 +94,7 @@ export function ChatSessionList({
   onNewChat,
 }: ChatSessionListProps) {
   const { t } = useI18n();
+  const { toast, showToast } = useToast();
   const { pinnedSessions } = useAppSettings();
   const [, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
@@ -71,6 +102,13 @@ export function ChatSessionList({
   const [error, setError] = useState<string | null>(null);
   // Bumped to force a refetch (after switching, on Refresh, on mount).
   const [reloadNonce, setReloadNonce] = useState(0);
+
+  // Row-level management surfaces.
+  const [menu, setMenu] = useState<{ session: SessionInfo; x: number; y: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // `profile` is read inside the fetch; it's part of the scope key so a
   // profile switch refetches. The empty-string fallback keeps the dep
@@ -151,6 +189,146 @@ export function ChatSessionList({
     );
   }, [onNewChat, onPicked, setSearchParams]);
 
+  // --- Row management -------------------------------------------------------
+
+  const beginRename = useCallback((session: SessionInfo) => {
+    setRenameValue((session.title ?? "").trim());
+    setRenamingId(session.id);
+  }, []);
+
+  const commitRename = useCallback(
+    async (session: SessionInfo) => {
+      const next = renameValue.trim();
+      setRenamingId(null);
+      if (next === (session.title ?? "").trim()) return;
+      // Optimistic: reflect the new title immediately, roll back on failure.
+      setSessions((prev) =>
+        prev?.map((s) => (s.id === session.id ? { ...s, title: next || null } : s)),
+      );
+      try {
+        const res = await api.renameSession(session.id, next, profile);
+        setSessions((prev) =>
+          prev?.map((s) => (s.id === session.id ? { ...s, title: res.title || null } : s)),
+        );
+      } catch {
+        setSessions((prev) =>
+          prev?.map((s) =>
+            s.id === session.id ? { ...s, title: session.title } : s,
+          ),
+        );
+        showToast("Could not rename session", "error");
+      }
+    },
+    [profile, renameValue, showToast],
+  );
+
+  const toggleArchive = useCallback(
+    async (session: SessionInfo) => {
+      const nextArchived = !session.archived;
+      try {
+        await api.archiveSession(session.id, nextArchived, profile);
+        // Archived sessions drop out of the (exclude-archived) listing.
+        if (nextArchived) {
+          setSessions((prev) => prev?.filter((s) => s.id !== session.id));
+        } else {
+          setSessions((prev) =>
+            prev?.map((s) => (s.id === session.id ? { ...s, archived: false } : s)),
+          );
+        }
+        showToast(nextArchived ? "Session archived" : "Session restored", "success");
+      } catch {
+        showToast("Could not update session", "error");
+      }
+    },
+    [profile, showToast],
+  );
+
+  const exportSession = useCallback(
+    async (session: SessionInfo) => {
+      try {
+        const res = await authedFetch(api.exportSessionUrl(session.id, profile));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `session-${session.id}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        showToast("Could not export session", "error");
+      }
+    },
+    [profile, showToast],
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      await api.deleteSession(pendingDelete.id, profile);
+      setSessions((prev) => prev?.filter((s) => s.id !== pendingDelete.id));
+      showToast("Session deleted", "success");
+      setPendingDelete(null);
+    } catch {
+      showToast("Could not delete session", "error");
+    } finally {
+      setDeleting(false);
+    }
+  }, [pendingDelete, profile, showToast]);
+
+  const openMenuAt = useCallback((session: SessionInfo, x: number, y: number) => {
+    setMenu({ session, x, y });
+  }, []);
+
+  const menuActions = useMemo<ContextMenuAction[]>(() => {
+    if (!menu) return [];
+    const s = menu.session;
+    const isPinned = pinnedSessions.includes(s.id);
+    return [
+      {
+        key: "pin",
+        label: isPinned ? "Unpin" : "Pin to top",
+        icon: isPinned ? <PinOff /> : <Pin />,
+        onSelect: () => togglePinnedSession(s.id),
+      },
+      {
+        key: "rename",
+        label: "Rename",
+        icon: <Pencil />,
+        onSelect: () => beginRename(s),
+      },
+      {
+        key: "archive",
+        label: s.archived ? "Restore" : "Archive",
+        icon: s.archived ? <ArchiveRestore /> : <Archive />,
+        onSelect: () => void toggleArchive(s),
+      },
+      {
+        key: "export",
+        label: "Export JSON",
+        icon: <Download />,
+        onSelect: () => void exportSession(s),
+      },
+      {
+        key: "delete",
+        label: "Delete",
+        icon: <Trash2 />,
+        destructive: true,
+        onSelect: () => setPendingDelete(s),
+      },
+    ];
+  }, [beginRename, exportSession, menu, pinnedSessions, toggleArchive]);
+
+  // Long-press (touch) → open the context menu at the touch point.
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPress = useCallback(() => {
+    if (pressTimer.current) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  }, []);
+
   const content = useMemo(() => {
     if (loading && sessions === null) {
       return (
@@ -189,10 +367,56 @@ export function ChatSessionList({
         {ordered.map((s) => {
           const isActive = s.id === activeSessionId;
           const isPinned = pinnedSet.has(s.id);
+          const isRenaming = renamingId === s.id;
+
+          if (isRenaming) {
+            return (
+              <div key={s.id} className="px-2 py-1.5">
+                <input
+                  autoFocus
+                  onFocus={(event) => event.target.select()}
+                  value={renameValue}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onBlur={() => void commitRename(s)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void commitRename(s);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setRenamingId(null);
+                    }
+                  }}
+                  aria-label="Session title"
+                  maxLength={200}
+                  className="w-full rounded border border-primary/40 bg-transparent px-2 py-1 text-sm outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
+                />
+              </div>
+            );
+          }
+
+          const onContextMenu = (event: React.MouseEvent) => {
+            event.preventDefault();
+            openMenuAt(s, event.clientX, event.clientY);
+          };
+          const onPointerDown = (event: ReactPointerEvent) => {
+            if (event.pointerType !== "touch") return;
+            const { clientX, clientY } = event;
+            clearPress();
+            pressTimer.current = setTimeout(() => {
+              openMenuAt(s, clientX, clientY);
+            }, LONG_PRESS_MS);
+          };
+
           return (
             <ListItem
               key={s.id}
               onClick={() => pick(s.id)}
+              onContextMenu={onContextMenu}
+              onPointerDown={onPointerDown}
+              onPointerUp={clearPress}
+              onPointerMove={clearPress}
+              onPointerCancel={clearPress}
               aria-current={isActive ? "true" : undefined}
               className={cn(
                 "group flex-col items-start gap-0.5 rounded px-2 py-1.5",
@@ -224,6 +448,23 @@ export function ChatSessionList({
                 >
                   <Pin className={cn("h-3.5 w-3.5", isPinned && "fill-current")} />
                 </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+                    openMenuAt(s, rect.right, rect.bottom);
+                  }}
+                  aria-label={`Actions for ${rowLabel(s, t.sessions.untitledSession)}`}
+                  aria-haspopup="menu"
+                  className={cn(
+                    "shrink-0 rounded p-0.5 text-text-tertiary transition-opacity",
+                    "opacity-0 hover:text-foreground group-hover:opacity-100",
+                    "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
+                  )}
+                >
+                  <MoreVertical className="h-3.5 w-3.5" />
+                </button>
               </span>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
                 <span>{timeAgo(s.last_active)}</span>
@@ -245,7 +486,21 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t, pinnedSessions]);
+  }, [
+    activeSessionId,
+    clearPress,
+    commitRename,
+    error,
+    loading,
+    openMenuAt,
+    pick,
+    pinnedSessions,
+    reload,
+    renameValue,
+    renamingId,
+    sessions,
+    t,
+  ]);
 
   return (
     <aside
@@ -283,6 +538,30 @@ export function ChatSessionList({
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
         {content}
       </div>
+
+      {menu && (
+        <SessionContextMenu
+          x={menu.x}
+          y={menu.y}
+          actions={menuActions}
+          onClose={() => setMenu(null)}
+        />
+      )}
+
+      <DeleteConfirmDialog
+        open={pendingDelete !== null}
+        loading={deleting}
+        title={t.sessions.deleteSession}
+        description={
+          pendingDelete
+            ? `Delete "${rowLabel(pendingDelete, t.sessions.untitledSession)}"? This cannot be undone.`
+            : ""
+        }
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => void confirmDelete()}
+      />
+
+      <Toast toast={toast} />
     </aside>
   );
 }
