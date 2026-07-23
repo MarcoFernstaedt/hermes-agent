@@ -21,7 +21,6 @@
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -408,27 +407,40 @@ export function ChatSessionList({
             }, LONG_PRESS_MS);
           };
 
+          const label = rowLabel(s, t.sessions.untitledSession);
           return (
-            <ListItem
+            // Stretched-button row: the full-row select control is a SIBLING
+            // of the pin/kebab buttons, not their parent — nesting interactive
+            // elements is invalid and fails the nested-interactive a11y rule.
+            // The label/meta layer sits above the select button (z-10) so text
+            // stays readable, but is pointer-events-none so a click on it falls
+            // through to the select button; only the action buttons re-enable
+            // pointer events.
+            <div
               key={s.id}
-              onClick={() => pick(s.id)}
               onContextMenu={onContextMenu}
               onPointerDown={onPointerDown}
               onPointerUp={clearPress}
               onPointerMove={clearPress}
               onPointerCancel={clearPress}
-              aria-current={isActive ? "true" : undefined}
               className={cn(
-                "group flex-col items-start gap-0.5 rounded px-2 py-1.5",
+                "group relative flex flex-col items-start gap-0.5 rounded px-2 py-1.5",
                 "normal-case tracking-normal",
                 isActive
                   ? "bg-primary/10 text-foreground border-l-2 border-primary"
                   : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
               )}
             >
-              <span className="flex w-full min-w-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => pick(s.id)}
+                aria-current={isActive ? "true" : undefined}
+                aria-label={`Open ${label}`}
+                className="absolute inset-0 z-0 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/40"
+              />
+              <span className="pointer-events-none relative z-10 flex w-full min-w-0 items-center gap-1">
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                  {rowLabel(s, t.sessions.untitledSession)}
+                  {label}
                 </span>
                 <button
                   type="button"
@@ -439,7 +451,7 @@ export function ChatSessionList({
                   aria-label={isPinned ? "Unpin session" : "Pin session"}
                   aria-pressed={isPinned}
                   className={cn(
-                    "shrink-0 rounded p-0.5 transition-opacity",
+                    "pointer-events-auto shrink-0 rounded p-0.5 transition-opacity",
                     "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
                     isPinned
                       ? "text-primary opacity-100"
@@ -455,10 +467,10 @@ export function ChatSessionList({
                     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
                     openMenuAt(s, rect.right, rect.bottom);
                   }}
-                  aria-label={`Actions for ${rowLabel(s, t.sessions.untitledSession)}`}
+                  aria-label={`Actions for ${label}`}
                   aria-haspopup="menu"
                   className={cn(
-                    "shrink-0 rounded p-0.5 text-text-tertiary transition-opacity",
+                    "pointer-events-auto shrink-0 rounded p-0.5 text-text-tertiary transition-opacity",
                     "opacity-0 hover:text-foreground group-hover:opacity-100",
                     "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
                   )}
@@ -466,7 +478,7 @@ export function ChatSessionList({
                   <MoreVertical className="h-3.5 w-3.5" />
                 </button>
               </span>
-              <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
+              <span className="pointer-events-none relative z-10 flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
                 <span>{timeAgo(s.last_active)}</span>
                 {s.message_count > 0 && (
                   <>
@@ -481,7 +493,7 @@ export function ChatSessionList({
                   </>
                 )}
               </span>
-            </ListItem>
+            </div>
           );
         })}
       </div>
