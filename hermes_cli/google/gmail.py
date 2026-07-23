@@ -203,6 +203,44 @@ def parse_metadata(message: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _decode_b64url(data: str) -> str:
+    import base64
+
+    try:
+        pad = "=" * ((4 - len(data) % 4) % 4)
+        return base64.urlsafe_b64decode(data + pad).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def extract_plain_text(message: Dict[str, Any], *, limit: int = 20000) -> str:
+    """Best plain-text rendering of a full message for an agent to read:
+    prefer text/plain parts; fall back to a crude tag-strip of text/html."""
+    payload = message.get("payload") or {}
+    text_parts: List[str] = []
+    html_parts: List[str] = []
+
+    def walk(part: Dict[str, Any]) -> None:
+        mime = part.get("mimeType") or ""
+        body = part.get("body") or {}
+        if not part.get("filename") and body.get("data"):
+            if mime == "text/plain":
+                text_parts.append(_decode_b64url(body["data"]))
+            elif mime == "text/html":
+                html_parts.append(_decode_b64url(body["data"]))
+        for child in part.get("parts", []) or []:
+            walk(child)
+
+    walk(payload)
+    out = "\n".join(text_parts).strip()
+    if not out and html_parts:
+        import re
+
+        stripped = re.sub(r"<[^>]+>", " ", "\n".join(html_parts))
+        out = re.sub(r"[ \t]+", " ", stripped).strip()
+    return out[:limit]
+
+
 def _has_attachment(payload: Dict[str, Any]) -> bool:
     for part in payload.get("parts", []) or []:
         if part.get("filename"):
