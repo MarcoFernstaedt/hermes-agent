@@ -48,6 +48,7 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- status-line formatter co-located with the strip that renders it.
 export function gatewayLine(
   status: StatusResponse,
   t: ReturnType<typeof useI18n>["t"],

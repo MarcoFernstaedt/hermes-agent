@@ -605,6 +605,8 @@ function WhatsAppOnboardingPanel({
 
   useEffect(() => {
     if (!setup && phase === "idle" && configuredMode) {
+      // Adopt the server-configured mode once it loads (idle, pre-setup only).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMode(configuredMode);
     }
   }, [configuredMode, phase, setup]);

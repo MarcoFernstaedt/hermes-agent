@@ -56,6 +56,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (urlProfile !== null && urlProfile !== profile) {
       setManagementProfile(urlProfile);
+      // Syncing an explicit ?profile= scope request from the URL into state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProfileState(urlProfile);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

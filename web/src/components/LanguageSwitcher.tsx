@@ -103,6 +103,9 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         </BottomSheet>
       )}
 
+      {/* Read the trigger's live position to anchor the portal dropdown; only
+          runs in the open branch, where the ref is already attached. */}
+      {/* eslint-disable-next-line react-hooks/refs */}
       {open && !useMobileSheet && (() => {
         const rect = containerRef.current?.getBoundingClientRect();
         const dropdown = (

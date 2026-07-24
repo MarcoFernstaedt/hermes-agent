@@ -26,7 +26,6 @@ export function PageHeaderProvider({
   // an unconditional clear here wiped them (header Create buttons / page
   // titles missing until the next client-side navigation).
   const prevPathnameRef = useRef(pathname);
-  /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
     if (prevPathnameRef.current === pathname) return;
     prevPathnameRef.current = pathname;
@@ -34,7 +33,6 @@ export function PageHeaderProvider({
     setAfterTitle(null);
     setEnd(null);
   }, [pathname]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const defaultTitle = useMemo(
     () => resolvePageTitle(pathname, t, pluginTabs),

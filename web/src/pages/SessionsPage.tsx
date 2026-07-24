@@ -396,6 +396,8 @@ function SessionRow({
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
+      // Lazy-load a session's messages the first time its row expands.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(true);
       api
         .getSessionMessages(session.id)
@@ -808,9 +810,14 @@ export default function SessionsPage() {
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
   const pageRef = useRef(page);
+  // Mirror the current page into a ref so async poll callbacks read the latest
+  // value without re-subscribing; intentionally written during render.
+  // eslint-disable-next-line react-hooks/refs
   pageRef.current = page;
 
   useEffect(() => {
+    // Load the current page on mount and whenever the page changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadSessions(page);
     refreshEmptyCount();
   }, [loadSessions, page, refreshEmptyCount]);
@@ -877,6 +884,9 @@ export default function SessionsPage() {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
+    // Debounced search: clear results when the box empties, otherwise flag
+    // "searching" before the 300ms-deferred query fires.
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!search.trim()) {
       setSearchResults(null);
       setSearching(false);
@@ -884,6 +894,7 @@ export default function SessionsPage() {
     }
 
     setSearching(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
     debounceRef.current = setTimeout(() => {
       api
         .searchSessions(search.trim())
@@ -1169,6 +1180,7 @@ export default function SessionsPage() {
   const showList = view === "list" || isSearching || !showOverviewTab;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- force list view whenever a search is active.
     if (isSearching) setView("list");
   }, [isSearching]);
 

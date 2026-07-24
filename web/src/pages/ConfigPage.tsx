@@ -196,6 +196,8 @@ export default function ConfigPage() {
   // Set active category when categories load
   useEffect(() => {
     if (categoryOrder.length > 0 && !activeCategory) {
+      // Default the active category once the schema-derived list loads.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveCategory(categoryOrder[0]);
     }
   }, [categoryOrder, activeCategory]);
@@ -203,6 +205,8 @@ export default function ConfigPage() {
   // Load YAML when switching to YAML mode
   useEffect(() => {
     if (yamlMode) {
+      // Standard load-flag before an async fetch when entering YAML mode.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setYamlLoading(true);
       api
         .getConfigRaw()
@@ -210,9 +214,12 @@ export default function ConfigPage() {
         .catch(() => showToast(t.config.failedToLoadRaw, "error"))
         .finally(() => setYamlLoading(false));
     }
+    // Fetch only on the false→true yamlMode transition; toast/api are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yamlMode]);
 
   /* ---- Categories ---- */
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- deps are intentional; category order is a stable derived list.
   const categories = useMemo(() => {
     if (!schema) return [];
     const allCats = [

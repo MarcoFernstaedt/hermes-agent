@@ -2210,6 +2210,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
+    // Deliberately curated deps: the PTY/socket lifecycle re-runs only on these
+    // identity changes; adding the setters/refs it uses would thrash the terminal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     channel,
     clearReconnectTimer,

@@ -172,6 +172,8 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
+    // Reload only when the selected profile changes; toast/api are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProfile]);
 
   /* ---- Toggle skill ---- */
@@ -1359,6 +1361,8 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
+    // Standard load-flag before an async preview fetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
