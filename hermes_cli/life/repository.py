@@ -57,7 +57,7 @@ class LifeRepository:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
-    def migrate(self) -> None:
+    def migrate(self, *, now: datetime | None = None) -> None:
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -113,7 +113,7 @@ class LifeRepository:
                 );
                 """
             )
-            stamp = _stamp()
+            stamp = _stamp(now)
             has_habits = connection.execute("SELECT EXISTS(SELECT 1 FROM habits)").fetchone()[0]
             if not has_habits:
                 connection.executemany(

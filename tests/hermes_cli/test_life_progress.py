@@ -21,7 +21,7 @@ JULY_21 = datetime(2026, 7, 21, 15, 30, tzinfo=timezone.utc)
 def test_repository_seeds_income_first_habits_and_tracks_progress(tmp_path):
     database = tmp_path / "life.sqlite3"
     repository = LifeRepository(database)
-    repository.migrate()
+    repository.migrate(now=NOW)
 
     today = repository.today(day="2026-07-22", now=NOW)
     assert database.stat().st_mode & 0o077 == 0
@@ -45,7 +45,7 @@ def test_repository_seeds_income_first_habits_and_tracks_progress(tmp_path):
 
 def test_repository_supports_configurable_habits_reflection_and_history(tmp_path):
     repository = LifeRepository(tmp_path / "life.sqlite3")
-    repository.migrate()
+    repository.migrate(now=NOW)
     habit = repository.create_habit(
         name="Drink water",
         category="health",
@@ -97,7 +97,7 @@ def test_migrate_is_safe_when_dashboard_workers_start_concurrently(tmp_path):
 
 def test_history_keeps_the_target_and_active_state_for_each_day(tmp_path):
     repository = LifeRepository(tmp_path / "life.sqlite3")
-    repository.migrate()
+    repository.migrate(now=NOW)
     habit = repository.create_habit(
         name="Practice answer",
         category="income",
@@ -118,12 +118,12 @@ def test_history_keeps_the_target_and_active_state_for_each_day(tmp_path):
 
 def test_migrate_does_not_recreate_a_renamed_seed_habit(tmp_path):
     repository = LifeRepository(tmp_path / "life.sqlite3")
-    repository.migrate()
+    repository.migrate(now=NOW)
     before = repository.today(day="2026-07-22")
     move = next(habit for habit in before["habits"] if habit["name"] == "Move body")
 
     repository.update_habit(move["id"], name="Exercise", now=NOW)
-    repository.migrate()
+    repository.migrate(now=NOW)
 
     names = [habit["name"] for habit in repository.today(day="2026-07-22")["habits"]]
     assert "Exercise" in names
@@ -186,9 +186,14 @@ def _app(database):
 def test_life_router_authenticates_and_requires_same_origin_for_writes(tmp_path):
     client = TestClient(_app(tmp_path / "life.sqlite3"))
 
+    # The router seeds habits against the real clock (no injectable now over
+    # HTTP), so drive this test off the actual current day rather than a fixed
+    # date that would fall before the seeds' effective day.
+    today_day = datetime.now(timezone.utc).date().isoformat()
+
     assert client.get("/api/life/today").status_code == 401
     today = client.get(
-        "/api/life/today?day=2026-07-22", headers={"x-test-auth": "ok"}
+        f"/api/life/today?day={today_day}", headers={"x-test-auth": "ok"}
     )
     assert today.status_code == 200
 
@@ -210,7 +215,7 @@ def test_life_router_authenticates_and_requires_same_origin_for_writes(tmp_path)
     logged = client.put(
         f"/api/life/entries/{habit_id}",
         headers={"x-test-auth": "ok", "origin": "http://testserver"},
-        json={"day": "2026-07-22", "value": 1, "note": "Prepared one answer"},
+        json={"day": today_day, "value": 1, "note": "Prepared one answer"},
     )
     assert logged.status_code == 200
     assert logged.json()["income_gate"]["open"] is True
