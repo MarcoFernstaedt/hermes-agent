@@ -202,18 +202,18 @@ export function ChatSessionList({
       if (next === (session.title ?? "").trim()) return;
       // Optimistic: reflect the new title immediately, roll back on failure.
       setSessions((prev) =>
-        prev?.map((s) => (s.id === session.id ? { ...s, title: next || null } : s)),
+        prev?.map((s) => (s.id === session.id ? { ...s, title: next || null } : s)) ?? null,
       );
       try {
         const res = await api.renameSession(session.id, next, profile);
         setSessions((prev) =>
-          prev?.map((s) => (s.id === session.id ? { ...s, title: res.title || null } : s)),
+          prev?.map((s) => (s.id === session.id ? { ...s, title: res.title || null } : s)) ?? null,
         );
       } catch {
         setSessions((prev) =>
           prev?.map((s) =>
             s.id === session.id ? { ...s, title: session.title } : s,
-          ),
+          ) ?? null,
         );
         showToast("Could not rename session", "error");
       }
@@ -228,10 +228,10 @@ export function ChatSessionList({
         await api.archiveSession(session.id, nextArchived, profile);
         // Archived sessions drop out of the (exclude-archived) listing.
         if (nextArchived) {
-          setSessions((prev) => prev?.filter((s) => s.id !== session.id));
+          setSessions((prev) => prev?.filter((s) => s.id !== session.id) ?? null);
         } else {
           setSessions((prev) =>
-            prev?.map((s) => (s.id === session.id ? { ...s, archived: false } : s)),
+            prev?.map((s) => (s.id === session.id ? { ...s, archived: false } : s)) ?? null,
           );
         }
         showToast(nextArchived ? "Session archived" : "Session restored", "success");
@@ -266,7 +266,7 @@ export function ChatSessionList({
     setDeleting(true);
     try {
       await api.deleteSession(pendingDelete.id, profile);
-      setSessions((prev) => prev?.filter((s) => s.id !== pendingDelete.id));
+      setSessions((prev) => prev?.filter((s) => s.id !== pendingDelete.id) ?? null);
       showToast("Session deleted", "success");
       setPendingDelete(null);
     } catch {

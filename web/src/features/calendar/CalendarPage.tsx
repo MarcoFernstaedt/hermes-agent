@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useIntent } from "@/hooks/useIntent";
 import { api, type CalendarEvent } from "@/lib/api";
 import { useData } from "@/lib/use-data";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,9 @@ export default function CalendarPage() {
   const [composing, setComposing] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<CalendarEvent | null>(null);
   const [newTask, setNewTask] = useState("");
+
+  // Command-palette "New calendar event" opens the dialog after navigation.
+  useIntent("calendar:new-event", () => setComposing(true));
 
   const win = useMemo(() => agendaWindow(14), []);
   const conn = useData("cal:connection", api.getCalendarConnection);

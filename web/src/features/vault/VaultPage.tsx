@@ -5,6 +5,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { FileText, Hash, Link2, Plus, RefreshCw, Search } from "lucide-react";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useIntent } from "@/hooks/useIntent";
 import { Markdown } from "@/components/Markdown";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
@@ -24,6 +25,17 @@ export default function VaultPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+
+  // Command-palette entries: "New note" opens the inline creator, "Search
+  // vault" focuses the search field, both after navigation to /vault. The
+  // @nous-research Input isn't a forwardRef component, so we reach the native
+  // element by id rather than a React ref.
+  useIntent("vault:new-note", () => setCreating(true));
+  useIntent("vault:search", () => {
+    const el = document.getElementById("vault-search") as HTMLInputElement | null;
+    el?.focus();
+    el?.select();
+  });
 
   const status = useData("vault:status", api.getVaultStatus);
   const configured = !!status.data?.configured;
@@ -98,6 +110,7 @@ export default function VaultPage() {
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-text-tertiary" aria-hidden />
             <Input
+              id="vault-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && setSubmitted(query.trim())}

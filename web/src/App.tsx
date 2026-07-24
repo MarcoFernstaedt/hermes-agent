@@ -25,10 +25,12 @@ import {
   BarChart3,
   BookOpen,
   CalendarDays,
+  CalendarPlus,
   Brain,
   BriefcaseBusiness,
   Clock,
   Code,
+  FilePlus,
   Cpu,
   Database,
   Download,
@@ -47,6 +49,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  PenSquare,
   Plug,
   Puzzle,
   Radio,
@@ -72,6 +75,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { emitIntent } from "@/lib/app-intent";
 import {
   CommandPalette,
   type CommandPaletteItem,
@@ -739,6 +743,54 @@ export default function App() {
         run: () => {
           navigate("/chat");
           closeMobile();
+        },
+      },
+      {
+        id: "action:compose-email",
+        label: "Compose email",
+        hint: actionHint,
+        keywords: "email compose write new message send mail gmail",
+        icon: PenSquare,
+        run: () => {
+          navigate("/email");
+          closeMobile();
+          emitIntent("email:compose");
+        },
+      },
+      {
+        id: "action:new-event",
+        label: "New calendar event",
+        hint: actionHint,
+        keywords: "calendar event new meeting appointment schedule create",
+        icon: CalendarPlus,
+        run: () => {
+          navigate("/calendar");
+          closeMobile();
+          emitIntent("calendar:new-event");
+        },
+      },
+      {
+        id: "action:new-note",
+        label: "New note",
+        hint: actionHint,
+        keywords: "vault note new markdown obsidian write create",
+        icon: FilePlus,
+        run: () => {
+          navigate("/vault");
+          closeMobile();
+          emitIntent("vault:new-note");
+        },
+      },
+      {
+        id: "action:search-vault",
+        label: "Search vault",
+        hint: actionHint,
+        keywords: "vault search notes find markdown obsidian",
+        icon: Search,
+        run: () => {
+          navigate("/vault");
+          closeMobile();
+          emitIntent("vault:search");
         },
       },
       {

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useIntent } from "@/hooks/useIntent";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,9 @@ export default function EmailPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingTrash, setPendingTrash] = useState<string | null>(null);
   const [composer, setComposer] = useState<ComposerInitial | null>(null);
+
+  // Command-palette "Compose email" opens the composer after navigation.
+  useIntent("email:compose", () => setComposer({}));
 
   const conn = useData("email:connection", api.getEmailConnection);
   const list = useData(
