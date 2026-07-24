@@ -134,6 +134,26 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
   );
 }
 
+/** Alive "agent is working" cue shown in the feed between your message and the
+ *  first streamed token: three gold dots bobbing. Disabled under reduced
+ *  motion, where it becomes a plain static "working" line. */
+function ThinkingRow() {
+  return (
+    <div className="flex items-center gap-2 px-1 py-1" role="status" aria-label="Imperator is working">
+      <span className="flex items-center gap-1" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="size-1.5 rounded-full bg-midground animate-[thinking-bob_1.2s_ease-in-out_infinite] motion-reduce:animate-none"
+            style={{ animationDelay: `${i * 160}ms` }}
+          />
+        ))}
+      </span>
+      <span className="text-xs text-text-tertiary">Imperator is working…</span>
+    </div>
+  );
+}
+
 export function ChatBubbleFeed({
   messages,
   composer,
@@ -662,6 +682,11 @@ export function ChatBubbleFeed({
                 </article>
               );
             })}
+            {isWorking &&
+              !(
+                visibleMessages[visibleMessages.length - 1]?.role === "assistant" &&
+                visibleMessages[visibleMessages.length - 1]?.status === "streaming"
+              ) && <ThinkingRow />}
           </div>
         )}
       </div>
