@@ -98,6 +98,46 @@ class GmailClient:
     def get_thread(self, thread_id: str, *, fmt: str = "metadata") -> Dict[str, Any]:
         return self._send("GET", f"/threads/{thread_id}", params={"format": fmt})
 
+    def get_profile(self) -> Dict[str, Any]:
+        """Mailbox profile — ``{emailAddress, messagesTotal, threadsTotal,
+        historyId}``. The ``historyId`` is the cheap change-signal the client
+        polls: when it advances, something in the mailbox changed."""
+        return self._send("GET", "/profile")
+
+    def list_history(
+        self,
+        start_history_id: str,
+        *,
+        history_types: Optional[List[str]] = None,
+        label_id: Optional[str] = None,
+        max_results: int = 100,
+        page_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List mailbox changes since ``start_history_id`` for incremental sync.
+
+        Returns Gmail's raw history response: ``{history: [...], historyId,
+        nextPageToken?}``, where each entry may carry ``messagesAdded``,
+        ``messagesDeleted``, ``labelsAdded`` and ``labelsRemoved``. A 404 means
+        the start id is too old to serve deltas from — the caller must fall back
+        to a full list; we surface that as ``{"expired": True}``.
+        """
+        params: Dict[str, Any] = {
+            "startHistoryId": str(start_history_id),
+            "maxResults": max(1, min(int(max_results), 500)),
+        }
+        if history_types:
+            params["historyTypes"] = history_types
+        if label_id:
+            params["labelId"] = label_id
+        if page_token:
+            params["pageToken"] = page_token
+        try:
+            return self._send("GET", "/history", params=params)
+        except GmailError as exc:
+            if "404" in str(exc):
+                return {"expired": True}
+            raise
+
     def list_labels(self) -> Dict[str, Any]:
         return self._send("GET", "/labels")
 
@@ -200,6 +240,49 @@ def parse_metadata(message: Dict[str, Any]) -> Dict[str, Any]:
         "starred": "STARRED" in label_ids,
         "has_attachment": _has_attachment(payload),
         "labels": label_ids,
+    }
+
+
+def summarize_history(history: Dict[str, Any]) -> Dict[str, Any]:
+    """Reduce a raw Gmail history response into the deltas a client needs.
+
+    Returns ``{added, deleted, changed, historyId, expired}`` where ``added``
+    and ``deleted`` are de-duplicated message-id lists (order preserved) and
+    ``changed`` collects ids whose labels moved (so an inbox view can re-check
+    read/star state). ``expired`` is True when the start id was too old and a
+    full re-list is required.
+    """
+    if history.get("expired"):
+        return {"added": [], "deleted": [], "changed": [], "historyId": None, "expired": True}
+
+    added: List[str] = []
+    deleted: List[str] = []
+    changed: List[str] = []
+    seen_add: set[str] = set()
+    seen_del: set[str] = set()
+    seen_chg: set[str] = set()
+
+    def _push(bucket: List[str], seen: set[str], mid: Optional[str]) -> None:
+        if mid and mid not in seen:
+            seen.add(mid)
+            bucket.append(mid)
+
+    for entry in history.get("history") or []:
+        for m in entry.get("messagesAdded") or []:
+            _push(added, seen_add, (m.get("message") or {}).get("id"))
+        for m in entry.get("messagesDeleted") or []:
+            _push(deleted, seen_del, (m.get("message") or {}).get("id"))
+        for m in entry.get("labelsAdded") or []:
+            _push(changed, seen_chg, (m.get("message") or {}).get("id"))
+        for m in entry.get("labelsRemoved") or []:
+            _push(changed, seen_chg, (m.get("message") or {}).get("id"))
+
+    return {
+        "added": added,
+        "deleted": deleted,
+        "changed": changed,
+        "historyId": history.get("historyId"),
+        "expired": False,
     }
 
 

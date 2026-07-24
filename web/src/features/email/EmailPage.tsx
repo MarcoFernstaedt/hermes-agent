@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { getHeader, isUnread, parseSender, toRenderable } from "./email-model";
 import { EmailComposer, type ComposerInitial } from "./EmailComposer";
 import { EmailThread } from "./EmailThread";
+import { useGmailSync } from "./useGmailSync";
 
 export default function EmailPage() {
   const { setTitle } = usePageHeader();
@@ -36,6 +37,7 @@ export default function EmailPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingTrash, setPendingTrash] = useState<string | null>(null);
   const [composer, setComposer] = useState<ComposerInitial | null>(null);
+  const [newMail, setNewMail] = useState(0);
 
   // Command-palette "Compose email" opens the composer after navigation.
   useIntent("email:compose", () => setComposer({}));
@@ -78,6 +80,15 @@ export default function EmailPage() {
     meta.mutate();
     thread.mutate();
   };
+
+  // Incremental sync: poll the mailbox historyId; when it advances, note how
+  // many messages arrived so we can offer a non-disruptive refresh rather than
+  // re-listing under the reader.
+  const onDelta = useCallback(
+    (added: number) => setNewMail((c) => (added ? c + added : Math.max(c, 1))),
+    [],
+  );
+  useGmailSync(conn.data?.connected === true && !conn.data?.needs_reauth, onDelta);
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     try {
@@ -168,7 +179,26 @@ export default function EmailPage() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(18rem,24rem)_1fr]">
         {/* Message list */}
-        <div className="min-h-0 overflow-y-auto rounded-md border border-border" role="list" aria-label="Messages">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border">
+          {newMail > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                refreshList();
+                setNewMail(0);
+              }}
+              className={cn(
+                "flex shrink-0 items-center justify-center gap-1.5 border-b border-primary/30 bg-primary/10 px-3 py-1.5",
+                "text-xs font-medium text-primary transition-colors hover:bg-primary/15",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
+              )}
+              aria-live="polite"
+            >
+              <RefreshCw className="size-3.5" aria-hidden />
+              {newMail} new {newMail === 1 ? "message" : "messages"} — refresh
+            </button>
+          )}
+          <div className="min-h-0 flex-1 overflow-y-auto" role="list" aria-label="Messages">
           {list.isLoading || meta.isLoading ? (
             <div className="flex items-center justify-center gap-2 p-6 text-sm text-text-secondary">
               <Spinner /> Loading…
@@ -207,6 +237,7 @@ export default function EmailPage() {
               );
             })
           )}
+          </div>
         </div>
 
         {/* Reader */}

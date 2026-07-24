@@ -19,7 +19,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from hermes_cli.google import GoogleAuthError, GoogleReauthRequired
-from hermes_cli.google.gmail import GmailClient, GmailError, parse_metadata
+from hermes_cli.google.gmail import (
+    GmailClient,
+    GmailError,
+    parse_metadata,
+    summarize_history,
+)
 
 Authorize = Callable[[Request], Any]
 
@@ -74,6 +79,33 @@ def create_email_router(
     async def labels() -> dict[str, Any]:
         try:
             return client_factory().list_labels()
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    @router.get("/profile", dependencies=dep)
+    async def profile() -> dict[str, Any]:
+        """Mailbox profile including the current ``historyId`` — the cheap
+        change signal the client polls to decide whether to sync."""
+        try:
+            return client_factory().get_profile()
+        except Exception as exc:
+            _handle_google_errors(exc)
+
+    @router.get("/history", dependencies=dep)
+    async def history(
+        start_history_id: str = Query(..., min_length=1),
+        label: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        """Changes since ``start_history_id``, reduced to added/deleted/changed
+        message-id lists plus the new ``historyId``. ``expired: true`` means the
+        start id was too old and the client must do a full re-list."""
+        try:
+            raw = client_factory().list_history(
+                start_history_id,
+                history_types=["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
+                label_id=label,
+            )
+            return summarize_history(raw)
         except Exception as exc:
             _handle_google_errors(exc)
 

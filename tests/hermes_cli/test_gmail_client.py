@@ -112,3 +112,53 @@ def test_parse_metadata_flattens_row():
     assert row["starred"] is True
     assert row["has_attachment"] is True
     assert row["thread_id"] == "t1"
+
+
+def test_get_profile_hits_profile_endpoint(gmail, monkeypatch):
+    calls = _record(gmail, monkeypatch, [_Resp(200, {"emailAddress": "me@x.com", "historyId": "555"})])
+    out = gmail.GmailClient().get_profile()
+    assert out["historyId"] == "555"
+    assert calls[0]["url"].endswith("/profile")
+
+
+def test_list_history_builds_params(gmail, monkeypatch):
+    calls = _record(gmail, monkeypatch, [_Resp(200, {"history": [], "historyId": "600"})])
+    gmail.GmailClient().list_history("500", history_types=["messageAdded"], label_id="INBOX")
+    p = calls[0]["params"]
+    assert p["startHistoryId"] == "500"
+    assert p["historyTypes"] == ["messageAdded"]
+    assert p["labelId"] == "INBOX"
+
+
+def test_list_history_404_reports_expired(gmail, monkeypatch):
+    _record(gmail, monkeypatch, [_Resp(404, {}, text="not found")])
+    out = gmail.GmailClient().list_history("1")
+    assert out == {"expired": True}
+
+
+def test_summarize_history_reduces_deltas():
+    from hermes_cli.google.gmail import summarize_history
+
+    raw = {
+        "historyId": "620",
+        "history": [
+            {"messagesAdded": [{"message": {"id": "a"}}, {"message": {"id": "a"}}]},
+            {"messagesDeleted": [{"message": {"id": "b"}}]},
+            {"labelsRemoved": [{"message": {"id": "c"}}]},
+            {"labelsAdded": [{"message": {"id": "c"}}]},
+        ],
+    }
+    out = summarize_history(raw)
+    assert out["added"] == ["a"]  # de-duplicated
+    assert out["deleted"] == ["b"]
+    assert out["changed"] == ["c"]  # de-duplicated across added/removed
+    assert out["historyId"] == "620"
+    assert out["expired"] is False
+
+
+def test_summarize_history_passes_through_expired():
+    from hermes_cli.google.gmail import summarize_history
+
+    out = summarize_history({"expired": True})
+    assert out["expired"] is True
+    assert out["added"] == []

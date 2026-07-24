@@ -521,6 +521,23 @@ export interface GmailThread {
   messages?: GmailMessage[];
 }
 
+/** Mailbox profile; `historyId` is the change signal polled for incremental sync. */
+export interface GmailProfile {
+  emailAddress?: string;
+  messagesTotal?: number;
+  threadsTotal?: number;
+  historyId?: string;
+}
+
+/** Reduced mailbox delta since a prior historyId (see summarize_history). */
+export interface GmailHistoryDelta {
+  added: string[];
+  deleted: string[];
+  changed: string[];
+  historyId: string | null;
+  expired: boolean;
+}
+
 export interface EmailSendBody {
   to: string[];
   subject?: string;
@@ -826,6 +843,12 @@ export const api = {
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}?fmt=${fmt}`),
   getEmailThread: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
     fetchJSON<GmailThread>(`/api/email/threads/${encodeURIComponent(id)}?fmt=${fmt}`),
+  getEmailProfile: () => fetchJSON<GmailProfile>("/api/email/profile"),
+  getEmailHistory: (startHistoryId: string, label?: string) =>
+    fetchJSON<GmailHistoryDelta>(
+      `/api/email/history?start_history_id=${encodeURIComponent(startHistoryId)}` +
+        (label ? `&label=${encodeURIComponent(label)}` : ""),
+    ),
   modifyEmail: (id: string, add: string[] = [], remove: string[] = []) =>
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/modify`, {
       method: "POST",
