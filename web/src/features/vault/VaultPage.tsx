@@ -6,6 +6,7 @@ import { FileText, Hash, Link2, Plus, RefreshCw, Search } from "lucide-react";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useIntent } from "@/hooks/useIntent";
+import { EmptyState } from "@/components/EmptyState";
 import { Markdown } from "@/components/Markdown";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
@@ -173,9 +174,11 @@ export default function VaultPage() {
       {/* Reader */}
       <main className="min-h-0 overflow-y-auto rounded-lg border border-border">
         {!selected ? (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-text-tertiary">
-            Select a note to read.
-          </div>
+          <EmptyState
+            icon={FileText}
+            title="No note selected"
+            hint="Pick a note from the list to read it here."
+          />
         ) : note.isLoading || !n ? (
           <div className="flex h-full items-center justify-center gap-2 p-8 text-sm text-text-secondary">
             <Spinner /> Loading note…

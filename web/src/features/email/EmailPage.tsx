@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { EmptyState } from "@/components/EmptyState";
 import { useIntent } from "@/hooks/useIntent";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
@@ -243,9 +244,11 @@ export default function EmailPage() {
         {/* Reader */}
         <div className="flex min-h-0 flex-col rounded-md border border-border">
           {!selectedId ? (
-            <div className="flex h-full items-center justify-center p-6 text-sm text-text-tertiary">
-              Select a conversation to read.
-            </div>
+            <EmptyState
+              icon={MailOpen}
+              title="No conversation selected"
+              hint="Choose a message from the list to read the full thread."
+            />
           ) : thread.isLoading || !renderable ? (
             <div className="flex h-full items-center justify-center gap-2 p-6 text-sm text-text-secondary">
               <Spinner /> Loading conversation…
