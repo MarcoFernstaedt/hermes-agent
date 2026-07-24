@@ -572,6 +572,45 @@ export interface GoogleTask {
   status?: string;
 }
 
+export interface VaultNoteMeta {
+  path: string;
+  title: string;
+  mtime: number;
+  size: number;
+}
+
+export interface VaultLink {
+  target: string | null;
+  heading: string | null;
+  block: string | null;
+  alias: string | null;
+}
+
+export interface VaultNote {
+  path: string;
+  title: string;
+  frontmatter: Record<string, unknown>;
+  headings: Array<{ level: number; text: string }>;
+  tags: string[];
+  links: VaultLink[];
+  embeds: VaultLink[];
+  content: string;
+  body: string;
+  mtime: number;
+}
+
+export interface VaultSearchResult {
+  path: string;
+  title: string;
+  snippet: string;
+}
+
+export interface VaultBacklink {
+  path: string;
+  title: string;
+  context: string;
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -831,6 +870,34 @@ export const api = {
   completeTask: (id: string) =>
     fetchJSON<GoogleTask>(`/api/calendar/tasks/${encodeURIComponent(id)}/complete`, {
       method: "POST",
+    }),
+
+  // -- Vault (Obsidian) ----------------------------------------------------
+  getVaultStatus: () => fetchJSON<{ configured: boolean; root: string | null }>("/api/vault/status"),
+  listVaultNotes: () => fetchJSON<{ notes: VaultNoteMeta[] }>("/api/vault/notes"),
+  getVaultNote: (path: string) =>
+    fetchJSON<VaultNote>(`/api/vault/note?path=${encodeURIComponent(path)}`),
+  searchVault: (q: string) =>
+    fetchJSON<{ results: VaultSearchResult[] }>(`/api/vault/search?q=${encodeURIComponent(q)}`),
+  getVaultBacklinks: (path: string) =>
+    fetchJSON<{ backlinks: VaultBacklink[] }>(`/api/vault/backlinks?path=${encodeURIComponent(path)}`),
+  appendVaultNote: (path: string, text: string) =>
+    fetchJSON<{ path: string; mtime: number }>("/api/vault/append", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, text }),
+    }),
+  createVaultNote: (path: string, content = "") =>
+    fetchJSON<{ path: string; mtime: number }>("/api/vault/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    }),
+  writeVaultNote: (path: string, content: string, expected_mtime?: number) =>
+    fetchJSON<{ path: string; mtime: number; bytes: number }>("/api/vault/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content, expected_mtime }),
     }),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),

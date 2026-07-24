@@ -42,6 +42,7 @@ import {
   Mail,
   Menu,
   MessageSquare,
+  NotebookText,
   Music,
   Package,
   PanelLeftClose,
@@ -119,6 +120,7 @@ import ChatPage from "@/pages/ChatPage";
 const MediaPage = lazy(() => import("@/features/media/MediaPage"));
 const EmailPage = lazy(() => import("@/features/email/EmailPage"));
 const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
+const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -169,6 +171,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/media": MediaPage,
   "/email": EmailPage,
   "/calendar": CalendarPage,
+  "/vault": VaultPage,
   "/jobs": JobsPage,
   "/progress": ProgressPage,
   "/files": FilesPage,
@@ -211,6 +214,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/media", label: "Media", icon: Music },
   { path: "/email", label: "Email", icon: Mail },
   { path: "/calendar", label: "Calendar", icon: CalendarDays },
+  { path: "/vault", label: "Vault", icon: NotebookText },
   { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { path: "/progress", label: "Progress", icon: Activity },
   { path: "/files", label: "Files", icon: FolderOpen },
@@ -276,7 +280,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/media", "/email", "/calendar", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
+    paths: ["/sessions", "/media", "/email", "/calendar", "/vault", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
   },
   {
     id: "automate",
