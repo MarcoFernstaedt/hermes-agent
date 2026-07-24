@@ -1030,7 +1030,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         ...state.messages,
         {
           ...createOptimisticUserMessage(text, id, now),
-          status: agentRunning && !isSlashCommand ? "waiting" : "sending",
+          status:
+            agentRunning && !isSlashCommand && !activeClarify ? "queued" : "sending",
         },
       ],
     }));
@@ -1054,12 +1055,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         answeringClarify: Boolean(activeClarify),
       })
     ) {
-      // Mid-run: hold the message locally (bubble shows "Waiting to send")
-      // and let the flush effect below deliver it when this run completes.
-      // Writing it to the PTY now would steer the active turn instead of
-      // starting a new one.
-      queuedSendsRef.current.push({ id, text });
-      sent = true;
+      // Mid-run: hand the message to the agent's own /queue so it queues
+      // server-side and starts its own turn after the current one, instead of
+      // steering the active turn or holding it in the browser. The bubble
+      // shows "Queued" until the agent goes idle.
+      sent = sendPtyText(`/queue ${text}`);
+      if (!sent && ptyStateRef.current !== "ended") {
+        // Socket down: replay the /queue command on reconnect.
+        pendingReconnectSendsRef.current.push({ id, text: `/queue ${text}` });
+        return;
+      }
     } else {
       sent = sendPtyText(text);
     }
@@ -1123,6 +1128,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       markOptimisticFailed(next.id);
     }
   }, [agentRunning, markOptimisticFailed, sendPtyText]);
+
+  // Once the agent finishes its current turn, any messages we handed to its
+  // /queue are now in flight on the agent side — settle their bubbles from
+  // "queued" to "sent". Their replies stream back as normal assistant bubbles.
+  useEffect(() => {
+    if (agentRunning) return;
+    queueMicrotask(() =>
+      setFeedState((state) => {
+        if (!state.messages.some((m) => m.status === "queued")) return state;
+        return {
+          ...state,
+          messages: state.messages.map((m) =>
+            m.status === "queued" ? { ...m, status: "sent" } : m,
+          ),
+        };
+      }),
+    );
+  }, [agentRunning]);
 
   const stopAgent = useCallback(() => {
     const ws = wsRef.current;

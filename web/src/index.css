@@ -241,6 +241,18 @@ code { font-size: 0.875rem; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Queued-message "alive" cues: a breathing gold ring on the bubble and a
+   soft pulse on the status glyph while a message waits in the agent's queue.
+   Both are disabled under reduced motion via motion-reduce:animate-none. */
+@keyframes queued-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--midground-base) 0%, transparent); }
+  50%      { box-shadow: 0 0 0 3px color-mix(in srgb, var(--midground-base) 22%, transparent); }
+}
+@keyframes queued-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
 .scrollbar-none {
   -ms-overflow-style: none;

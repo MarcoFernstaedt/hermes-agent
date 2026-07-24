@@ -96,6 +96,7 @@ function statusLabel(message: ChatFeedMessage): string | null {
   if (message.status === "sending") return "Sending";
   if (message.status === "streaming") return "Responding";
   if (message.status === "running") return "Running";
+  if (message.status === "queued") return "Queued";
   if (message.status === "waiting") {
     return message.role === "user" ? "Waiting to send" : "Waiting for you";
   }
@@ -111,7 +112,11 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
     <span
       className={cn(
         "inline-flex items-center gap-1 text-[0.6875rem] tracking-wide",
-        message.status === "error" ? "text-destructive" : "text-text-tertiary",
+        message.status === "error"
+          ? "text-destructive"
+          : message.status === "queued"
+            ? "text-midground"
+            : "text-text-tertiary",
       )}
       aria-label={label}
     >
@@ -119,6 +124,8 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
       message.status === "streaming" ||
       message.status === "running" ? (
         <LoaderCircle className="size-3 animate-spin motion-reduce:animate-none" />
+      ) : message.status === "queued" ? (
+        <ListPlus className="size-3 animate-[queued-pulse_1.6s_ease-in-out_infinite] motion-reduce:animate-none" />
       ) : message.status === "error" ? (
         <AlertCircle className="size-3" />
       ) : null}
@@ -457,6 +464,10 @@ export function ChatBubbleFeed({
                         "max-w-full rounded-xl border-warning/45 bg-warning/10",
                       message.status === "error" &&
                         "border-destructive/50 bg-destructive/10",
+                      // Alive treatment while a message waits in the agent's
+                      // queue: a gentle gold ring breathing until it runs.
+                      message.status === "queued" &&
+                        "border-midground/50 animate-[queued-glow_2s_ease-in-out_infinite] motion-reduce:animate-none",
                     )}
                   >
                     <div className="mb-1.5 flex min-w-0 items-center justify-between gap-3">
