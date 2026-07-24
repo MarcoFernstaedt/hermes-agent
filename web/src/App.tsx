@@ -85,6 +85,8 @@ import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
+import { NavBadgesProvider } from "@/contexts/NavBadges";
+import { useNavBadge } from "@/contexts/nav-badges-context";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -907,6 +909,7 @@ export default function App() {
   return (
     <ProfileProvider>
     <MediaProvider>
+    <NavBadgesProvider>
     <div
       data-layout-variant="standard"
       className="imperator-canvas flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -1273,6 +1276,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </NavBadgesProvider>
     </MediaProvider>
     </ProfileProvider>
   );
@@ -1490,6 +1494,36 @@ function GroupedCoreNav({
   );
 }
 
+/**
+ * A live count on a nav entry (unread email, events today). Expanded: a small
+ * gold pill after the label. Collapsed rail: a dot on the icon corner. The
+ * count is always announced to screen readers regardless of presentation.
+ */
+function NavBadge({ count, collapsed }: { count: number; collapsed: boolean }) {
+  if (count <= 0) return null;
+  return (
+    <>
+      <span className="sr-only">{count} new</span>
+      {collapsed ? (
+        <span
+          aria-hidden
+          className="absolute right-3.5 top-2 size-1.5 rounded-full bg-midground lg:block hidden"
+        />
+      ) : null}
+      <span
+        aria-hidden
+        className={cn(
+          "ml-auto shrink-0 rounded-full bg-midground/15 px-1.5 py-0.5",
+          "text-[0.65rem] font-semibold leading-none text-midground tabular-nums",
+          collapsed && "lg:hidden",
+        )}
+      >
+        {count > 99 ? "99+" : count}
+      </span>
+    </>
+  );
+}
+
 function SidebarNavLink({
   closeMobile,
   collapsed,
@@ -1498,6 +1532,7 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const badge = useNavBadge(path);
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
@@ -1550,6 +1585,8 @@ function SidebarNavLink({
             >
               {navLabel}
             </span>
+
+            <NavBadge count={badge} collapsed={collapsed} />
 
             <span
               aria-hidden

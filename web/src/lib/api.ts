@@ -843,6 +843,7 @@ export const api = {
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}?fmt=${fmt}`),
   getEmailThread: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
     fetchJSON<GmailThread>(`/api/email/threads/${encodeURIComponent(id)}?fmt=${fmt}`),
+  getEmailUnreadCount: () => fetchJSON<{ count: number }>("/api/email/unread_count"),
   getEmailProfile: () => fetchJSON<GmailProfile>("/api/email/profile"),
   getEmailHistory: (startHistoryId: string, label?: string) =>
     fetchJSON<GmailHistoryDelta>(

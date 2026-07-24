@@ -141,6 +141,12 @@ class GmailClient:
     def list_labels(self) -> Dict[str, Any]:
         return self._send("GET", "/labels")
 
+    def get_label(self, label_id: str) -> Dict[str, Any]:
+        """A single label with its counts (``messagesTotal``,
+        ``messagesUnread``, ``threadsTotal``, ``threadsUnread``). The list form
+        omits counts, so an exact unread badge needs this per-label read."""
+        return self._send("GET", f"/labels/{label_id}")
+
     # -- label / lifecycle writes -----------------------------------------
     def modify_message(
         self,

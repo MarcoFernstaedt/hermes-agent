@@ -82,6 +82,15 @@ def create_email_router(
         except Exception as exc:
             _handle_google_errors(exc)
 
+    @router.get("/unread_count", dependencies=dep)
+    async def unread_count() -> dict[str, Any]:
+        """Exact unread-message count for the nav badge (from the UNREAD label)."""
+        try:
+            label = client_factory().get_label("UNREAD")
+            return {"count": int(label.get("messagesUnread", 0) or 0)}
+        except Exception as exc:
+            _handle_google_errors(exc)
+
     @router.get("/profile", dependencies=dep)
     async def profile() -> dict[str, Any]:
         """Mailbox profile including the current ``historyId`` — the cheap

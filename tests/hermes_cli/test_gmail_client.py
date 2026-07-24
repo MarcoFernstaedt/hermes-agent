@@ -114,6 +114,13 @@ def test_parse_metadata_flattens_row():
     assert row["thread_id"] == "t1"
 
 
+def test_get_label_reads_counts(gmail, monkeypatch):
+    calls = _record(gmail, monkeypatch, [_Resp(200, {"id": "UNREAD", "messagesUnread": 12})])
+    out = gmail.GmailClient().get_label("UNREAD")
+    assert out["messagesUnread"] == 12
+    assert calls[0]["url"].endswith("/labels/UNREAD")
+
+
 def test_get_profile_hits_profile_endpoint(gmail, monkeypatch):
     calls = _record(gmail, monkeypatch, [_Resp(200, {"emailAddress": "me@x.com", "historyId": "555"})])
     out = gmail.GmailClient().get_profile()

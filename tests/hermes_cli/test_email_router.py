@@ -52,6 +52,26 @@ class _FakeClient:
     def list_drafts(self, max_results=25):
         return {"drafts": []}
 
+    def get_label(self, label_id):
+        self.calls.append(("get_label", label_id))
+        return {"id": label_id, "messagesUnread": 7, "messagesTotal": 42}
+
+    def get_profile(self):
+        return {"emailAddress": "me@x.com", "historyId": "900"}
+
+    def list_history(self, start_history_id, history_types=None, label_id=None, **kw):
+        self.calls.append(("history", start_history_id, label_id))
+        return {
+            "historyId": "950",
+            "history": [
+                {"messagesAdded": [{"message": {"id": "new1"}}]},
+                {"messagesDeleted": [{"message": {"id": "gone1"}}]},
+            ],
+        }
+
+    def get_thread(self, thread_id, fmt="full"):
+        return {"id": thread_id, "messages": [{"id": "m1"}, {"id": "m2"}]}
+
 
 def _client(fake):
     from hermes_cli.email.router import create_email_router
@@ -75,6 +95,36 @@ def test_labels_and_list_and_metadata():
     row = meta["messages"][0]
     assert row["subject"] == "Hello"
     assert row["unread"] is True
+
+
+def test_unread_count_reads_label():
+    fake = _FakeClient()
+    c = _client(fake)
+    out = c.get("/api/email/unread_count").json()
+    assert out["count"] == 7
+    assert ("get_label", "UNREAD") in fake.calls
+
+
+def test_profile_and_history_deltas():
+    fake = _FakeClient()
+    c = _client(fake)
+
+    prof = c.get("/api/email/profile").json()
+    assert prof["historyId"] == "900"
+
+    delta = c.get("/api/email/history?start_history_id=900&label=INBOX").json()
+    assert delta["added"] == ["new1"]
+    assert delta["deleted"] == ["gone1"]
+    assert delta["historyId"] == "950"
+    assert delta["expired"] is False
+    assert ("history", "900", "INBOX") in fake.calls
+
+
+def test_thread_endpoint_returns_messages():
+    fake = _FakeClient()
+    c = _client(fake)
+    out = c.get("/api/email/threads/t1").json()
+    assert [m["id"] for m in out["messages"]] == ["m1", "m2"]
 
 
 def test_modify_and_trash():
