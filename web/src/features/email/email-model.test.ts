@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeBody, extractBodies, parseSender, toRenderable } from "./email-model";
+import {
+  decodeBody,
+  defaultExpanded,
+  extractBodies,
+  isUnread,
+  parseSender,
+  toRenderable,
+} from "./email-model";
 import type { GmailMessage } from "@/lib/api";
 
 function b64url(s: string): string {
@@ -70,5 +77,28 @@ describe("email-model", () => {
       },
     };
     expect(toRenderable(msg).hasRemoteContent).toBe(false);
+  });
+
+  it("detects unread by the UNREAD label", () => {
+    expect(isUnread({ id: "1", threadId: "t", labelIds: ["INBOX", "UNREAD"] })).toBe(true);
+    expect(isUnread({ id: "2", threadId: "t", labelIds: ["INBOX"] })).toBe(false);
+    expect(isUnread({ id: "3", threadId: "t" })).toBe(false);
+  });
+
+  it("opens the last message and any unread ones by default", () => {
+    const msgs: GmailMessage[] = [
+      { id: "a", threadId: "t", labelIds: ["INBOX"] },
+      { id: "b", threadId: "t", labelIds: ["INBOX", "UNREAD"] },
+      { id: "c", threadId: "t", labelIds: ["INBOX"] },
+    ];
+    const open = defaultExpanded(msgs);
+    expect(open.has("a")).toBe(false); // older, read
+    expect(open.has("b")).toBe(true); // unread
+    expect(open.has("c")).toBe(true); // last
+  });
+
+  it("opens the single message in a one-message thread", () => {
+    const open = defaultExpanded([{ id: "only", threadId: "t", labelIds: ["INBOX"] }]);
+    expect(open.has("only")).toBe(true);
   });
 });

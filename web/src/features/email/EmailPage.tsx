@@ -22,9 +22,9 @@ import { useIntent } from "@/hooks/useIntent";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
 import { cn } from "@/lib/utils";
-import { getHeader, parseSender, toRenderable } from "./email-model";
+import { getHeader, isUnread, parseSender, toRenderable } from "./email-model";
 import { EmailComposer, type ComposerInitial } from "./EmailComposer";
-import { EmailReader } from "./EmailReader";
+import { EmailThread } from "./EmailThread";
 
 export default function EmailPage() {
   const { setTitle } = usePageHeader();
@@ -55,15 +55,28 @@ export default function EmailPage() {
   );
   const rows = meta.data?.messages ?? [];
 
-  const message = useData(
-    selectedId ? `email:msg:${selectedId}` : null,
-    () => api.getEmailMessage(selectedId!, "full"),
+  // Read a whole conversation, not one message. The clicked message's thread id
+  // comes from the (id, threadId) list; the thread endpoint returns every
+  // message in order so the reader can stack them.
+  const selectedThreadId = useMemo(
+    () =>
+      selectedId
+        ? (list.data?.messages.find((m) => m.id === selectedId)?.threadId ?? null)
+        : null,
+    [selectedId, list.data],
   );
-  const renderable = message.data ? toRenderable(message.data) : null;
+  const thread = useData(
+    selectedThreadId ? `email:thread:${selectedThreadId}` : null,
+    () => api.getEmailThread(selectedThreadId!, "full"),
+  );
+  const threadMessages = thread.data?.messages ?? [];
+  const latest = threadMessages[threadMessages.length - 1];
+  const renderable = latest ? toRenderable(latest) : null;
 
   const refreshList = () => {
     list.mutate();
     meta.mutate();
+    thread.mutate();
   };
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
@@ -76,16 +89,20 @@ export default function EmailPage() {
     }
   };
 
+  /** Apply a label change to several messages (thread-wide actions). */
+  const modifyAll = (ids: string[], add: string[], remove: string[]) =>
+    Promise.all(ids.map((id) => api.modifyEmail(id, add, remove)));
+
   const openReply = () => {
-    if (!message.data || !renderable) return;
-    const messageId = getHeader(message.data.payload, "Message-ID");
+    if (!latest || !renderable) return;
+    const messageId = getHeader(latest.payload, "Message-ID");
     const quoted = renderable.text
       ? `\n\nOn ${renderable.date}, ${renderable.from.name} wrote:\n> ${renderable.text.replace(/\n/g, "\n> ")}`
       : "";
     setComposer({
       to: renderable.from.email,
       subject: /^re:/i.test(renderable.subject) ? renderable.subject : `Re: ${renderable.subject}`,
-      thread_id: message.data.threadId,
+      thread_id: latest.threadId,
       in_reply_to: messageId || undefined,
       references: messageId || undefined,
       body: quoted,
@@ -196,44 +213,54 @@ export default function EmailPage() {
         <div className="flex min-h-0 flex-col rounded-md border border-border">
           {!selectedId ? (
             <div className="flex h-full items-center justify-center p-6 text-sm text-text-tertiary">
-              Select a message to read.
+              Select a conversation to read.
             </div>
-          ) : message.isLoading || !renderable ? (
+          ) : thread.isLoading || !renderable ? (
             <div className="flex h-full items-center justify-center gap-2 p-6 text-sm text-text-secondary">
-              <Spinner /> Loading message…
+              <Spinner /> Loading conversation…
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col p-3">
               <div className="mb-2 border-b border-border pb-2">
-                <h1 className="text-base font-semibold">{renderable.subject || "(no subject)"}</h1>
+                <h1 className="text-base font-semibold">
+                  {renderable.subject || "(no subject)"}
+                  {threadMessages.length > 1 && (
+                    <span className="ml-2 align-middle text-xs font-normal text-text-tertiary">
+                      {threadMessages.length} messages
+                    </span>
+                  )}
+                </h1>
                 <p className="mt-0.5 text-sm text-text-secondary">
                   <span className="font-medium text-foreground">{renderable.from.name}</span>{" "}
                   <span className="text-text-tertiary">&lt;{renderable.from.email}&gt;</span>
                 </p>
-                <p className="text-xs text-text-tertiary">{renderable.date}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <Button size="sm" prefix={<Reply />} onClick={openReply}>
                     Reply
                   </Button>
                   <Button size="sm" outlined prefix={<Archive />}
-                    onClick={() => void act(() => api.modifyEmail(selectedId, [], ["INBOX"]), "Archived")}>
+                    onClick={() => void act(() => modifyAll(threadMessages.map((m) => m.id), [], ["INBOX"]), "Archived")}>
                     Archive
                   </Button>
                   <Button size="sm" outlined prefix={<MailOpen />}
-                    onClick={() => void act(() => api.modifyEmail(selectedId, [], ["UNREAD"]), "Marked read")}>
+                    onClick={() =>
+                      void act(
+                        () => modifyAll(threadMessages.filter(isUnread).map((m) => m.id), [], ["UNREAD"]),
+                        "Marked read",
+                      )}>
                     Mark read
                   </Button>
                   <Button size="sm" outlined prefix={<Star />}
-                    onClick={() => void act(() => api.modifyEmail(selectedId, ["STARRED"], []), "Starred")}>
+                    onClick={() => void act(() => api.modifyEmail(latest.id, ["STARRED"], []), "Starred")}>
                     Star
                   </Button>
                   <Button size="sm" outlined prefix={<Trash2 />}
-                    onClick={() => setPendingTrash(selectedId)}>
+                    onClick={() => setPendingTrash(selectedThreadId)}>
                     Trash
                   </Button>
                 </div>
               </div>
-              <EmailReader message={renderable} />
+              <EmailThread messages={threadMessages} />
             </div>
           )}
         </div>
@@ -243,14 +270,14 @@ export default function EmailPage() {
         open={pendingTrash !== null}
         onCancel={() => setPendingTrash(null)}
         onConfirm={() => {
-          const id = pendingTrash!;
+          const ids = threadMessages.map((m) => m.id);
           setPendingTrash(null);
           setSelectedId(null);
-          void act(() => api.trashEmail(id), "Moved to Trash");
+          void act(() => Promise.all(ids.map((id) => api.trashEmail(id))), "Moved to Trash");
         }}
         loading={false}
-        title="Move to Trash?"
-        description="This moves the message to Gmail Trash. It's recoverable from Gmail for 30 days."
+        title="Move conversation to Trash?"
+        description="This moves every message in the conversation to Gmail Trash. It's recoverable from Gmail for 30 days."
         confirmLabel="Trash"
         cancelLabel="Cancel"
       />

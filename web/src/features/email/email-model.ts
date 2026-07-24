@@ -69,6 +69,22 @@ export interface RenderableMessage {
   hasRemoteContent: boolean;
 }
 
+/** A Gmail message is unread while it still carries the UNREAD label. */
+export function isUnread(message: GmailMessage): boolean {
+  return (message.labelIds ?? []).includes("UNREAD");
+}
+
+/** Which messages in a thread should open by default: the last one, plus any
+ *  still unread. Returns the set of their ids. Older, already-read messages
+ *  stay collapsed so a long conversation reads as a tidy stack. */
+export function defaultExpanded(messages: GmailMessage[]): Set<string> {
+  const open = new Set<string>();
+  for (const m of messages) if (isUnread(m)) open.add(m.id);
+  const last = messages[messages.length - 1];
+  if (last) open.add(last.id);
+  return open;
+}
+
 export function toRenderable(message: GmailMessage): RenderableMessage {
   const { text, html } = extractBodies(message.payload);
   return {

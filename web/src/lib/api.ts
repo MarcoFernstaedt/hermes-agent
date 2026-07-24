@@ -514,6 +514,13 @@ export interface GmailPayload {
   parts?: GmailPayload[];
 }
 
+/** Raw Gmail thread (format=full) — an ordered list of its messages. */
+export interface GmailThread {
+  id: string;
+  historyId?: string;
+  messages?: GmailMessage[];
+}
+
 export interface EmailSendBody {
   to: string[];
   subject?: string;
@@ -817,6 +824,8 @@ export const api = {
     }),
   getEmailMessage: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}?fmt=${fmt}`),
+  getEmailThread: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
+    fetchJSON<GmailThread>(`/api/email/threads/${encodeURIComponent(id)}?fmt=${fmt}`),
   modifyEmail: (id: string, add: string[] = [], remove: string[] = []) =>
     fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/modify`, {
       method: "POST",
