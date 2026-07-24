@@ -104,11 +104,49 @@ def test_jobs_routes_require_authentication(jobs_db, packet_root, monkeypatch):
         == 401
     )
     assert client.get("/api/jobs/1/assets/1").status_code == 401
+    assert client.get("/api/jobs/1/history").status_code == 401
+
+
+def test_job_history_endpoint_returns_transitions(jobs_db, packet_root, monkeypatch):
+    client = _router_client(jobs_db, packet_root, monkeypatch)
+    headers = {"x-test-auth": "ok"}
+
+    # No transitions yet → empty list, 200.
+    empty = client.get("/api/jobs/1/history", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json() == {"events": []}
+
+    # Record a transition, then it appears in history.
+    moved = client.patch(
+        "/api/jobs/1/status", json=_status_payload("applied"), headers=headers
+    )
+    assert moved.status_code == 200
+    hist = client.get("/api/jobs/1/history", headers=headers)
+    assert hist.status_code == 200
+    events = hist.json()["events"]
+    assert events[0]["to_status"] == "applied"
+
+    # Unknown job → 404.
+    assert client.get("/api/jobs/999999/history", headers=headers).status_code == 404
 
 
 def test_jobs_list_summary_and_asset_contract(jobs_db, packet_root, monkeypatch):
     client = _router_client(jobs_db, packet_root, monkeypatch)
     headers = {"x-test-auth": "ok"}
+
+    # The router resolves freshness against the real clock (no injectable now),
+    # so anchor the seed's validation to "just now" to keep this contract test
+    # time-independent — freshness semantics themselves are covered at the
+    # repository level with an explicit `now`.
+    import sqlite3
+    from datetime import datetime, timezone
+
+    recent = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(jobs_db) as connection:
+        connection.execute(
+            "UPDATE validation_events SET checked_at = ? WHERE job_id = 1", (recent,)
+        )
+        connection.commit()
 
     listing = client.get("/api/jobs?q=support&freshness=active", headers=headers)
     summary = client.get("/api/jobs/summary", headers=headers)

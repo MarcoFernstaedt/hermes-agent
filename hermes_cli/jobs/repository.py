@@ -307,6 +307,36 @@ class JobRepository:
             "as_of": current.isoformat().replace("+00:00", "Z"),
         }
 
+    def status_history(self, job_id: int, *, limit: int = 100) -> list[dict]:
+        """The recorded stage transitions for one job, newest first. Reads the
+        ``status_events`` log written by ``transition_status`` so the UI can
+        show how (and when) a job moved through the pipeline."""
+        with self._connect(read_only=True) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if exists is None:
+                raise JobNotFoundError("job not found")
+            rows = connection.execute(
+                """
+                SELECT from_status, to_status, changed_at, actor
+                FROM status_events
+                WHERE job_id = ?
+                ORDER BY changed_at DESC, id DESC
+                LIMIT ?
+                """,
+                (job_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [
+            {
+                "from_status": row["from_status"],
+                "to_status": row["to_status"],
+                "changed_at": row["changed_at"],
+                "actor": row["actor"],
+            }
+            for row in rows
+        ]
+
     def transition_status(
         self,
         job_id: int,

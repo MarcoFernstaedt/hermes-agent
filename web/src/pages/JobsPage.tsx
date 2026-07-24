@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { JobHistory } from "@/components/JobHistory";
 import {
   JOB_STATUSES,
   commitJobStatus,
@@ -444,6 +445,7 @@ export function JobsView({
                             >{pending ? "Updating…" : "Update status"}</Button>
                           </div>
                           {updateError && updateErrorJobId === role.id && <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p>}
+                          <JobHistory jobId={role.id} />
                         </Card>
                       );
                     })}

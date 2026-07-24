@@ -99,6 +99,17 @@ export interface JobStatusObservation {
   expected_updated_at: string;
 }
 
+export interface JobStatusEvent {
+  from_status: string;
+  to_status: string;
+  changed_at: string;
+  actor: string;
+}
+
+export interface JobHistoryResponse {
+  events: JobStatusEvent[];
+}
+
 type UpdateJobStatus = (
   jobId: number,
   status: JobStatus,

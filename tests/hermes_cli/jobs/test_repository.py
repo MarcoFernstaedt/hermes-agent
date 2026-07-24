@@ -489,6 +489,41 @@ def test_status_transition_rejects_a_stale_observation_without_overwriting(jobs_
     assert events == [("packet_ready_not_applied", "applied")]
 
 
+def test_status_history_returns_events_newest_first(jobs_db):
+    from hermes_cli.jobs.repository import JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    first = repository.transition_status(
+        1,
+        "applied",
+        expected_status="packet_ready_not_applied",
+        expected_updated_at="2026-07-17T00:00:00Z",
+        changed_at=datetime(2026, 7, 17, 13, tzinfo=timezone.utc),
+    )
+    repository.transition_status(
+        1,
+        "interviewing",
+        expected_status="applied",
+        expected_updated_at=first["updated_at"],
+        changed_at=datetime(2026, 7, 18, 9, tzinfo=timezone.utc),
+    )
+
+    history = repository.status_history(1)
+    assert [e["to_status"] for e in history] == ["interviewing", "applied"]
+    assert history[0]["from_status"] == "applied"
+    assert history[0]["actor"] == "dashboard"
+
+
+def test_status_history_unknown_job_raises(jobs_db):
+    from hermes_cli.jobs.repository import JobNotFoundError, JobRepository
+
+    repository = JobRepository(jobs_db)
+    repository.migrate()
+    with pytest.raises(JobNotFoundError):
+        repository.status_history(999999)
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [

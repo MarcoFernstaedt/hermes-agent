@@ -22,6 +22,7 @@ const BASE = HERMES_BASE_PATH;
 import type { DashboardTheme } from "@/themes/types";
 import { buildJobsQuery } from "@/lib/jobs";
 import type {
+  JobHistoryResponse,
   JobStatus,
   JobStatusObservation,
   JobStatusUpdate,
@@ -943,6 +944,8 @@ export const api = {
   getJobs: (filters: JobsFilters) =>
     fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
   getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+  getJobHistory: (jobId: number) =>
+    fetchJSON<JobHistoryResponse>(`/api/jobs/${jobId}/history`),
   updateJobStatus: (
     jobId: number,
     status: JobStatus,

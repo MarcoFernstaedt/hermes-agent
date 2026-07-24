@@ -129,6 +129,18 @@ def create_jobs_router(authorize: Authorize, *, initialize: bool = True) -> APIR
         except sqlite3.OperationalError as exc:
             _raise_availability(exc)
 
+    @router.get("/{job_id}/history")
+    def get_history(job_id: int, request: Request) -> dict:
+        authorize(request)
+        repository, _ = _services()
+        try:
+            events = repository.status_history(job_id)
+        except JobNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found") from None
+        except sqlite3.OperationalError as exc:
+            _raise_availability(exc)
+        return {"events": events}
+
     @router.patch("/{job_id}/status", response_model=None)
     def update_status(
         job_id: int, body: StatusUpdateRequest, request: Request
