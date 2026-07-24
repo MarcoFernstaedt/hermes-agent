@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Boxes } from "lucide-react";
+import { Boxes, Briefcase, CheckCircle2, Clock, TrendingUp } from "lucide-react";
+import { Button } from "@nous-research/ui/ui/components/button";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { DataTable, EmptyState, type DataColumn } from "@/blocks";
+import {
+  DataTable,
+  EmptyState,
+  FieldGrid,
+  RecordHeader,
+  StatBar,
+  type DataColumn,
+  type FieldDef,
+} from "@/blocks";
 import { cn } from "@/lib/utils";
 
 /**
@@ -71,6 +80,17 @@ export default function BlocksGalleryPage() {
     [],
   );
 
+  const recordFields = useMemo<FieldDef<DemoRow>[]>(
+    () => [
+      { name: "company", label: "Company", type: "text" },
+      { name: "role", label: "Role", type: "text" },
+      { name: "status", label: "Status", type: "select" },
+      { name: "salary", label: "Salary", type: "currency" },
+      { name: "applied", label: "Applied", type: "date" },
+    ],
+    [],
+  );
+
   const data = big ? makeRows(2000) : rows;
 
   const editCell = (rowId: string, columnId: string, value: string) => {
@@ -90,6 +110,42 @@ export default function BlocksGalleryPage() {
           </p>
         </div>
       </header>
+
+      <section aria-labelledby="statbar-heading" className="flex flex-col gap-2">
+        <h2 id="statbar-heading" className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          StatBar
+        </h2>
+        <StatBar
+          stats={[
+            { label: "Tracked", value: data.length, icon: Briefcase, tone: "gold" },
+            { label: "Applied", value: 4, icon: CheckCircle2, tone: "positive" },
+            { label: "In stage > 14d", value: 2, icon: Clock, tone: "warning" },
+            { label: "Response rate", value: "31%", icon: TrendingUp },
+          ]}
+        />
+      </section>
+
+      <section aria-labelledby="record-heading" className="flex flex-col gap-2">
+        <h2 id="record-heading" className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          RecordHeader + FieldGrid
+        </h2>
+        <div className="rounded-lg border border-border p-4">
+          <RecordHeader
+            title={`${data[0].role} — ${data[0].company}`}
+            subtitle="Applied via employer site"
+            status={{ label: data[0].status, tone: "gold" }}
+            actions={
+              <>
+                <Button size="sm" outlined>Advance</Button>
+                <Button size="sm">Open</Button>
+              </>
+            }
+          />
+          <div className="pt-3">
+            <FieldGrid fields={recordFields} record={data[0]} />
+          </div>
+        </div>
+      </section>
 
       <section aria-labelledby="datatable-heading" className="flex min-h-0 flex-col gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
