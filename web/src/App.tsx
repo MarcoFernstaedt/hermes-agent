@@ -127,6 +127,7 @@ const MediaPage = lazy(() => import("@/features/media/MediaPage"));
 const EmailPage = lazy(() => import("@/features/email/EmailPage"));
 const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
 const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
+const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -200,6 +201,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/blocks": BlocksGalleryPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -793,6 +795,17 @@ export default function App() {
           navigate("/vault");
           closeMobile();
           emitIntent("vault:search");
+        },
+      },
+      {
+        id: "action:blocks-gallery",
+        label: "Open blocks gallery",
+        hint: actionHint,
+        keywords: "blocks gallery datatable components ui catalogue intelligence hub",
+        icon: Package,
+        run: () => {
+          navigate("/blocks");
+          closeMobile();
         },
       },
       {
