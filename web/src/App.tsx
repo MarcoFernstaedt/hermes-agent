@@ -131,7 +131,9 @@ const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
 const CapabilityArea = lazy(() =>
   import("@/capabilities/CapabilityArea").then((m) => ({ default: m.CapabilityArea })),
 );
-import { CAPABILITIES, capabilityPath } from "@/capabilities/registry";
+import { capabilityPath } from "@/capabilities/registry";
+import { useCapabilities } from "@/capabilities/useCapabilities";
+import type { Capability } from "@/capabilities/types";
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -209,13 +211,17 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
 };
 
 // Declared capabilities render as routes + nav entries derived entirely from
-// the registry — the "declare, don't hand-wire" payoff of the Capability API.
-const CAPABILITY_ROUTES: Record<string, ComponentType> = Object.fromEntries(
-  CAPABILITIES.map((cap) => [
-    capabilityPath(cap),
-    () => <CapabilityArea capability={cap} />,
-  ]),
-);
+// the server-served declarations — the "declare, don't hand-wire" payoff of the
+// Capability API. The set is fetched at runtime (useCapabilities), so these are
+// built inside the component from that async result rather than at module load.
+function capabilityRoutes(caps: Capability[]): Record<string, ComponentType> {
+  return Object.fromEntries(
+    caps.map((cap) => [
+      capabilityPath(cap),
+      () => <CapabilityArea capability={cap} />,
+    ]),
+  );
+}
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
 // outside <Routes> when embedded chat is on) paints on top; this empty
@@ -490,6 +496,7 @@ export default function App() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
+  const { capabilities } = useCapabilities();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -681,14 +688,14 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...CAPABILITY_ROUTES,
+      ...capabilityRoutes(capabilities),
       ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
-    [embeddedChat],
+    [embeddedChat, capabilities],
   );
 
   const builtinNav = useMemo(() => {
-    const capabilityNav: NavItem[] = CAPABILITIES.map((cap) => ({
+    const capabilityNav: NavItem[] = capabilities.map((cap) => ({
       path: capabilityPath(cap),
       label: cap.label,
       icon: cap.icon ?? Package,
@@ -699,7 +706,7 @@ export default function App() {
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+  }, [embeddedChat, showTokenAnalytics, capabilities]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),

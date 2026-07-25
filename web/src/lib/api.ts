@@ -530,6 +530,58 @@ export interface EntityListResponse<T = Record<string, unknown>> {
   total: number;
 }
 
+/**
+ * A capability declaration as served by GET /api/capabilities — the wire shape
+ * of the canonical JSON in hermes_cli/capabilities/definitions. Snake-case
+ * fields mirror the JSON; the frontend registry maps this into the richer
+ * `Capability` (icon string → lucide component, title_field → titleField).
+ */
+export interface CapabilityFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface CapabilityFieldDef {
+  name: string;
+  label?: string;
+  type: string;
+  required?: boolean;
+  options?: CapabilityFieldOption[];
+}
+
+export interface CapabilityLifecycleDef {
+  field: string;
+  states: string[];
+  initial: string;
+  transitions: Array<{ from: string; to: string[] }>;
+}
+
+export interface CapabilityViewDef {
+  id: string;
+  kind: "board" | "table";
+  groupBy?: string;
+  columns?: string[];
+  default?: boolean;
+}
+
+export interface CapabilityDef {
+  id: string;
+  label: string;
+  icon?: string;
+  group?: string;
+  entity?: string;
+  title_field: string;
+  subtitle_field?: string;
+  fields: CapabilityFieldDef[];
+  lifecycle?: CapabilityLifecycleDef;
+  views: CapabilityViewDef[];
+  agent?: { expose?: string[] };
+}
+
+export interface CapabilitiesResponse {
+  capabilities: CapabilityDef[];
+}
+
 /** Raw Gmail thread (format=full) — an ordered list of its messages. */
 export interface GmailThread {
   id: string;
@@ -996,6 +1048,9 @@ export const api = {
       `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     ),
+
+  // -- Capabilities (declarations served for dynamic UI wiring) -----------
+  getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
   updateJobStatus: (
     jobId: number,
     status: JobStatus,

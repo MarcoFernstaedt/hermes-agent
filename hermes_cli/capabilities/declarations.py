@@ -2,45 +2,41 @@
 
 Kept deliberately small and dependency-free so the agent-tool generator
 (tools/capability_tools.py) and its tests can import it without pulling in the
-web server. The declarations mirror web/src/capabilities/registry.ts; the two
-should be kept in step until a single shared JSON source replaces both.
+web server. The declarations are the single source: JSON documents under
+``definitions/`` that both this Python side and the dashboard UI (via GET
+/api/capabilities) read — a capability is authored once and consumed twice.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
-# Each capability: id/entity, title field, declared fields, an optional
-# lifecycle (status field + states + legal transitions), and which operations
-# the agent may perform. Note: "delete" is intentionally never exposed — a
-# destructive op stays fail-safe (ALWAYS_APPROVAL / manual), matching the line
-# held for send/trash elsewhere.
-CAPABILITIES: list[dict[str, Any]] = [
-    {
-        "id": "reading",
-        "label": "Reading",
-        "entity": "reading",
-        "title_field": "title",
-        "fields": [
-            {"name": "title", "type": "text", "required": True},
-            {"name": "author", "type": "text"},
-            {"name": "url", "type": "url"},
-            {"name": "status", "type": "select"},
-            {"name": "tags", "type": "tags"},
-            {"name": "notes", "type": "markdown"},
-        ],
-        "lifecycle": {
-            "field": "status",
-            "states": ["to_read", "reading", "done", "abandoned"],
-            "initial": "to_read",
-            "transitions": [
-                {"from": "to_read", "to": ["reading", "abandoned"]},
-                {"from": "reading", "to": ["done", "abandoned"]},
-                {"from": "*", "to": ["to_read"]},
-            ],
-        },
-        "agent": {"expose": ["list", "get", "create", "advance"]},
-    },
-]
+# The canonical declarations are JSON documents in ``definitions/`` — the single
+# source authored once and consumed by both the agent-tool generator (here) and
+# the dashboard UI (served via GET /api/capabilities). Each declares the entity,
+# fields, an optional lifecycle (status field + states + legal transitions),
+# views, and which operations the agent may perform. Note: "delete" is never
+# exposed — a destructive op stays fail-safe (ALWAYS_APPROVAL / manual),
+# matching the line held for send/trash elsewhere.
+
+_DEFINITIONS_DIR = Path(__file__).parent / "definitions"
+
+
+def load_capabilities() -> list[dict[str, Any]]:
+    """Load every capability definition JSON, sorted by id for stable order."""
+    caps: list[dict[str, Any]] = []
+    if not _DEFINITIONS_DIR.is_dir():
+        return caps
+    for path in sorted(_DEFINITIONS_DIR.glob("*.json")):
+        try:
+            caps.append(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return caps
+
+
+CAPABILITIES: list[dict[str, Any]] = load_capabilities()
 
 
 def legal_transitions(lifecycle: dict[str, Any], from_status: str) -> list[str]:
