@@ -27,6 +27,13 @@ export interface FieldDef<T = Record<string, unknown>> {
   options?: Array<{ value: string; label: string }>;
   /** Optional custom value renderer for the read surface. */
   render?: (row: T) => ReactNode;
+  // -- form-only hints (ignored by the read surface) --
+  /** Field must have a value on the edit form. */
+  required?: boolean;
+  /** Placeholder text for the input. */
+  placeholder?: string;
+  /** Render read-only in the form. */
+  readOnly?: boolean;
 }
 
 /** Format a raw field value for read display based on its declared type. */

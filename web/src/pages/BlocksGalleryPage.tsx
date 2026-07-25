@@ -7,6 +7,7 @@ import {
   DataTable,
   EmptyState,
   FieldGrid,
+  FormFromSchema,
   RecordHeader,
   StatBar,
   type DataColumn,
@@ -91,6 +92,25 @@ export default function BlocksGalleryPage() {
     [],
   );
 
+  const formFields = useMemo<FieldDef[]>(
+    () => [
+      { name: "company", label: "Company", type: "text", required: true, placeholder: "Acme" },
+      { name: "role", label: "Role", type: "text", required: true },
+      {
+        name: "status",
+        label: "Status",
+        type: "select",
+        options: STATUSES.map((s) => ({ value: s, label: s })),
+      },
+      { name: "salary", label: "Salary", type: "currency", placeholder: "120000" },
+      { name: "site", label: "Posting URL", type: "url", placeholder: "https://…" },
+      { name: "remote", label: "Remote", type: "boolean" },
+      { name: "tags", label: "Tags", type: "tags" },
+    ],
+    [],
+  );
+  const [submitted, setSubmitted] = useState<Record<string, unknown> | null>(null);
+
   const data = big ? makeRows(2000) : rows;
 
   const editCell = (rowId: string, columnId: string, value: string) => {
@@ -143,6 +163,39 @@ export default function BlocksGalleryPage() {
           />
           <div className="pt-3">
             <FieldGrid fields={recordFields} record={data[0]} />
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="form-heading" className="flex flex-col gap-2">
+        <h2 id="form-heading" className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          FormFromSchema
+        </h2>
+        <p className="text-xs text-text-tertiary">
+          Generated from a FieldDef[] with Zod validation. Company and Role are
+          required; the URL is shape-checked; tags are comma-separated.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-lg border border-border p-4">
+            <FormFromSchema
+              fields={formFields}
+              onSubmit={setSubmitted}
+              submitLabel="Add job"
+            />
+          </div>
+          <div className="rounded-lg border border-border p-4">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+              Submitted values
+            </h3>
+            {submitted ? (
+              <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-text-secondary">
+                {JSON.stringify(submitted, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-xs text-text-tertiary">
+                Submit the form to see the validated, typed values here.
+              </p>
+            )}
           </div>
         </div>
       </section>
