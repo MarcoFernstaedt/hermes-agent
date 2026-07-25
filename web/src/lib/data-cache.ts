@@ -39,6 +39,19 @@ function ensure<T>(key: string): CacheEntry<T> {
   return entry;
 }
 
+/**
+ * Replace a key's entry with a *new* object carrying `patch` over the current
+ * values. Entries are immutable so `useData`'s useSyncExternalStore snapshot
+ * (the entry reference) actually changes on update — mutating in place would
+ * leave the reference identical and React would skip the re-render, stranding
+ * a component that has no other reason to re-render on the loading state.
+ */
+function replace<T>(key: string, patch: Partial<CacheEntry<T>>): CacheEntry<T> {
+  const next = { ...ensure<T>(key), ...patch } as CacheEntry<T>;
+  _cache.set(key, next as CacheEntry);
+  return next;
+}
+
 function emit(key: string): void {
   const ls = _listeners.get(key);
   if (ls) for (const fn of [...ls]) fn();
@@ -78,42 +91,37 @@ export function fetchKey<T>(
     return Promise.resolve(entry.data as T);
   }
 
-  entry.isValidating = true;
-  emit(key);
-
   const p = (async () => {
     try {
       const data = await fetcher();
-      entry.data = data;
-      entry.error = undefined;
-      entry.updatedAt = Date.now();
+      replace<T>(key, {
+        data,
+        error: undefined,
+        updatedAt: Date.now(),
+        promise: undefined,
+        isValidating: false,
+      });
+      emit(key);
       return data;
     } catch (err) {
-      entry.error = err;
-      throw err;
-    } finally {
-      entry.promise = undefined;
-      entry.isValidating = false;
+      replace<T>(key, { error: err, promise: undefined, isValidating: false });
       emit(key);
+      throw err;
     }
   })();
 
-  entry.promise = p;
+  replace<T>(key, { promise: p, isValidating: true });
+  emit(key);
   return p;
 }
 
 /** Optimistically set (or clear) a key's data and notify subscribers. Passing
  *  no value clears the entry so the next read refetches. */
 export function mutate<T>(key: string, data?: T): void {
-  const entry = ensure<T>(key);
   if (arguments.length < 2) {
-    entry.data = undefined;
-    entry.updatedAt = 0;
-    entry.error = undefined;
+    replace<T>(key, { data: undefined, updatedAt: 0, error: undefined });
   } else {
-    entry.data = data;
-    entry.updatedAt = Date.now();
-    entry.error = undefined;
+    replace<T>(key, { data, updatedAt: Date.now(), error: undefined });
   }
   emit(key);
 }

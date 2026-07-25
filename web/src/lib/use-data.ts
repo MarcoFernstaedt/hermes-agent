@@ -26,8 +26,10 @@ export interface UseDataResult<T> {
   isLoading: boolean;
   /** True whenever a fetch (initial or background) is in flight. */
   isValidating: boolean;
-  /** Force a revalidation now. */
-  refetch: () => Promise<T | undefined>;
+  /** Revalidate now. Pass `{ force: true }` to bypass the dedupe window —
+   *  needed right after a mutation, where the just-written change must be
+   *  fetched even though the previous read is still "fresh". */
+  refetch: (opts?: { force?: boolean }) => Promise<T | undefined>;
   /** Optimistically set (or, with no arg, clear) the cached value. */
   mutate: (data?: T) => void;
 }
@@ -61,12 +63,19 @@ export function useData<T>(
     () => (key ? getEntry<T>(key) : undefined),
   );
 
-  const revalidate = useCallback((): Promise<T | undefined> => {
-    if (!key || paused) return Promise.resolve(entry?.data);
-    return fetchKey<T>(key, () => fetcherRef.current(), dedupeMs).catch(
-      () => getEntry<T>(key).data,
-    );
-  }, [key, paused, dedupeMs, entry?.data]);
+  const revalidate = useCallback(
+    (opts?: { force?: boolean }): Promise<T | undefined> => {
+      if (!key || paused) return Promise.resolve(entry?.data);
+      // force → dedupeMs 0 so a post-mutation refetch always hits the network,
+      // while the cached value is kept until the fresh one lands (no flash).
+      return fetchKey<T>(
+        key,
+        () => fetcherRef.current(),
+        opts?.force ? 0 : dedupeMs,
+      ).catch(() => getEntry<T>(key).data);
+    },
+    [key, paused, dedupeMs, entry?.data],
+  );
 
   // Initial + key-change fetch.
   useEffect(() => {

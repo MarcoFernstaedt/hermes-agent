@@ -128,6 +128,10 @@ const EmailPage = lazy(() => import("@/features/email/EmailPage"));
 const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
 const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
 const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
+const CapabilityArea = lazy(() =>
+  import("@/capabilities/CapabilityArea").then((m) => ({ default: m.CapabilityArea })),
+);
+import { CAPABILITIES, capabilityPath } from "@/capabilities/registry";
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -203,6 +207,15 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/docs": DocsPage,
   "/blocks": BlocksGalleryPage,
 };
+
+// Declared capabilities render as routes + nav entries derived entirely from
+// the registry — the "declare, don't hand-wire" payoff of the Capability API.
+const CAPABILITY_ROUTES: Record<string, ComponentType> = Object.fromEntries(
+  CAPABILITIES.map((cap) => [
+    capabilityPath(cap),
+    () => <CapabilityArea capability={cap} />,
+  ]),
+);
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
 // outside <Routes> when embedded chat is on) paints on top; this empty
@@ -668,15 +681,21 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
+      ...CAPABILITY_ROUTES,
       ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
     [embeddedChat],
   );
 
   const builtinNav = useMemo(() => {
+    const capabilityNav: NavItem[] = CAPABILITIES.map((cap) => ({
+      path: capabilityPath(cap),
+      label: cap.label,
+      icon: cap.icon ?? Package,
+    }));
     const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
+      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST, ...capabilityNav]
+      : [...BUILTIN_NAV_REST, ...capabilityNav];
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
