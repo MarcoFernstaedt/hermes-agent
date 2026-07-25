@@ -527,7 +527,16 @@ app.include_router(_create_life_router(_require_token, initialize=False))
 app.include_router(_create_email_router(_require_token))
 app.include_router(_create_calendar_router(_require_token))
 app.include_router(_create_vault_router(_require_token))
-app.include_router(_create_entities_router(_require_token, initialize=False))
+async def _publish_entity_event(channel: str, payload: dict) -> None:
+    """Fan an entity change out to /api/events subscribers on the entities channel."""
+    await _broadcast_event(app, channel, json.dumps(payload, separators=(",", ":")))
+
+
+app.include_router(
+    _create_entities_router(
+        _require_token, publish=_publish_entity_event, initialize=False
+    )
+)
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks

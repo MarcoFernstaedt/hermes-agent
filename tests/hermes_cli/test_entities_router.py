@@ -8,7 +8,7 @@ from hermes_cli.entities.router import create_entities_router
 from hermes_cli.entities.store import EntityStore
 
 
-def _client(tmp_path, *, gated=False):
+def _client(tmp_path, *, gated=False, events=None):
     store = EntityStore(tmp_path / "entities.sqlite3")
     store.migrate()
 
@@ -16,10 +16,16 @@ def _client(tmp_path, *, gated=False):
         if request.headers.get("x-test-auth") != "ok":
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    async def publish(channel: str, payload: dict) -> None:
+        if events is not None:
+            events.append((channel, payload))
+
     app = FastAPI()
     app.state.auth_required = gated
     app.include_router(
-        create_entities_router(authorize, store_factory=lambda: store)
+        create_entities_router(
+            authorize, store_factory=lambda: store, publish=publish
+        )
     )
     return TestClient(app)
 
@@ -89,6 +95,26 @@ def test_type_mismatch_is_not_found(tmp_path):
     eid = c.post("/api/entities/job", headers=OK, json={"data": {}}).json()["id"]
     # Same id under the wrong type path → 404.
     assert c.get(f"/api/entities/note/{eid}", headers=OK).status_code == 404
+
+
+def test_writes_emit_entity_events(tmp_path):
+    events: list = []
+    c = _client(tmp_path, events=events)
+    eid = c.post("/api/entities/job", headers=OK, json={"data": {"s": "a"}}).json()["id"]
+    c.patch(
+        f"/api/entities/job/{eid}",
+        headers=OK,
+        json={"data": {"s": "b"}, "expected_version": 1},
+    )
+    c.delete(f"/api/entities/job/{eid}", headers=OK)
+
+    actions = [(ch, p["type"], p["action"]) for ch, p in events]
+    assert actions == [
+        ("entities", "job", "created"),
+        ("entities", "job", "updated"),
+        ("entities", "job", "deleted"),
+    ]
+    assert all(p["kind"] == "entity" and p["id"] == eid for _, p in events)
 
 
 def test_writes_require_same_origin_when_gated(tmp_path):

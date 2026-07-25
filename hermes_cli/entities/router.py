@@ -7,7 +7,7 @@ record so the client can rebase.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -67,6 +67,7 @@ def create_entities_router(
     authorize: Authorize,
     *,
     store_factory: Optional[Callable[[], EntityStore]] = None,
+    publish: Optional[Callable[[str, dict], Awaitable[None]]] = None,
     initialize: bool = True,
 ) -> APIRouter:
     if initialize and store_factory is None:
@@ -78,6 +79,25 @@ def create_entities_router(
         if _STORE is None:
             raise HTTPException(status_code=503, detail="Entity store not configured")
         return _STORE
+
+    async def _emit(entity_type: str, entity_id: str, action: str, version: int) -> None:
+        """Broadcast an entity change so live lists/boards can refresh. Failures
+        are swallowed — a dropped notification must never fail the write."""
+        if publish is None:
+            return
+        try:
+            await publish(
+                "entities",
+                {
+                    "kind": "entity",
+                    "type": entity_type,
+                    "id": entity_id,
+                    "action": action,
+                    "version": version,
+                },
+            )
+        except Exception:  # pragma: no cover - best-effort fanout
+            pass
 
     router = APIRouter(prefix="/api/entities", tags=["entities"])
 
@@ -103,15 +123,17 @@ def create_entities_router(
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @router.post("/{entity_type}")
-    def create_entity(
+    async def create_entity(
         entity_type: str, request: Request, body: EntityCreate = Body(...)
     ) -> dict:
         authorize(request)
         _require_same_origin(request)
         try:
-            return _store().create(entity_type, body.data)
+            created = _store().create(entity_type, body.data)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        await _emit(created["type"], created["id"], "created", created["version"])
+        return created
 
     @router.get("/{entity_type}/{entity_id}")
     def get_entity(entity_type: str, entity_id: str, request: Request) -> dict:
@@ -122,7 +144,7 @@ def create_entities_router(
         return entity
 
     @router.patch("/{entity_type}/{entity_id}", response_model=None)
-    def update_entity(
+    async def update_entity(
         entity_type: str,
         entity_id: str,
         request: Request,
@@ -135,7 +157,7 @@ def create_entities_router(
         if existing is None or existing["type"] != entity_type:
             raise HTTPException(status_code=404, detail="Entity not found")
         try:
-            return store.update(
+            updated = store.update(
                 entity_id, body.data, expected_version=body.expected_version
             )
         except EntityNotFoundError:
@@ -147,9 +169,11 @@ def create_entities_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        await _emit(updated["type"], updated["id"], "updated", updated["version"])
+        return updated
 
     @router.delete("/{entity_type}/{entity_id}")
-    def delete_entity(entity_type: str, entity_id: str, request: Request) -> dict:
+    async def delete_entity(entity_type: str, entity_id: str, request: Request) -> dict:
         authorize(request)
         _require_same_origin(request)
         store = _store()
@@ -157,6 +181,7 @@ def create_entities_router(
         if existing is None or existing["type"] != entity_type:
             raise HTTPException(status_code=404, detail="Entity not found")
         store.delete(entity_id)
+        await _emit(entity_type, entity_id, "deleted", existing["version"])
         return {"deleted": True, "id": entity_id}
 
     return router
