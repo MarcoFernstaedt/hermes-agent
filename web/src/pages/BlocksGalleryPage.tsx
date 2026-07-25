@@ -4,12 +4,14 @@ import { Button } from "@nous-research/ui/ui/components/button";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
 import {
+  BoardView,
   DataTable,
   EmptyState,
   FieldGrid,
   FormFromSchema,
   RecordHeader,
   StatBar,
+  type BoardColumn,
   type DataColumn,
   type FieldDef,
 } from "@/blocks";
@@ -111,6 +113,21 @@ export default function BlocksGalleryPage() {
   );
   const [submitted, setSubmitted] = useState<Record<string, unknown> | null>(null);
 
+  const boardColumns = useMemo<BoardColumn[]>(
+    () => [
+      { id: "saved", label: "Saved" },
+      { id: "applied", label: "Applied", wipLimit: 3 },
+      { id: "screening", label: "Screening" },
+      { id: "interview", label: "Interview" },
+      { id: "offer", label: "Offer" },
+    ],
+    [],
+  );
+  const moveCard = (id: string, toColumn: string) =>
+    setRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, status: toColumn } : r)),
+    );
+
   const data = big ? makeRows(2000) : rows;
 
   const editCell = (rowId: string, columnId: string, value: string) => {
@@ -164,6 +181,33 @@ export default function BlocksGalleryPage() {
           <div className="pt-3">
             <FieldGrid fields={recordFields} record={data[0]} />
           </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="board-heading" className="flex min-h-0 flex-col gap-2">
+        <h2 id="board-heading" className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          BoardView
+        </h2>
+        <p className="text-xs text-text-tertiary">
+          Drag a card to another column to change its stage (Applied has a WIP
+          limit of 3); collapse a column via its header. This is the surface the
+          Jobs pipeline becomes once it's a declared capability.
+        </p>
+        <div className="h-[52vh] min-h-0">
+          <BoardView
+            columns={boardColumns}
+            items={rows}
+            getItemId={(r) => r.id}
+            getColumnId={(r) => r.status}
+            onMove={moveCard}
+            className="h-full"
+            renderCard={(r) => (
+              <div className="text-sm">
+                <div className="font-medium">{r.role}</div>
+                <div className="text-xs text-text-tertiary">{r.company}</div>
+              </div>
+            )}
+          />
         </div>
       </section>
 

@@ -5,6 +5,8 @@
  * docs/plans/intelligence-hub-architecture.md (Phase A).
  */
 export { DataTable, type DataTableProps } from "./DataTable";
+export { BoardView, type BoardViewProps } from "./BoardView";
+export type { BoardColumn } from "./board-model";
 export { RecordHeader, type RecordHeaderProps } from "./RecordHeader";
 export { FieldGrid } from "./FieldGrid";
 export { FormFromSchema } from "./FormFromSchema";
