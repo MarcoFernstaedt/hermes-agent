@@ -27,6 +27,7 @@ import {
   defaultView,
   flatten,
   labelCase,
+  stateLabels,
   tableColumns,
   toData,
   type FlatRecord,
@@ -61,6 +62,11 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
   const view =
     capability.views.find((v) => v.id === viewId) ?? defaultView(capability);
   const lifecycle = capability.lifecycle;
+  // Board columns, the StatBar and toast copy all read a state's human label
+  // from the status field's declared options (falling back to label-casing) so
+  // every surface names a state the same way the edit form's dropdown does.
+  const labels = stateLabels(capability);
+  const stateLabel = (s: string) => labels[s] ?? labelCase(s);
 
   const create = async (values: Record<string, unknown>) => {
     // New records enter the lifecycle at its initial state unless the form set
@@ -96,7 +102,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
     if (!record || !lifecycle) return;
     const from = String(record[lifecycle.field] ?? "");
     if (!canTransition(lifecycle, from, toColumn)) {
-      showToast(`Can't move from ${labelCase(from)} to ${labelCase(toColumn)}`, "error");
+      showToast(`Can't move from ${stateLabel(from)} to ${stateLabel(toColumn)}`, "error");
       refresh();
       return;
     }
@@ -118,7 +124,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
     ? (() => {
         const counts = countByState(records, lifecycle);
         return lifecycle.states.map((s) => ({
-          label: labelCase(s),
+          label: stateLabel(s),
           value: counts[s] ?? 0,
         }));
       })()
@@ -169,7 +175,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
         <div className="h-[62vh] min-h-0">
           <BoardView
             className="h-full"
-            columns={boardColumns(lifecycle)}
+            columns={boardColumns(lifecycle, labels)}
             items={records}
             getItemId={(r) => r.id}
             getColumnId={(r) => String(r[lifecycle.field] ?? "")}

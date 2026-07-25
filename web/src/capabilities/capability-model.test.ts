@@ -8,6 +8,7 @@ import {
   flatten,
   labelCase,
   legalTransitions,
+  stateLabels,
   tableColumns,
 } from "./capability-model";
 import type { Capability, Lifecycle } from "./types";
@@ -58,13 +59,46 @@ describe("capability-model", () => {
     expect(cols[1].align).toBe("right"); // currency
   });
 
-  it("builds board columns from lifecycle states", () => {
+  it("builds board columns from lifecycle states (label-cased fallback)", () => {
     expect(boardColumns(lifecycle).map((c) => c.label)).toEqual([
       "Saved",
       "Applied",
       "Offer",
       "Archived",
     ]);
+  });
+
+  it("prefers the status field's option labels for state labels", () => {
+    const withOptions: Capability = {
+      ...cap,
+      fields: [
+        { name: "company", label: "Company", type: "text" },
+        {
+          name: "status",
+          label: "Status",
+          type: "select",
+          options: [
+            { value: "saved", label: "Saved" },
+            { value: "applied", label: "Applied now" },
+            { value: "offer", label: "Got offer" },
+          ],
+        },
+      ],
+    };
+    const labels = stateLabels(withOptions);
+    expect(labels).toEqual({ saved: "Saved", applied: "Applied now", offer: "Got offer" });
+    // Board headers use the option labels, and any state without an option
+    // ("archived") falls back to label-casing.
+    expect(boardColumns(lifecycle, labels).map((c) => c.label)).toEqual([
+      "Saved",
+      "Applied now",
+      "Got offer",
+      "Archived",
+    ]);
+  });
+
+  it("stateLabels is empty when there is no lifecycle", () => {
+    expect(stateLabels({ ...cap, lifecycle: undefined })).toEqual({});
   });
 
   it("computes legal transitions honouring '*'", () => {

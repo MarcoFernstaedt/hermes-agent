@@ -53,9 +53,29 @@ export function tableColumns(cap: Capability, view: CapabilityView): DataColumn<
   });
 }
 
-/** Board columns come from the lifecycle states (label-cased). */
-export function boardColumns(lifecycle: Lifecycle): BoardColumn[] {
-  return lifecycle.states.map((s) => ({ id: s, label: labelCase(s) }));
+/**
+ * Human labels for the lifecycle states, taken from the status field's declared
+ * `select` options so the board headers read exactly like the edit form's
+ * dropdown ("To do", not a label-cased "Todo"). States without a matching
+ * option fall back to label-casing at render time.
+ */
+export function stateLabels(cap: Capability): Record<string, string> {
+  const field = cap.lifecycle ? fieldOf(cap, cap.lifecycle.field) : undefined;
+  const labels: Record<string, string> = {};
+  for (const opt of field?.options ?? []) labels[opt.value] = opt.label;
+  return labels;
+}
+
+/**
+ * Board columns come from the lifecycle states. Labels prefer the status
+ * field's option labels (see `stateLabels`); any state missing one is
+ * label-cased so a column always has a readable header.
+ */
+export function boardColumns(
+  lifecycle: Lifecycle,
+  labels?: Record<string, string>,
+): BoardColumn[] {
+  return lifecycle.states.map((s) => ({ id: s, label: labels?.[s] ?? labelCase(s) }));
 }
 
 /** Legal target states from `from` per the lifecycle (honouring `"*"`). */

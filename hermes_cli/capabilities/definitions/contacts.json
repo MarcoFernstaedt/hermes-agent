@@ -1,0 +1,24 @@
+{
+  "id": "contacts",
+  "label": "Contacts",
+  "icon": "contact",
+  "group": "do",
+  "entity": "contact",
+  "title_field": "name",
+  "subtitle_field": "role",
+  "fields": [
+    { "name": "name", "label": "Name", "type": "text", "required": true },
+    { "name": "role", "label": "Role", "type": "text" },
+    { "name": "org", "label": "Organization", "type": "text" },
+    { "name": "email", "label": "Email", "type": "text" },
+    { "name": "phone", "label": "Phone", "type": "text" },
+    { "name": "url", "label": "Link", "type": "url" },
+    { "name": "tags", "label": "Tags", "type": "tags" },
+    { "name": "notes", "label": "Notes", "type": "markdown" }
+  ],
+  "views": [
+    { "id": "table", "kind": "table", "default": true,
+      "columns": ["name", "role", "org", "email", "tags"] }
+  ],
+  "agent": { "expose": ["list", "get", "create"] }
+}
