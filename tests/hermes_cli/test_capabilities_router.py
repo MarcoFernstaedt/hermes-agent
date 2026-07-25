@@ -28,10 +28,22 @@ def test_serves_declarations():
     assert resp.status_code == 200
     caps = resp.json()["capabilities"]
     ids = {c["id"] for c in caps}
-    assert "reading" in ids
+    # Every declaration authored under definitions/ is served (a new area is a
+    # new JSON file, no code) — assert on the ones that ship today.
+    assert {"reading", "tasks"} <= ids
     reading = next(c for c in caps if c["id"] == "reading")
     # The wire shape the frontend registry maps from.
     assert reading["title_field"] == "title"
     assert reading["lifecycle"]["initial"] == "to_read"
     assert {f["name"] for f in reading["fields"]} >= {"title", "author", "status"}
     assert reading["agent"]["expose"] == ["list", "get", "create", "advance"]
+
+
+def test_serves_wire_shape_for_every_declaration():
+    caps = _client().get("/api/capabilities", headers=OK).json()["capabilities"]
+    # Contract the frontend registry relies on for each served declaration.
+    for cap in caps:
+        assert cap["id"] and cap["label"]
+        assert "title_field" in cap
+        assert isinstance(cap["fields"], list) and cap["fields"]
+        assert isinstance(cap["views"], list) and cap["views"]

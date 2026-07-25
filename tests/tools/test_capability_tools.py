@@ -34,6 +34,13 @@ def test_build_tools_generates_expected_toolset():
     assert names.get("reading_advance") == "approval"
     # Delete is never generated (stays fail-safe).
     assert "reading_delete" not in names
+    # A second declaration (tasks.json) generates its toolset from the same
+    # generator with no bespoke code — reads AUTO, writes APPROVAL, no delete.
+    assert names.get("task_list") == "auto"
+    assert names.get("task_get") == "auto"
+    assert names.get("task_create") == "approval"
+    assert names.get("task_advance") == "approval"
+    assert "task_delete" not in names
 
 
 @pytest.fixture
