@@ -179,9 +179,11 @@ async def _lifespan(app: "FastAPI"):
     from hermes_cli.jobs.router import initialize_jobs
     from hermes_cli.life.router import default_database_path
     from hermes_cli.life.repository import LifeRepository
+    from hermes_cli.entities.router import initialize_entities
 
     initialize_jobs()
     LifeRepository(default_database_path()).migrate()
+    initialize_entities()
 
     # One-time, idempotent import of the Workspace skill's plaintext Google
     # token into the encrypted store. Guarded so a bad/absent legacy file can
@@ -518,12 +520,14 @@ from hermes_cli.life.router import create_life_router as _create_life_router  # 
 from hermes_cli.email.router import create_email_router as _create_email_router  # noqa: E402
 from hermes_cli.calendar.router import create_calendar_router as _create_calendar_router  # noqa: E402
 from hermes_cli.vault.router import create_vault_router as _create_vault_router  # noqa: E402
+from hermes_cli.entities.router import create_entities_router as _create_entities_router  # noqa: E402
 
 app.include_router(_create_jobs_router(_require_token, initialize=False))
 app.include_router(_create_life_router(_require_token, initialize=False))
 app.include_router(_create_email_router(_require_token))
 app.include_router(_create_calendar_router(_require_token))
 app.include_router(_create_vault_router(_require_token))
+app.include_router(_create_entities_router(_require_token, initialize=False))
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks

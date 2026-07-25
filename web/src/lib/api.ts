@@ -515,6 +515,21 @@ export interface GmailPayload {
   parts?: GmailPayload[];
 }
 
+/** A record in the generic entity store (Intelligence Hub spine). */
+export interface Entity<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  data: T;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityListResponse<T = Record<string, unknown>> {
+  items: Entity<T>[];
+  total: number;
+}
+
 /** Raw Gmail thread (format=full) — an ordered list of its messages. */
 export interface GmailThread {
   id: string;
@@ -946,6 +961,41 @@ export const api = {
   getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
   getJobHistory: (jobId: number) =>
     fetchJSON<JobHistoryResponse>(`/api/jobs/${jobId}/history`),
+
+  // -- Entities (generic capability store) --------------------------------
+  listEntities: (type: string, params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return fetchJSON<EntityListResponse>(
+      `/api/entities/${encodeURIComponent(type)}${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getEntity: (type: string, id: string) =>
+    fetchJSON<Entity>(`/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
+  createEntity: (type: string, data: Record<string, unknown>) =>
+    fetchJSON<Entity>(`/api/entities/${encodeURIComponent(type)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+    }),
+  updateEntity: (
+    type: string,
+    id: string,
+    data: Record<string, unknown>,
+    expectedVersion: number,
+  ) =>
+    fetchJSON<Entity>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, expected_version: expectedVersion }),
+      },
+    ),
+  deleteEntity: (type: string, id: string) =>
+    fetchJSON<{ deleted: boolean; id: string }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
   updateJobStatus: (
     jobId: number,
     status: JobStatus,
