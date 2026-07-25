@@ -4,16 +4,21 @@ import { Button } from "@nous-research/ui/ui/components/button";
 
 import { usePageHeader } from "@/contexts/usePageHeader";
 import {
+  applyFilters,
   BoardView,
   DataTable,
   EmptyState,
   FieldGrid,
+  FilterBar,
   FormFromSchema,
   RecordHeader,
   StatBar,
+  ThreePane,
   type BoardColumn,
   type DataColumn,
   type FieldDef,
+  type FilterField,
+  type FilterState,
 } from "@/blocks";
 import { cn } from "@/lib/utils";
 
@@ -112,6 +117,19 @@ export default function BlocksGalleryPage() {
     [],
   );
   const [submitted, setSubmitted] = useState<Record<string, unknown> | null>(null);
+  const [filters, setFilters] = useState<FilterState>({});
+
+  const filterFields = useMemo<FilterField<DemoRow>[]>(
+    () => [
+      {
+        id: "status",
+        label: "Status",
+        accessor: (r) => r.status,
+        options: STATUSES.map((s) => ({ value: s, label: s })),
+      },
+    ],
+    [],
+  );
 
   const boardColumns = useMemo<BoardColumn[]>(
     () => [
@@ -270,17 +288,64 @@ export default function BlocksGalleryPage() {
           Click a header to sort; drag a header edge to resize; double the row
           count to see virtualization; company and role cells are inline-editable.
         </p>
+        {!big && (
+          <FilterBar fields={filterFields} state={filters} onChange={setFilters} />
+        )}
         <div className="h-[60vh] min-h-0">
           <DataTable
             columns={columns}
-            data={data}
+            data={big ? data : applyFilters(rows, filterFields, filters)}
             getRowId={(r) => r.id}
             selectable
             selectedIds={selected}
             onSelectionChange={setSelected}
             onEditCell={big ? undefined : editCell}
             virtualize={big}
-            empty={<EmptyState icon={Boxes} title="No rows" hint="Nothing to show yet." />}
+            empty={<EmptyState icon={Boxes} title="No rows" hint="No jobs match these filters." />}
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="threepane-heading" className="flex min-h-0 flex-col gap-2">
+        <h2 id="threepane-heading" className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          ThreePane
+        </h2>
+        <p className="text-xs text-text-tertiary">
+          List / detail / context layout. Toggle the context pane with the button
+          in the detail header. Each pane scrolls on its own.
+        </p>
+        <div className="h-[40vh] min-h-0">
+          <ThreePane
+            className="h-full"
+            list={
+              <ul className="divide-y divide-border">
+                {rows.slice(0, 8).map((r) => (
+                  <li key={r.id} className="px-3 py-2 text-sm">
+                    <div className="font-medium">{r.role}</div>
+                    <div className="text-xs text-text-tertiary">{r.company}</div>
+                  </li>
+                ))}
+              </ul>
+            }
+            detail={
+              <div className="p-4">
+                <RecordHeader title={`${rows[0].role} — ${rows[0].company}`} status={{ label: rows[0].status, tone: "gold" }} />
+                <div className="pt-3">
+                  <FieldGrid fields={recordFields} record={rows[0]} columns={1} />
+                </div>
+              </div>
+            }
+            context={
+              <div className="p-3">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+                  Related
+                </h3>
+                <p className="text-xs text-text-secondary">
+                  Links, activity and related records land here — this is where a
+                  capability's LinkPanel plugs in.
+                </p>
+              </div>
+            }
           />
         </div>
       </section>
