@@ -35,6 +35,14 @@ class EntityUpdate(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class EntityNotify(BaseModel):
+    """A cross-process change hint (see the /notify route). Carries no data — it
+    only tells open UIs to refetch the entity through the authorized read API."""
+
+    action: str = "updated"
+    version: int = Field(default=0, ge=0)
+
+
 def default_database_path() -> Path:
     return get_hermes_home() / "state" / "entities.sqlite3"
 
@@ -183,5 +191,26 @@ def create_entities_router(
         store.delete(entity_id)
         await _emit(entity_type, entity_id, "deleted", existing["version"])
         return {"deleted": True, "id": entity_id}
+
+    @router.post("/{entity_type}/{entity_id}/notify")
+    async def notify_entity(
+        entity_type: str,
+        entity_id: str,
+        request: Request,
+        body: EntityNotify = Body(default_factory=EntityNotify),
+    ) -> dict:
+        """Rebroadcast an entity change onto the live "entities" channel.
+
+        This exists so a writer in another process — the agent, whose capability
+        tools write straight to the shared store — can make an open board or
+        table pick up its change without a manual refresh. It mutates nothing:
+        it only emits the same hint a UI-initiated write emits, and open tabs
+        then refetch through the fully-authorized read API. No same-origin gate
+        (the caller isn't a browser); the session token still guards it.
+        """
+        authorize(request)
+        action = body.action if body.action in ("created", "updated", "deleted") else "updated"
+        await _emit(entity_type, entity_id, action, body.version)
+        return {"ok": True}
 
     return router

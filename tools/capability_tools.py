@@ -46,6 +46,46 @@ def _store():
     return store
 
 
+def _notify_dashboard(entity: str, entity_id: str, action: str, version: int) -> None:
+    """Best-effort: nudge an open dashboard board/table to refetch this record.
+
+    The capability tools write straight to the shared entity store, bypassing
+    the web server's event bus — so a UI tab wouldn't otherwise learn of an
+    agent write until its next fetch. When the agent runs under the dashboard,
+    ``HERMES_TUI_SIDECAR_URL`` points back at the server (loopback,
+    ``?token=<session token>``); POST the change hint to the entities /notify
+    route so the live "entities" channel fans it out. Everything here is
+    swallowed: a missing URL, a gated bind (no session token to reuse), or a
+    down server just means the tab catches up on its next fetch.
+    """
+    import os
+
+    raw = os.environ.get("HERMES_TUI_SIDECAR_URL")
+    if not raw:
+        return
+    try:
+        import json
+        import urllib.request
+        from urllib.parse import parse_qs, urlsplit
+
+        parts = urlsplit(raw)  # ws://host:port/api/pub?token=...&channel=...
+        token = parse_qs(parts.query).get("token", [None])[0]
+        if not token or not parts.netloc:
+            return  # gated mode authenticates with ?internal=, not reusable here
+        url = f"http://{parts.netloc}/api/entities/{entity}/{entity_id}/notify"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"action": action, "version": version}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Hermes-Session-Token": token},
+            method="POST",
+        )
+        # Bypass the agent HTTPS proxy for this loopback call.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener.open(req, timeout=1.5).read()
+    except Exception:
+        pass
+
+
 def _audit(entity: str, action: str, target: str, detail: dict | None = None) -> None:
     try:
         from hermes_cli import audit_log
@@ -123,6 +163,7 @@ def _make_create(cap: dict[str, Any]) -> Callable:
                 data[lifecycle["field"]] = lifecycle["initial"]
             created = _store().create(entity, data)
             _audit(entity, "create", created["id"], {"data": data})
+            _notify_dashboard(entity, created["id"], "created", created["version"])
             return tool_result({"id": created["id"], "version": created["version"], **created["data"]})
         except Exception as exc:
             return tool_error(f"{entity} create failed: {exc}")
@@ -156,6 +197,7 @@ def _make_advance(cap: dict[str, Any]) -> Callable:
             new_data = {**record["data"], field: to_status}
             updated = store.update(record["id"], new_data, expected_version=record["version"])
             _audit(entity, "advance", record["id"], {"from": current, "to": to_status})
+            _notify_dashboard(entity, updated["id"], "updated", updated["version"])
             return tool_result({"id": updated["id"], "version": updated["version"], **updated["data"]})
         except EntityConflictError:
             return tool_error(f"{entity} changed elsewhere; re-read and retry")

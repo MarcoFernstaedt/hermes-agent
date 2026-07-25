@@ -122,3 +122,33 @@ def test_writes_require_same_origin_when_gated(tmp_path):
     # No origin header on a gated app → 403 for writes.
     resp = c.post("/api/entities/job", headers={"x-test-auth": "ok"}, json={"data": {}})
     assert resp.status_code == 403
+
+
+def test_notify_rebroadcasts_without_writing(tmp_path):
+    events: list = []
+    c = _client(tmp_path, events=events)
+    # A cross-process writer (the agent) hints an already-persisted change.
+    resp = c.post(
+        "/api/entities/task/abc123/notify",
+        headers={"x-test-auth": "ok"},
+        json={"action": "created", "version": 1},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    # It emits the same frame a UI write would, but touches no record.
+    assert events == [
+        ("entities", {"kind": "entity", "type": "task", "id": "abc123", "action": "created", "version": 1})
+    ]
+    assert c.get("/api/entities/task", headers=OK).json()["total"] == 0
+
+
+def test_notify_requires_auth(tmp_path):
+    c = _client(tmp_path)
+    assert c.post("/api/entities/task/x/notify").status_code == 401
+
+
+def test_notify_coerces_unknown_action(tmp_path):
+    events: list = []
+    c = _client(tmp_path, events=events)
+    c.post("/api/entities/task/x/notify", headers={"x-test-auth": "ok"}, json={"action": "bogus"})
+    assert events[0][1]["action"] == "updated"

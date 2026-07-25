@@ -90,6 +90,64 @@ def test_advance_rejects_illegal_transition(temp_store, monkeypatch):
     assert "Cannot move" in out["error"]
 
 
+def test_notify_dashboard_noop_without_env(monkeypatch):
+    import tools.capability_tools as ct
+
+    monkeypatch.delenv("HERMES_TUI_SIDECAR_URL", raising=False)
+    # No URL → returns cleanly, opens nothing.
+    ct._notify_dashboard("task", "id1", "created", 1)
+
+
+def test_notify_dashboard_posts_hint(monkeypatch):
+    import urllib.request
+
+    import tools.capability_tools as ct
+
+    monkeypatch.setenv(
+        "HERMES_TUI_SIDECAR_URL", "ws://127.0.0.1:9119/api/pub?token=SEKRET&channel=tab-7"
+    )
+    captured: dict = {}
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["token"] = req.headers.get("X-hermes-session-token")
+            captured["body"] = req.data
+
+            class _R:
+                def read(self_inner):
+                    return b""
+
+            return _R()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _FakeOpener())
+    ct._notify_dashboard("task", "id1", "created", 3)
+
+    assert captured["url"] == "http://127.0.0.1:9119/api/entities/task/id1/notify"
+    assert captured["method"] == "POST"
+    assert captured["token"] == "SEKRET"
+    assert json.loads(captured["body"]) == {"action": "created", "version": 3}
+
+
+def test_notify_dashboard_skips_gated_internal_credential(monkeypatch):
+    import urllib.request
+
+    import tools.capability_tools as ct
+
+    # Gated binds authenticate the sidecar with ?internal=, not a session token
+    # — nothing to reuse for a REST call, so notify must not attempt a request.
+    monkeypatch.setenv(
+        "HERMES_TUI_SIDECAR_URL", "ws://127.0.0.1:9119/api/pub?internal=CRED&channel=tab-7"
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("must not open a connection without a token")
+
+    monkeypatch.setattr(urllib.request, "build_opener", _boom)
+    ct._notify_dashboard("task", "id1", "created", 1)
+
+
 def test_list_filters_by_status(temp_store, monkeypatch):
     monkeypatch.setattr("hermes_cli.audit_log.record", lambda **kw: None, raising=False)
     a = json.loads(_handler("reading_create")({"title": "A"}))
