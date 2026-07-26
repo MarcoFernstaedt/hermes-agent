@@ -289,3 +289,58 @@ capability isn't *installable/removable* the way the brief demands. The fix is
 small and worth doing: have the module SDK emit a capability as a plugin dir
 (the jobs example), so "declared capability" and "installable module" become the
 same thing rather than two parallel mechanisms.
+
+---
+
+## Verified addendum (corrections found while building the SDK)
+
+Two refinements, verified directly against the source:
+
+1. **Kanban is a *pure dashboard plugin*, not a three-face plugin.** It has **no
+   `plugin.yaml` and no `register(ctx)`**. `plugins/kanban/` is only a
+   `dashboard/` dir: `manifest.json` + `plugin_api.py` (`router = APIRouter()`
+   with `/board`, `/tasks`, …) + JS bundle. Its agent tools live in **core
+   `tools/kanban_tools.py`** (always-on), not the plugin. So the two plugin
+   systems are independent, and a module picks per face: a dashboard tab is a
+   `dashboard/` plugin; agent tools are either core `tools/*.py` (always-on, like
+   kanban and like my `tools/capability_tools.py`) or a `register(ctx)` plugin
+   (opt-in, removable).
+
+2. **A module's backend mounts at `/api/plugins/<name>/`.**
+   `_mount_plugin_api_routes()` includes each `dashboard/plugin_api.py` `router`
+   under that prefix; `_plugin_api_runtime_gate` enforces enable/disable per
+   request. (The manifest `api` field had a since-patched absolute-path RCE —
+   keep module installs to reviewed dirs.)
+
+**Consequence for "make what we added fit this structure":** my always-on
+`tools/capability_tools.py` is *already* consistent with how kanban does agent
+tools — it is not the out-of-structure part. The baked-in part is the **UI +
+backend**: the Intelligence Hub routes (`/c/*`, `/search`, `/graph`) and routers
+(`entities`, `capabilities`) live in dashboard core, whereas the structure wants
+them as a `dashboard/` module. That migration needs the plugin **JS-bundle build
+pipeline** and is the next increment; the Module SDK landed here is its
+foundation.
+
+## What landed in this increment
+
+- `hermes_cli/imperator/` — the Module SDK. `scaffold_module(spec)` emits the
+  verified module layout (`dashboard/manifest.json` + `capability.json` +
+  optional `plugin_api.py` + README + `dist/`); a capability-only module needs no
+  bespoke backend. Tests prove the emitted structure matches the dashboard-plugin
+  contract **and** that the scaffolded declaration loads in the real agent-tool
+  generator (`build_tools`) — "author once" holds through the SDK.
+
+## Honest status of the big pieces (so the sequence is clear)
+
+- **Gateway chat** — designed (§2), but not *verifiable* here: no model API key
+  is configured, so a real agent turn can't run. I'll build it against a live
+  model, not blind.
+- **Intelligence Hub / Media / Jobs → removable modules** — each needs the
+  dashboard-plugin **JS-bundle pipeline** stood up first (a Vite target for
+  `dist/index.js` against the frontend plugin SDK). That pipeline is the true
+  next increment; then the SDK emits the rest.
+- **Media** is the heaviest to modularize (persistent dock, `MediaProvider`
+  mounted outside `<Routes>`, Spotify OAuth). Its Spotify backend is already a
+  bundled plugin (`plugins/spotify`); the dock/tab is the baked-in part. Sequence
+  it after the JS-bundle pipeline and after a lighter module (Jobs) proves the
+  path.
