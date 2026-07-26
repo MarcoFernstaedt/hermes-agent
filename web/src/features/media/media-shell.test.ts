@@ -6,9 +6,11 @@ const stylesSource = readFileSync(new URL("../../index.css", import.meta.url), "
 const providerSource = readFileSync(new URL("./MediaProvider.tsx", import.meta.url), "utf8");
 
 describe("native media navigation shell", () => {
-  it("keeps /media in the native route and navigation registries", () => {
-    expect(appSource).toContain('"/media": MediaPage');
-    expect(appSource).toContain('{ path: "/media", label: "Media", icon: Music }');
+  it("keeps /media in the built-in module manifest (route + nav)", () => {
+    // /media is authored once in BUILTIN_MODULES; the route map and sidebar nav
+    // are derived from it (see @/shell/builtin-modules).
+    expect(appSource).toContain('path: "/media", component: MediaPage');
+    expect(appSource).toContain('nav: { label: "Media", icon: Music }');
   });
 
   it("mounts the media provider outside routed pages so the dock survives navigation", () => {

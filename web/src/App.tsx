@@ -137,6 +137,13 @@ const CapabilityArea = lazy(() =>
 import { capabilityPath } from "@/capabilities/registry";
 import { useCapabilities } from "@/capabilities/useCapabilities";
 import type { Capability } from "@/capabilities/types";
+import {
+  deriveBuiltinNav,
+  deriveBuiltinRoutes,
+  deriveSettingsOnlyNav,
+  deriveSettingsOnlyPaths,
+  type BuiltinModule,
+} from "@/shell/builtin-modules";
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -181,39 +188,50 @@ const CHAT_NAV_ITEM: NavItem = {
  * Routing still owns the URL so /chat deep-links, browser back/forward,
  * and nav highlight keep working.
  */
-const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
-  "/sessions": SessionsPage,
-  "/media": MediaPage,
-  "/email": EmailPage,
-  "/calendar": CalendarPage,
-  "/vault": VaultPage,
-  "/jobs": JobsPage,
-  "/progress": ProgressPage,
-  "/files": FilesPage,
-  "/git": GitPage,
-  "/learning": LearningPage,
-  "/analytics": AnalyticsPage,
-  "/models": ModelsPage,
-  "/logs": LogsPage,
-  "/cron": CronPage,
-  "/skills": SkillsPage,
-  "/plugins": PluginsPage,
-  "/mcp": McpPage,
-  "/pairing": PairingPage,
-  "/channels": ChannelsPage,
-  "/webhooks": WebhooksPage,
-  "/system": SystemPage,
-  "/settings": SettingsPage,
-  "/profiles": ProfilesPage,
-  "/profiles/new": ProfileBuilderPage,
-  "/config": ConfigPage,
-  "/env": EnvPage,
-  "/docs": DocsPage,
-  "/blocks": BlocksGalleryPage,
-  "/search": SearchPage,
-  "/graph": GraphPage,
-};
+// The built-in module manifest — each module authored once (route + optional
+// nav) and projected into the route map, primary nav, and settings-only set by
+// the pure derivations in @/shell/builtin-modules. /chat is deliberately absent:
+// it's rendered persistently and wired separately (CHAT_NAV_ITEM + the dynamic
+// ChatRouteSink below). Nav modules appear here in the exact sidebar order.
+const BUILTIN_MODULES: BuiltinModule[] = [
+  { path: "/", component: RootRedirect }, // route-only (redirect)
+  { path: "/search", component: SearchPage, nav: { label: "Search", icon: Search } },
+  { path: "/graph", component: GraphPage, nav: { label: "Graph", icon: Share2 } },
+  { path: "/sessions", component: SessionsPage, nav: { label: "Sessions", labelKey: "sessions", icon: MessageSquare } },
+  { path: "/media", component: MediaPage, nav: { label: "Media", icon: Music } },
+  { path: "/email", component: EmailPage, nav: { label: "Email", icon: Mail } },
+  { path: "/calendar", component: CalendarPage, nav: { label: "Calendar", icon: CalendarDays } },
+  { path: "/vault", component: VaultPage, nav: { label: "Vault", icon: NotebookText } },
+  { path: "/jobs", component: JobsPage, nav: { label: "Jobs", icon: BriefcaseBusiness } },
+  { path: "/progress", component: ProgressPage, nav: { label: "Progress", icon: Activity } },
+  { path: "/files", component: FilesPage, nav: { label: "Files", icon: FolderOpen } },
+  { path: "/git", component: GitPage, nav: { label: "Git", icon: GitBranch } },
+  { path: "/analytics", component: AnalyticsPage, nav: { label: "Analytics", labelKey: "analytics", icon: BarChart3 } },
+  { path: "/logs", component: LogsPage, nav: { label: "Logs", labelKey: "logs", icon: FileText } },
+  { path: "/cron", component: CronPage, nav: { label: "Cron", labelKey: "cron", icon: Clock } },
+  { path: "/skills", component: SkillsPage, nav: { label: "Skills", labelKey: "skills", icon: Package } },
+  { path: "/learning", component: LearningPage, nav: { label: "Learning", icon: Brain } },
+  { path: "/plugins", component: PluginsPage, nav: { label: "Plugins", labelKey: "plugins", icon: Puzzle } },
+  { path: "/mcp", component: McpPage, nav: { label: "MCP", icon: Plug } },
+  { path: "/channels", component: ChannelsPage, nav: { label: "Channels", icon: Radio } },
+  { path: "/webhooks", component: WebhooksPage, nav: { label: "Webhooks", icon: Webhook } },
+  { path: "/pairing", component: PairingPage, nav: { label: "Pairing", icon: ShieldCheck } },
+  { path: "/profiles", component: ProfilesPage, nav: { label: "Profiles", labelKey: "profiles", icon: Users } },
+  { path: "/config", component: ConfigPage, nav: { label: "Config", labelKey: "config", icon: Settings } },
+  { path: "/env", component: EnvPage, nav: { label: "Keys", labelKey: "keys", icon: KeyRound } },
+  { path: "/settings", component: SettingsPage, nav: { label: "Settings", icon: SlidersHorizontal } },
+  // Route-only (no sidebar entry).
+  { path: "/profiles/new", component: ProfileBuilderPage },
+  { path: "/blocks", component: BlocksGalleryPage },
+  // Settings-only: Settings hub + command palette, never the sidebar. The
+  // /achievements page is provided by a plugin, so it has no component here.
+  { path: "/models", component: ModelsPage, nav: { label: "Models", labelKey: "models", icon: Cpu, settingsOnly: true } },
+  { path: "/system", component: SystemPage, nav: { label: "System", icon: Wrench, settingsOnly: true } },
+  { path: "/docs", component: DocsPage, nav: { label: "Documentation", labelKey: "documentation", icon: BookOpen, settingsOnly: true } },
+  { path: "/achievements", nav: { label: "Achievements", icon: Trophy, settingsOnly: true } },
+];
+
+const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = deriveBuiltinRoutes(BUILTIN_MODULES);
 
 // Declared capabilities render as routes + nav entries derived entirely from
 // the server-served declarations — the "declare, don't hand-wire" payoff of the
@@ -236,43 +254,9 @@ function ChatRouteSink() {
   return null;
 }
 
-const BUILTIN_NAV_REST: NavItem[] = [
-  { path: "/search", label: "Search", icon: Search },
-  { path: "/graph", label: "Graph", icon: Share2 },
-  {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
-  },
-  { path: "/media", label: "Media", icon: Music },
-  { path: "/email", label: "Email", icon: Mail },
-  { path: "/calendar", label: "Calendar", icon: CalendarDays },
-  { path: "/vault", label: "Vault", icon: NotebookText },
-  { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
-  { path: "/progress", label: "Progress", icon: Activity },
-  { path: "/files", label: "Files", icon: FolderOpen },
-  { path: "/git", label: "Git", icon: GitBranch },
-  {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
-  },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/learning", label: "Learning", icon: Brain },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/settings", label: "Settings", icon: SlidersHorizontal },
-];
+// Primary sidebar nav, derived from the manifest above (nav modules that aren't
+// settings-only, in declaration order).
+const BUILTIN_NAV_REST: NavItem[] = deriveBuiltinNav(BUILTIN_MODULES);
 
 /**
  * Routes that are reachable only through the Settings hub, never as their
@@ -281,19 +265,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
  * each — this set just keeps them out of the primary navigation so Settings
  * is the single home for models, system, docs, and achievements.
  */
-const SETTINGS_ONLY_PATHS = new Set(["/models", "/system", "/docs", "/achievements"]);
+const SETTINGS_ONLY_PATHS = deriveSettingsOnlyPaths(BUILTIN_MODULES);
 
 /**
  * The settings-only destinations, re-exposed in the command palette so
  * power users can still jump straight to them (Cmd/Ctrl+K) even though they
  * no longer occupy a sidebar slot. Kept in sync with SETTINGS_ONLY_PATHS.
  */
-const SETTINGS_ONLY_NAV: NavItem[] = [
-  { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
-  { path: "/system", label: "System", icon: Wrench },
-  { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
-  { path: "/achievements", label: "Achievements", icon: Trophy },
-];
+const SETTINGS_ONLY_NAV: NavItem[] = deriveSettingsOnlyNav(BUILTIN_MODULES);
 
 /**
  * Sidebar groupings for the built-in nav. Purely presentational — routing,

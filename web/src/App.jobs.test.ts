@@ -12,12 +12,14 @@ describe("native Jobs navigation", () => {
     );
 
     expect(source).toContain('const JobsPage = lazy(() => import("@/pages/JobsPage"))');
-    expect(source).toContain('"/jobs": JobsPage');
-    expect(source).toContain('path: "/jobs"');
+    // Jobs (and sessions/profiles) are authored once in BUILTIN_MODULES; routes
+    // + nav derive from it. Assert the manifest wiring rather than the old
+    // hand-kept route-map/nav literals.
+    expect(source).toContain('path: "/jobs", component: JobsPage');
     expect(source).toContain('label: "Jobs"');
     expect(source).toMatch(/id: "operate"[\s\S]*paths: \[[^\]]*"\/jobs"/);
-    expect(source).toContain('"/sessions": SessionsPage');
-    expect(source).toContain('"/profiles": ProfilesPage');
+    expect(source).toContain('path: "/sessions", component: SessionsPage');
+    expect(source).toContain('path: "/profiles", component: ProfilesPage');
     expect(source).toContain("persistent ChatPage host");
   });
 });
