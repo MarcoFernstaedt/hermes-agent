@@ -498,6 +498,8 @@ export interface AgentGuardrails {
   scopes: AgentScope[];
   default_scope: string;
   halted: boolean;
+  /** "observe" (default), "enforce", or "off". */
+  approval_integrity?: string;
 }
 
 export interface GmailLabel {

@@ -1068,6 +1068,19 @@ def handle_function_call(
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
+    # Approval integrity: for human-gated tools, snapshot the payload the
+    # approval decision sees here, then verify it is unchanged at dispatch —
+    # so nothing mutates a gated call between consent and execution. AUTO tools
+    # are never gated, so they are skipped (no cost, no audit noise).
+    try:
+        from hermes_cli.module_permissions import Tier, get_tier
+        from hermes_cli import approval_integrity as _integrity
+
+        if tool_call_id and get_tier(function_name) is not Tier.AUTO:
+            _integrity.record_grant(tool_call_id, function_name, function_args)
+    except Exception:
+        pass
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
@@ -1270,11 +1283,24 @@ def handle_function_call(
         except Exception:
             _scope_token = None
         try:
+            def _integrity_refusal(next_args: Dict[str, Any]) -> Optional[str]:
+                try:
+                    from hermes_cli import approval_integrity as _integrity
+
+                    return _integrity.verify_at_execution(
+                        tool_call_id or "", function_name, next_args
+                    )
+                except Exception:
+                    return None
+
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    _refused = _integrity_refusal(next_args)
+                    if _refused is not None:
+                        return json.dumps({"error": _refused, "refused": True})
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1283,6 +1309,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    _refused = _integrity_refusal(next_args)
+                    if _refused is not None:
+                        return json.dumps({"error": _refused, "refused": True})
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

@@ -47,6 +47,7 @@ def test_read_lists_scopes_and_halt_state():
     assert {"full", "read_only", "research", "triage"} <= names
     assert body["default_scope"] == "full"
     assert body["halted"] is False
+    assert body["approval_integrity"] in {"observe", "enforce", "off"}
 
 
 def test_global_stop_round_trip():

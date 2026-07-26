@@ -51,10 +51,17 @@ def create_agent_scopes_router(authorize: Authorize) -> APIRouter:
     @router.get("")
     def read_guardrails(request: Request) -> dict:
         authorize(request)
+        try:
+            from hermes_cli import approval_integrity
+
+            integrity_mode = approval_integrity.mode()
+        except Exception:
+            integrity_mode = "observe"
         return {
             "scopes": sc.list_scopes(),
             "default_scope": sc.DEFAULT_SCOPE,
             "halted": sc.is_agent_halted(),
+            "approval_integrity": integrity_mode,
         }
 
     @router.post("/stop")
