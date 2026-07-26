@@ -128,6 +128,7 @@ const EmailPage = lazy(() => import("@/features/email/EmailPage"));
 const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
 const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
 const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
+const SearchPage = lazy(() => import("@/pages/SearchPage"));
 const CapabilityArea = lazy(() =>
   import("@/capabilities/CapabilityArea").then((m) => ({ default: m.CapabilityArea })),
 );
@@ -208,6 +209,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/env": EnvPage,
   "/docs": DocsPage,
   "/blocks": BlocksGalleryPage,
+  "/search": SearchPage,
 };
 
 // Declared capabilities render as routes + nav entries derived entirely from
@@ -232,6 +234,7 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  { path: "/search", label: "Search", icon: Search },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -809,6 +812,17 @@ export default function App() {
           navigate("/vault");
           closeMobile();
           emitIntent("vault:new-note");
+        },
+      },
+      {
+        id: "action:search-records",
+        label: "Search all records",
+        hint: actionHint,
+        keywords: "search records find reading tasks contacts entities everything full text",
+        icon: Search,
+        run: () => {
+          navigate("/search");
+          closeMobile();
         },
       },
       {

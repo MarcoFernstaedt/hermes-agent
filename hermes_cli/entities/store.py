@@ -14,6 +14,7 @@ slot in.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -47,6 +48,38 @@ def _valid_type(entity_type: str) -> str:
     return t
 
 
+def _search_text(data: Any) -> str:
+    """Flatten a record's data to its text values (keys dropped) so full-text
+    search matches what a person typed, not the field names."""
+    parts: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, bool):
+            return
+        elif isinstance(value, (int, float)):
+            parts.append(str(value))
+        elif isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(data)
+    return " ".join(parts)
+
+
+def _fts_query(query: str) -> str:
+    """Turn free text into an FTS5 MATCH expression: each word becomes a quoted
+    prefix term (so "dun" hits "Dune"), AND-ed together. Quoting neutralises
+    FTS5 operators (AND/OR/NEAR) a user might type as ordinary words. Returns ""
+    when nothing searchable remains."""
+    tokens = re.findall(r"\w+", query or "", flags=re.UNICODE)
+    return " ".join(f'"{t}"*' for t in tokens)
+
+
 class EntityStore:
     def __init__(self, database_path: Path | str) -> None:
         self.database_path = Path(database_path)
@@ -77,6 +110,25 @@ class EntityStore:
                 "CREATE INDEX IF NOT EXISTS idx_entities_type_updated "
                 "ON entities(type, updated_at DESC)"
             )
+            # Full-text index for cross-entity search. Managed from this store's
+            # write methods (not triggers) and tied to each entity's rowid, so a
+            # record maps 1:1 to its FTS row. `type` is stored UNINDEXED so
+            # searches can be scoped to a set of entity types cheaply.
+            connection.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts "
+                "USING fts5(text, type UNINDEXED)"
+            )
+            # Backfill any entity rows missing from the FTS index (first run
+            # after this migration, or drift). Idempotent: only inserts gaps.
+            missing = connection.execute(
+                "SELECT e.rowid, e.type, e.data FROM entities e "
+                "WHERE e.rowid NOT IN (SELECT rowid FROM entities_fts)"
+            ).fetchall()
+            for row in missing:
+                connection.execute(
+                    "INSERT INTO entities_fts(rowid, text, type) VALUES (?, ?, ?)",
+                    (row["rowid"], _search_text(json.loads(row["data"])), row["type"]),
+                )
 
     # -- helpers -----------------------------------------------------------
     @staticmethod
@@ -100,10 +152,14 @@ class EntityStore:
         entity_id = uuid.uuid4().hex
         stamp = _stamp(now)
         with self._connect() as connection:
-            connection.execute(
+            cur = connection.execute(
                 "INSERT INTO entities (id, type, data, version, created_at, updated_at) "
                 "VALUES (?, ?, ?, 1, ?, ?)",
                 (entity_id, entity_type, json.dumps(data), stamp, stamp),
+            )
+            connection.execute(
+                "INSERT INTO entities_fts(rowid, text, type) VALUES (?, ?, ?)",
+                (cur.lastrowid, _search_text(data), entity_type),
             )
         return {
             "id": entity_id,
@@ -128,7 +184,7 @@ class EntityStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT id, type, data, version, created_at, updated_at "
+                "SELECT rowid, id, type, data, version, created_at, updated_at "
                 "FROM entities WHERE id = ?",
                 (entity_id,),
             ).fetchone()
@@ -142,6 +198,10 @@ class EntityStore:
                 "WHERE id = ? AND version = ?",
                 (json.dumps(data), new_version, stamp, entity_id, expected_version),
             )
+            connection.execute(
+                "UPDATE entities_fts SET text = ? WHERE rowid = ?",
+                (_search_text(data), row["rowid"]),
+            )
             return {
                 "id": entity_id,
                 "type": row["type"],
@@ -153,8 +213,16 @@ class EntityStore:
 
     def delete(self, entity_id: str) -> bool:
         with self._connect() as connection:
-            cur = connection.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
-            return cur.rowcount > 0
+            row = connection.execute(
+                "SELECT rowid FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                "DELETE FROM entities_fts WHERE rowid = ?", (row["rowid"],)
+            )
+            connection.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+            return True
 
     # -- reads -------------------------------------------------------------
     def get(self, entity_id: str) -> Optional[dict]:
@@ -195,5 +263,40 @@ class EntityStore:
                 f"SELECT id, type, data, version, created_at, updated_at "
                 f"FROM entities WHERE {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
+            ).fetchall()
+        return {"items": [self._row(r) for r in rows], "total": total}
+
+    def search(
+        self,
+        query: str,
+        *,
+        types: Optional[list[str]] = None,
+        limit: int = 20,
+    ) -> dict:
+        """Full-text search across every entity, best matches first.
+
+        ``types`` optionally scopes the search to a set of entity types. Returns
+        ``{items, total}`` where items are full records ordered by relevance
+        (bm25 rank). An empty/blank query returns no results (not everything)."""
+        match = _fts_query(query)
+        if not match:
+            return {"items": [], "total": 0}
+        limit = max(1, min(int(limit), 100))
+        clauses = ["entities_fts MATCH ?"]
+        params: list[Any] = [match]
+        if types:
+            valid = [_valid_type(t) for t in types]
+            clauses.append("f.type IN (%s)" % ",".join("?" for _ in valid))
+            params.extend(valid)
+        where = " AND ".join(clauses)
+        with self._connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM entities_fts f WHERE {where}", params
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"SELECT e.id, e.type, e.data, e.version, e.created_at, e.updated_at "
+                f"FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                f"WHERE {where} ORDER BY rank LIMIT ?",
+                [*params, limit],
             ).fetchall()
         return {"items": [self._row(r) for r in rows], "total": total}

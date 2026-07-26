@@ -109,6 +109,23 @@ def create_entities_router(
 
     router = APIRouter(prefix="/api/entities", tags=["entities"])
 
+    # Registered before "/{entity_type}" so "/search" isn't swallowed as a type.
+    @router.get("/search")
+    def search_entities(
+        request: Request,
+        q: str = Query(default=""),
+        types: Optional[str] = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict:
+        """Full-text search across every entity. ``types`` is an optional
+        comma-separated list scoping the search to those entity types."""
+        authorize(request)
+        type_list = [t for t in (types or "").split(",") if t.strip()] or None
+        try:
+            return _store().search(q, types=type_list, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
     @router.get("/{entity_type}")
     def list_entities(
         entity_type: str,

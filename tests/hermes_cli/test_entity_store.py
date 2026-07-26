@@ -78,3 +78,71 @@ def test_delete(store):
 def test_invalid_type_rejected(store):
     with pytest.raises(ValueError):
         store.create("bad type!", {"x": 1})
+
+
+def test_search_matches_values_across_types(store):
+    store.create("reading", {"title": "Dune", "author": "Frank Herbert", "tags": ["scifi"]})
+    store.create("task", {"title": "Read Dune notes", "context": "Imperator"})
+    store.create("contact", {"name": "Frank Miller", "org": "Acme"})
+
+    # Prefix match spans types; ordered by relevance.
+    dune = store.search("dun")
+    assert dune["total"] == 2
+    assert {i["type"] for i in dune["items"]} == {"reading", "task"}
+
+    # A value in any field is searchable (author here).
+    frank = store.search("frank")
+    assert {i["type"] for i in frank["items"]} == {"reading", "contact"}
+
+    # Field names are NOT indexed — searching a key matches nothing.
+    assert store.search("author")["total"] == 0
+
+    # Blank query returns nothing (not everything).
+    assert store.search("   ")["total"] == 0
+
+
+def test_search_scopes_to_types(store):
+    store.create("reading", {"title": "Frank Herbert reader"})
+    store.create("contact", {"name": "Frank Miller"})
+    scoped = store.search("frank", types=["contact"])
+    assert scoped["total"] == 1
+    assert scoped["items"][0]["type"] == "contact"
+
+
+def test_search_index_follows_updates_and_deletes(store):
+    e = store.create("contact", {"name": "Frank Miller", "org": "Acme"})
+    assert store.search("acme")["total"] == 1
+    # Update re-indexes: old value drops, new value hits.
+    store.update(e["id"], {"name": "Frank Miller", "org": "Globex"}, expected_version=1)
+    assert store.search("acme")["total"] == 0
+    assert store.search("globex")["total"] == 1
+    # Delete removes it from the index.
+    store.delete(e["id"])
+    assert store.search("globex")["total"] == 0
+
+
+def test_search_backfills_existing_rows_on_migrate(tmp_path):
+    # A store written before the FTS index existed still becomes searchable
+    # after migrate() backfills — simulate by inserting straight into entities.
+    import json
+    import sqlite3
+
+    db = tmp_path / "legacy.sqlite3"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE entities (id TEXT PRIMARY KEY, type TEXT NOT NULL, "
+        "data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    con.execute(
+        "INSERT INTO entities VALUES (?, ?, ?, 1, ?, ?)",
+        ("id1", "reading", json.dumps({"title": "Legacy Dune"}), "2026-01-01Z", "2026-01-01Z"),
+    )
+    con.commit()
+    con.close()
+
+    store = EntityStore(db)
+    store.migrate()
+    hit = store.search("legacy")
+    assert hit["total"] == 1
+    assert hit["items"][0]["data"]["title"] == "Legacy Dune"

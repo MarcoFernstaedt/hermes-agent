@@ -147,6 +147,31 @@ def test_notify_requires_auth(tmp_path):
     assert c.post("/api/entities/task/x/notify").status_code == 401
 
 
+def test_search_endpoint_spans_types(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/entities/reading", headers=OK, json={"data": {"title": "Dune"}})
+    c.post("/api/entities/task", headers=OK, json={"data": {"title": "Dune notes"}})
+    c.post("/api/entities/contact", headers=OK, json={"data": {"name": "Ada"}})
+
+    res = c.get("/api/entities/search?q=dun", headers=OK)
+    assert res.status_code == 200
+    assert res.json()["total"] == 2
+    # /search is not shadowed by the /{entity_type} list route.
+    assert {i["type"] for i in res.json()["items"]} == {"reading", "task"}
+
+    scoped = c.get("/api/entities/search?q=dun&types=task", headers=OK)
+    assert scoped.json()["total"] == 1
+    assert scoped.json()["items"][0]["type"] == "task"
+
+    # Blank query → empty, not everything.
+    assert c.get("/api/entities/search?q=", headers=OK).json()["total"] == 0
+
+
+def test_search_requires_auth(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/api/entities/search?q=x").status_code == 401
+
+
 def test_notify_coerces_unknown_action(tmp_path):
     events: list = []
     c = _client(tmp_path, events=events)

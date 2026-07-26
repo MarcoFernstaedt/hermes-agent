@@ -1051,6 +1051,17 @@ export const api = {
 
   // -- Capabilities (declarations served for dynamic UI wiring) -----------
   getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+
+  /** Full-text search across every entity; optional type scope. */
+  searchEntities: (
+    q: string,
+    opts: { types?: string[]; limit?: number } = {},
+  ) => {
+    const params = new URLSearchParams({ q });
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return fetchJSON<EntityListResponse>(`/api/entities/search?${params.toString()}`);
+  },
   updateJobStatus: (
     jobId: number,
     status: JobStatus,

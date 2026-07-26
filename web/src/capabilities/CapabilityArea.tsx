@@ -16,6 +16,7 @@ import {
 } from "@/blocks";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useEntityEvents } from "@/hooks/useEntityEvents";
+import { useIntent } from "@/hooks/useIntent";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/use-data";
@@ -58,6 +59,23 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
     () => (list.data?.items ?? []).map(flatten),
     [list.data],
   );
+
+  // Open a specific record when search (or anything) asks — navigating here
+  // then firing the intent. Prefer the already-loaded row; fall back to a
+  // direct fetch so a deep-link works before the list has hydrated.
+  useIntent("entity:open", (detail) => {
+    const d = detail as { type?: string; id?: string } | undefined;
+    if (!d || d.type !== type || !d.id) return;
+    const loaded = records.find((r) => r.id === d.id);
+    if (loaded) {
+      setEditing(loaded);
+      return;
+    }
+    api
+      .getEntity(type, d.id)
+      .then((entity) => setEditing(flatten(entity)))
+      .catch(() => undefined);
+  });
 
   const view =
     capability.views.find((v) => v.id === viewId) ?? defaultView(capability);

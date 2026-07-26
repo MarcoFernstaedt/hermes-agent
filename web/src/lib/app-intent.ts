@@ -18,7 +18,9 @@ export type AppIntentName =
   | "email:search"
   | "calendar:new-event"
   | "vault:new-note"
-  | "vault:search";
+  | "vault:search"
+  /** Open a specific record in its capability area. detail: {type, id}. */
+  | "entity:open";
 
 interface LatchedIntent {
   id: number;
