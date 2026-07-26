@@ -82,6 +82,7 @@ import {
   type CommandPaletteItem,
 } from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { GlobalStopControl } from "@/components/GlobalStopControl";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
@@ -1186,6 +1187,10 @@ export default function App() {
                 </div>
               )}
             </nav>
+
+            <div className="shrink-0 border-t border-current/10 pt-2">
+              <GlobalStopControl collapsed={isDesktopCollapsed} />
+            </div>
 
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}

@@ -487,6 +487,19 @@ export interface GoogleConnection {
   scopes: string[];
 }
 
+/** A named session capability scope (server-enforced agent guardrail). */
+export interface AgentScope {
+  name: string;
+  label: string;
+  description: string;
+}
+
+export interface AgentGuardrails {
+  scopes: AgentScope[];
+  default_scope: string;
+  halted: boolean;
+}
+
 export interface GmailLabel {
   id: string;
   name: string;
@@ -942,6 +955,29 @@ export const api = {
     }),
   getSpotifyReauthStatus: () =>
     fetchJSON<SpotifyReauthStatus>("/api/media/spotify/reauth/status"),
+
+  // -- Agent guardrails: session scopes + the global stop ------------------
+  getAgentGuardrails: () =>
+    fetchJSON<AgentGuardrails>("/api/agent/guardrails"),
+  setAgentHalt: (halted: boolean) =>
+    fetchJSON<{ halted: boolean }>("/api/agent/guardrails/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ halted }),
+    }),
+  getSessionScope: (sessionId: string) =>
+    fetchJSON<{ session_id: string; scope: string }>(
+      `/api/agent/guardrails/session/${encodeURIComponent(sessionId)}`,
+    ),
+  setSessionScope: (sessionId: string, scope: string) =>
+    fetchJSON<{ session_id: string; scope: string }>(
+      `/api/agent/guardrails/session/${encodeURIComponent(sessionId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope }),
+      },
+    ),
 
   // -- Email (Gmail) -------------------------------------------------------
   getEmailConnection: () =>

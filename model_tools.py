@@ -1256,6 +1256,19 @@ def handle_function_call(
             )
         except Exception:
             reset_current_observability_context = None
+        # Arm this session's capability scope so enforce_dispatch (at the
+        # registry chokepoint) applies it to this agent-initiated call. Reset
+        # unconditionally below so the scope never leaks to the next call on a
+        # reused thread. The global stop is enforced regardless of this arming.
+        _scope_token = None
+        try:
+            from hermes_cli.agent_scopes import (
+                get_session_scope as _get_session_scope,
+                set_active_scope as _set_active_scope,
+            )
+            _scope_token = _set_active_scope(_get_session_scope(session_id or ""))
+        except Exception:
+            _scope_token = None
         try:
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
@@ -1293,6 +1306,12 @@ def handle_function_call(
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
                     reset_current_observability_context(_approval_tokens)
+                except Exception:
+                    pass
+            if _scope_token is not None:
+                try:
+                    from hermes_cli.agent_scopes import reset_active_scope as _reset_active_scope
+                    _reset_active_scope(_scope_token)
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
