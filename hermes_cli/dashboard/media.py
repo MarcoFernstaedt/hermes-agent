@@ -627,6 +627,27 @@ def create_media_router(
         cleared = bool(clear_provider_auth("spotify"))
         return {"ok": True, "cleared": cleared}
 
+    @router.post("/spotify/reauth/start")
+    async def spotify_reauth_start() -> dict[str, Any]:
+        """Start an in-interface Spotify re-auth (the fallback when the token
+        expires). Returns the authorize URL the UI opens, or a needs_client_id
+        signal so the UI can guide setup — never a dead-end CLI instruction."""
+        from hermes_cli.auth import begin_spotify_dashboard_reauth
+
+        try:
+            return begin_spotify_dashboard_reauth()
+        except Exception as exc:  # surface a clean, actionable error
+            raise HTTPException(
+                status_code=502, detail=f"Could not start Spotify re-auth: {exc}"
+            ) from exc
+
+    @router.get("/spotify/reauth/status")
+    async def spotify_reauth_status() -> dict[str, Any]:
+        """Poll the in-interface re-auth: idle | pending | connected | error."""
+        from hermes_cli.auth import spotify_dashboard_reauth_status
+
+        return spotify_dashboard_reauth_status()
+
     @router.post("/spotify/control", response_model=SpotifyState)
     async def spotify_control(command: SpotifyControl, profile: str | None = Query(default=None)) -> SpotifyState:
         try:

@@ -464,6 +464,22 @@ export interface SpotifyConnection {
   needs_reauth: boolean;
 }
 
+/** Response of starting an in-interface Spotify re-auth (the token-expiry
+ *  fallback). Either an authorize URL to open, or a needs_client_id signal. */
+export interface SpotifyReauthStart {
+  configured: boolean;
+  auth_url?: string;
+  redirect_uri?: string;
+  docs_url?: string;
+  needs_client_id?: boolean;
+  dashboard_url?: string;
+}
+
+export interface SpotifyReauthStatus {
+  status: "idle" | "pending" | "connected" | "error";
+  detail?: string;
+}
+
 export interface GoogleConnection {
   connected: boolean;
   needs_reauth: boolean;
@@ -920,6 +936,12 @@ export const api = {
       "/api/media/spotify/disconnect",
       { method: "POST" },
     ),
+  startSpotifyReauth: () =>
+    fetchJSON<SpotifyReauthStart>("/api/media/spotify/reauth/start", {
+      method: "POST",
+    }),
+  getSpotifyReauthStatus: () =>
+    fetchJSON<SpotifyReauthStatus>("/api/media/spotify/reauth/status"),
 
   // -- Email (Gmail) -------------------------------------------------------
   getEmailConnection: () =>
