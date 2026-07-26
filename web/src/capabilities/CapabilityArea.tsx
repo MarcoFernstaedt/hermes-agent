@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -54,12 +54,28 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
 
   const list = useData(`entities:${type}`, () => api.listEntities(type));
   const refresh = () => list.refetch({ force: true });
-  useEntityEvents(type, refresh);
+
+  // Ids this tab wrote itself, so a live event echoing our own create doesn't
+  // toast "new record" at us. Kept in a ref (no re-render needed).
+  const writtenRef = useRef<Set<string>>(new Set());
 
   const records = useMemo<FlatRecord[]>(
     () => (list.data?.items ?? []).map(flatten),
     [list.data],
   );
+
+  useEntityEvents(type, (event) => {
+    // A created record we didn't write (the agent, or another tab) — surface it
+    // so an open board announces the live addition instead of silently growing.
+    if (
+      event.action === "created" &&
+      !writtenRef.current.has(event.id) &&
+      !records.some((r) => r.id === event.id)
+    ) {
+      showToast(`New ${capability.label.toLowerCase()} added`, "success");
+    }
+    refresh();
+  });
 
   // Open a specific record when search (or anything) asks — navigating here
   // then firing the intent. Prefer the already-loaded row; fall back to a
@@ -95,7 +111,8 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
       payload[lifecycle.field] = lifecycle.initial;
     }
     try {
-      await api.createEntity(type, payload);
+      const created = await api.createEntity(type, payload);
+      writtenRef.current.add(created.id); // ours — don't self-toast on the echo
       setEditing(null);
       showToast(`${capability.label} created`, "success");
       refresh();
