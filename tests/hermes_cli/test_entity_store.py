@@ -164,6 +164,24 @@ def test_deleting_an_entity_purges_its_links(store):
     assert store.links_for(a["id"]) == []
 
 
+def test_graph_returns_nodes_and_valid_edges(store):
+    a = store.create("reading", {"title": "Dune"})
+    b = store.create("task", {"title": "Read Dune"})
+    store.create("contact", {"name": "Frank"})  # unlinked node
+    store.link(a["id"], b["id"])
+
+    g = store.graph()
+    assert len(g["nodes"]) == 3  # every record is a node, linked or not
+    assert len(g["edges"]) == 1
+    edge = g["edges"][0]
+    assert {edge["source"], edge["target"]} == {a["id"], b["id"]}
+    # Deleting an end removes the edge but keeps the surviving node.
+    store.delete(b["id"])
+    g2 = store.graph()
+    assert len(g2["nodes"]) == 2
+    assert g2["edges"] == []
+
+
 def test_search_backfills_existing_rows_on_migrate(tmp_path):
     # A store written before the FTS index existed still becomes searchable
     # after migrate() backfills — simulate by inserting straight into entities.

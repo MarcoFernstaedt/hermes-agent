@@ -56,6 +56,7 @@ import {
   RotateCw,
   Search,
   Settings,
+  Share2,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -129,6 +130,7 @@ const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
 const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
 const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
 const SearchPage = lazy(() => import("@/pages/SearchPage"));
+const GraphPage = lazy(() => import("@/pages/GraphPage"));
 const CapabilityArea = lazy(() =>
   import("@/capabilities/CapabilityArea").then((m) => ({ default: m.CapabilityArea })),
 );
@@ -210,6 +212,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/docs": DocsPage,
   "/blocks": BlocksGalleryPage,
   "/search": SearchPage,
+  "/graph": GraphPage,
 };
 
 // Declared capabilities render as routes + nav entries derived entirely from
@@ -235,6 +238,7 @@ function ChatRouteSink() {
 
 const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/search", label: "Search", icon: Search },
+  { path: "/graph", label: "Graph", icon: Share2 },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -822,6 +826,17 @@ export default function App() {
         icon: Search,
         run: () => {
           navigate("/search");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:relationships-graph",
+        label: "Open relationships graph",
+        hint: actionHint,
+        keywords: "graph relationships links connections network map entities",
+        icon: Share2,
+        run: () => {
+          navigate("/graph");
           closeMobile();
         },
       },

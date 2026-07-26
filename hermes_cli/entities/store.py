@@ -344,6 +344,31 @@ class EntityStore:
             )
             return cur.rowcount > 0
 
+    def graph(self, *, limit: int = 500) -> dict:
+        """The whole link graph as ``{nodes, edges}`` for a relationships view.
+        Nodes are records (id, type, data); edges reference node ids. Edges
+        whose endpoints aren't among the returned nodes are dropped."""
+        limit = max(1, min(int(limit), 2000))
+        with self._connect() as connection:
+            node_rows = connection.execute(
+                "SELECT id, type, data FROM entities ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            edge_rows = connection.execute(
+                "SELECT source, target, rel FROM entity_links"
+            ).fetchall()
+        ids = {r["id"] for r in node_rows}
+        nodes = [
+            {"id": r["id"], "type": r["type"], "data": json.loads(r["data"])}
+            for r in node_rows
+        ]
+        edges = [
+            {"source": e["source"], "target": e["target"], "rel": e["rel"]}
+            for e in edge_rows
+            if e["source"] in ids and e["target"] in ids
+        ]
+        return {"nodes": nodes, "edges": edges}
+
     def links_for(self, entity_id: str) -> list[dict]:
         """Every record linked to ``entity_id`` (either direction), each as
         ``{id, type, data, rel, created_at}`` for the *other* end. Dangling

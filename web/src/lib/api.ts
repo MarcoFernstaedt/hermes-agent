@@ -596,6 +596,24 @@ export interface EntityLinksResponse {
   items: EntityLinkItem[];
 }
 
+/** The whole link graph — nodes are records, edges reference node ids. */
+export interface GraphNode {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  rel: string;
+}
+
+export interface EntityGraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 /** Raw Gmail thread (format=full) — an ordered list of its messages. */
 export interface GmailThread {
   id: string;
@@ -1065,6 +1083,9 @@ export const api = {
 
   // -- Capabilities (declarations served for dynamic UI wiring) -----------
   getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+
+  /** The whole entity link graph (nodes + edges) for the relationships view. */
+  getEntityGraph: () => fetchJSON<EntityGraphResponse>("/api/entities/graph"),
 
   // -- Entity links (the cross-record graph) ------------------------------
   listLinks: (type: string, id: string) =>

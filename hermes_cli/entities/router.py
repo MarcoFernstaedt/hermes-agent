@@ -131,6 +131,16 @@ def create_entities_router(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
+    @router.get("/graph")
+    def entity_graph(
+        request: Request,
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> dict:
+        """The whole entity link graph (nodes + edges) for the relationships
+        view. Registered before /{entity_type} so it isn't read as a type."""
+        authorize(request)
+        return _store().graph(limit=limit)
+
     @router.get("/{entity_type}")
     def list_entities(
         entity_type: str,

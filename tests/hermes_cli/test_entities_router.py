@@ -205,6 +205,26 @@ def test_link_on_missing_source_is_404(tmp_path):
     assert c.get("/api/entities/reading/ghost/links", headers=OK).status_code == 404
 
 
+def test_graph_endpoint(tmp_path):
+    c = _client(tmp_path)
+    a = c.post("/api/entities/reading", headers=OK, json={"data": {"title": "Dune"}}).json()["id"]
+    b = c.post("/api/entities/task", headers=OK, json={"data": {"title": "Read Dune"}}).json()["id"]
+    c.post(f"/api/entities/reading/{a}/links", headers=OK, json={"target_id": b})
+
+    g = c.get("/api/entities/graph", headers=OK)
+    assert g.status_code == 200
+    body = g.json()
+    assert len(body["nodes"]) == 2
+    assert len(body["edges"]) == 1
+    # /graph is not shadowed by the /{entity_type} list route.
+    assert {n["type"] for n in body["nodes"]} == {"reading", "task"}
+
+
+def test_graph_requires_auth(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/api/entities/graph").status_code == 401
+
+
 def test_link_write_requires_same_origin_when_gated(tmp_path):
     c = _client(tmp_path, gated=True)
     resp = c.post(
