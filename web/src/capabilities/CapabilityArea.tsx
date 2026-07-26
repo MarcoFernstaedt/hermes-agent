@@ -10,10 +10,12 @@ import {
   BoardView,
   DataTable,
   EmptyState,
+  FilterBar,
   FormFromSchema,
   StatBar,
   type Stat,
 } from "@/blocks";
+import { applyFilters, type FilterState } from "@/blocks/filter-model";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useEntityEvents } from "@/hooks/useEntityEvents";
 import { useIntent } from "@/hooks/useIntent";
@@ -26,6 +28,7 @@ import {
   canTransition,
   countByState,
   defaultView,
+  filterFieldsFor,
   flatten,
   labelCase,
   stateLabels,
@@ -51,6 +54,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
   const { toast, showToast } = useToast();
   const [viewId, setViewId] = useState(() => defaultView(capability).id);
   const [editing, setEditing] = useState<FlatRecord | "new" | null>(null);
+  const [filters, setFilters] = useState<FilterState>({});
 
   const list = useData(`entities:${type}`, () => api.listEntities(type));
   const refresh = () => list.refetch({ force: true });
@@ -62,6 +66,14 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
   const records = useMemo<FlatRecord[]>(
     () => (list.data?.items ?? []).map(flatten),
     [list.data],
+  );
+
+  // Filters derive from the capability's select fields; the views, stats and
+  // empty state all render the filtered set so what's shown matches the bar.
+  const filterFields = useMemo(() => filterFieldsFor(capability), [capability]);
+  const filtered = useMemo(
+    () => applyFilters(records, filterFields, filters),
+    [records, filterFields, filters],
   );
 
   useEntityEvents(type, (event) => {
@@ -158,13 +170,13 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
 
   const stats: Stat[] = lifecycle
     ? (() => {
-        const counts = countByState(records, lifecycle);
+        const counts = countByState(filtered, lifecycle);
         return lifecycle.states.map((s) => ({
           label: stateLabel(s),
           value: counts[s] ?? 0,
         }));
       })()
-    : [{ label: "Total", value: records.length }];
+    : [{ label: "Total", value: filtered.length }];
 
   return (
     <div className="mx-auto flex min-h-0 max-w-6xl flex-col gap-4 p-4 sm:p-6">
@@ -190,6 +202,10 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
         </div>
       </header>
 
+      {filterFields.length > 0 && records.length > 0 && (
+        <FilterBar fields={filterFields} state={filters} onChange={setFilters} />
+      )}
+
       <StatBar stats={stats} />
 
       {list.isLoading ? (
@@ -207,12 +223,23 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={capability.icon ?? Plus}
+          title="No matches"
+          hint="No records match the current filters."
+          action={
+            <Button size="sm" onClick={() => setFilters({})}>
+              Clear filters
+            </Button>
+          }
+        />
       ) : view.kind === "board" && lifecycle ? (
         <div className="h-[62vh] min-h-0">
           <BoardView
             className="h-full"
             columns={boardColumns(lifecycle, labels)}
-            items={records}
+            items={filtered}
             getItemId={(r) => r.id}
             getColumnId={(r) => String(r[lifecycle.field] ?? "")}
             onMove={moveCard}
@@ -236,7 +263,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
         <div className="h-[62vh] min-h-0">
           <DataTable
             columns={tableColumns(capability, view)}
-            data={records}
+            data={filtered}
             getRowId={(r) => r.id}
             onRowClick={(r) => setEditing(r)}
           />

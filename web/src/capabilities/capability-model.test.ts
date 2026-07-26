@@ -5,6 +5,7 @@ import {
   canTransition,
   countByState,
   defaultView,
+  filterFieldsFor,
   flatten,
   labelCase,
   legalTransitions,
@@ -99,6 +100,30 @@ describe("capability-model", () => {
 
   it("stateLabels is empty when there is no lifecycle", () => {
     expect(stateLabels({ ...cap, lifecycle: undefined })).toEqual({});
+  });
+
+  it("derives filter fields from select fields that declare options", () => {
+    const withSelects: Capability = {
+      ...cap,
+      fields: [
+        { name: "company", label: "Company", type: "text" },
+        {
+          name: "status",
+          label: "Status",
+          type: "select",
+          options: [
+            { value: "saved", label: "Saved" },
+            { value: "applied", label: "Applied" },
+          ],
+        },
+        { name: "priority", label: "Priority", type: "select" }, // no options → skipped
+      ],
+    };
+    const fields = filterFieldsFor(withSelects);
+    expect(fields.map((f) => f.id)).toEqual(["status"]);
+    expect(fields[0].options.map((o) => o.value)).toEqual(["saved", "applied"]);
+    // Accessor reads the row's field value.
+    expect(fields[0].accessor({ id: "x", __version: 1, status: "applied" })).toBe("applied");
   });
 
   it("computes legal transitions honouring '*'", () => {

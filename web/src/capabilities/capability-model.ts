@@ -6,6 +6,7 @@
 import type { DataColumn } from "../blocks/data-table-model";
 import type { BoardColumn } from "../blocks/board-model";
 import { formatField, type FieldDef } from "../blocks/fields";
+import type { FilterField } from "../blocks/filter-model";
 import type { Entity } from "../lib/api";
 import type { Capability, CapabilityView, Lifecycle } from "./types";
 
@@ -116,4 +117,27 @@ export function labelCase(value: string): string {
 /** The default view (declared default, else the first). */
 export function defaultView(cap: Capability): CapabilityView {
   return cap.views.find((v) => v.default) ?? cap.views[0];
+}
+
+/**
+ * Filter fields for a capability: one dropdown per `select` field that declares
+ * options (status, priority, …). Drives the FilterBar over any view, so a
+ * capability gains filtering purely from its declaration.
+ */
+export function filterFieldsFor(cap: Capability): FilterField<FlatRecord>[] {
+  return cap.fields
+    .filter((f) => f.type === "select" && (f.options?.length ?? 0) > 0)
+    .map((f) => ({
+      id: f.name,
+      label: f.label,
+      options: (f.options ?? []).map((o) => ({ value: o.value, label: o.label })),
+      accessor: (row: FlatRecord) => {
+        const v = row[f.name];
+        return typeof v === "string" || typeof v === "number"
+          ? v
+          : v == null
+            ? null
+            : String(v);
+      },
+    }));
 }
