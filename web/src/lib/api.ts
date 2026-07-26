@@ -582,6 +582,20 @@ export interface CapabilitiesResponse {
   capabilities: CapabilityDef[];
 }
 
+/** A record linked to another, as returned by the links endpoint (the far end
+ *  of the edge plus the relation). */
+export interface EntityLinkItem {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+  rel: string;
+  created_at: string;
+}
+
+export interface EntityLinksResponse {
+  items: EntityLinkItem[];
+}
+
 /** Raw Gmail thread (format=full) — an ordered list of its messages. */
 export interface GmailThread {
   id: string;
@@ -1051,6 +1065,26 @@ export const api = {
 
   // -- Capabilities (declarations served for dynamic UI wiring) -----------
   getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+
+  // -- Entity links (the cross-record graph) ------------------------------
+  listLinks: (type: string, id: string) =>
+    fetchJSON<EntityLinksResponse>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links`,
+    ),
+  createLink: (type: string, id: string, targetId: string, rel = "related") =>
+    fetchJSON<{ source: string; target: string; rel: string }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_id: targetId, rel }),
+      },
+    ),
+  deleteLink: (type: string, id: string, targetId: string, rel = "related") =>
+    fetchJSON<{ removed: boolean }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links/${encodeURIComponent(targetId)}?rel=${encodeURIComponent(rel)}`,
+      { method: "DELETE" },
+    ),
 
   /** Full-text search across every entity; optional type scope. */
   searchEntities: (

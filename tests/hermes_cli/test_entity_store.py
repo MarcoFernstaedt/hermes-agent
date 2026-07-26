@@ -121,6 +121,49 @@ def test_search_index_follows_updates_and_deletes(store):
     assert store.search("globex")["total"] == 0
 
 
+def test_link_is_undirected_and_deduped(store):
+    a = store.create("reading", {"title": "Dune"})
+    b = store.create("task", {"title": "Read Dune"})
+    store.link(a["id"], b["id"])
+    # Re-linking in either direction is a no-op, not a duplicate.
+    store.link(a["id"], b["id"])
+    store.link(b["id"], a["id"])
+
+    a_links = store.links_for(a["id"])
+    b_links = store.links_for(b["id"])
+    assert [x["id"] for x in a_links] == [b["id"]]
+    assert [x["id"] for x in b_links] == [a["id"]]  # visible from both ends
+    assert a_links[0]["type"] == "task"
+    assert a_links[0]["data"]["title"] == "Read Dune"
+
+
+def test_link_rejects_self_and_missing(store):
+    a = store.create("reading", {"title": "Dune"})
+    with pytest.raises(ValueError):
+        store.link(a["id"], a["id"])
+    with pytest.raises(EntityNotFoundError):
+        store.link(a["id"], "does-not-exist")
+
+
+def test_unlink_is_symmetric(store):
+    a = store.create("reading", {"title": "Dune"})
+    b = store.create("task", {"title": "Read Dune"})
+    store.link(a["id"], b["id"])
+    # Remove from the far end (b→a); the single undirected edge is gone.
+    assert store.unlink(b["id"], a["id"]) is True
+    assert store.links_for(a["id"]) == []
+    assert store.unlink(b["id"], a["id"]) is False  # already gone
+
+
+def test_deleting_an_entity_purges_its_links(store):
+    a = store.create("reading", {"title": "Dune"})
+    b = store.create("task", {"title": "Read Dune"})
+    store.link(a["id"], b["id"])
+    store.delete(b["id"])
+    # No dangling edge remains on the surviving record.
+    assert store.links_for(a["id"]) == []
+
+
 def test_search_backfills_existing_rows_on_migrate(tmp_path):
     # A store written before the FTS index existed still becomes searchable
     # after migrate() backfills — simulate by inserting straight into entities.

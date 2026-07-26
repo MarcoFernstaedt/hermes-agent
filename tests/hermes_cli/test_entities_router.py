@@ -172,6 +172,47 @@ def test_search_requires_auth(tmp_path):
     assert c.get("/api/entities/search?q=x").status_code == 401
 
 
+def test_link_endpoints_roundtrip(tmp_path):
+    c = _client(tmp_path)
+    a = c.post("/api/entities/reading", headers=OK, json={"data": {"title": "Dune"}}).json()["id"]
+    b = c.post("/api/entities/task", headers=OK, json={"data": {"title": "Read Dune"}}).json()["id"]
+
+    made = c.post(f"/api/entities/reading/{a}/links", headers=OK, json={"target_id": b})
+    assert made.status_code == 200
+
+    # Visible from both ends.
+    a_links = c.get(f"/api/entities/reading/{a}/links", headers=OK).json()["items"]
+    b_links = c.get(f"/api/entities/task/{b}/links", headers=OK).json()["items"]
+    assert [x["id"] for x in a_links] == [b]
+    assert [x["id"] for x in b_links] == [a]
+    assert a_links[0]["type"] == "task"
+
+    # Remove from the far end.
+    removed = c.delete(f"/api/entities/task/{b}/links/{a}", headers=OK)
+    assert removed.status_code == 200 and removed.json()["removed"] is True
+    assert c.get(f"/api/entities/reading/{a}/links", headers=OK).json()["items"] == []
+
+
+def test_link_missing_target_is_404(tmp_path):
+    c = _client(tmp_path)
+    a = c.post("/api/entities/reading", headers=OK, json={"data": {}}).json()["id"]
+    resp = c.post(f"/api/entities/reading/{a}/links", headers=OK, json={"target_id": "nope"})
+    assert resp.status_code == 404
+
+
+def test_link_on_missing_source_is_404(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/api/entities/reading/ghost/links", headers=OK).status_code == 404
+
+
+def test_link_write_requires_same_origin_when_gated(tmp_path):
+    c = _client(tmp_path, gated=True)
+    resp = c.post(
+        "/api/entities/reading/x/links", headers={"x-test-auth": "ok"}, json={"target_id": "y"}
+    )
+    assert resp.status_code == 403
+
+
 def test_notify_coerces_unknown_action(tmp_path):
     events: list = []
     c = _client(tmp_path, events=events)

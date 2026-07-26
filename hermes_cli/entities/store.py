@@ -110,6 +110,25 @@ class EntityStore:
                 "CREATE INDEX IF NOT EXISTS idx_entities_type_updated "
                 "ON entities(type, updated_at DESC)"
             )
+            # Links between entities — the graph that ties records across
+            # capabilities together (a task to a contact, a reading to a task).
+            # Directed (source, target) with a relation, but treated as
+            # undirected for "related": a link shows on both records and is
+            # de-duplicated in either direction (see link()).
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entity_links (
+                    source TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    rel TEXT NOT NULL DEFAULT 'related',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (source, target, rel)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_links_target ON entity_links(target)"
+            )
             # Full-text index for cross-entity search. Managed from this store's
             # write methods (not triggers) and tied to each entity's rowid, so a
             # record maps 1:1 to its FTS row. `type` is stored UNINDEXED so
@@ -221,6 +240,11 @@ class EntityStore:
             connection.execute(
                 "DELETE FROM entities_fts WHERE rowid = ?", (row["rowid"],)
             )
+            # Drop any links touching this record so no dangling edges remain.
+            connection.execute(
+                "DELETE FROM entity_links WHERE source = ? OR target = ?",
+                (entity_id, entity_id),
+            )
             connection.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
             return True
 
@@ -265,6 +289,90 @@ class EntityStore:
                 [*params, limit, offset],
             ).fetchall()
         return {"items": [self._row(r) for r in rows], "total": total}
+
+    # -- links -------------------------------------------------------------
+    def link(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        rel: str = "related",
+        now: datetime | None = None,
+    ) -> dict:
+        """Relate two entities. Idempotent and undirected for de-duplication: a
+        link already present in either direction (with this rel) is returned as
+        is rather than duplicated. Raises if either entity is missing or the two
+        ids are the same."""
+        rel = (rel or "related").strip() or "related"
+        if source_id == target_id:
+            raise ValueError("cannot link an entity to itself")
+        stamp = _stamp(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            present = {
+                r["id"]
+                for r in connection.execute(
+                    "SELECT id FROM entities WHERE id IN (?, ?)",
+                    (source_id, target_id),
+                ).fetchall()
+            }
+            if source_id not in present or target_id not in present:
+                raise EntityNotFoundError("both entities must exist to link them")
+            existing = connection.execute(
+                "SELECT source, target, rel, created_at FROM entity_links "
+                "WHERE rel = ? AND ((source = ? AND target = ?) OR (source = ? AND target = ?))",
+                (rel, source_id, target_id, target_id, source_id),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            connection.execute(
+                "INSERT INTO entity_links (source, target, rel, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (source_id, target_id, rel, stamp),
+            )
+        return {"source": source_id, "target": target_id, "rel": rel, "created_at": stamp}
+
+    def unlink(self, a_id: str, b_id: str, *, rel: str = "related") -> bool:
+        """Remove the link between two entities (either direction) for ``rel``.
+        Returns True if a link was removed."""
+        rel = (rel or "related").strip() or "related"
+        with self._connect() as connection:
+            cur = connection.execute(
+                "DELETE FROM entity_links WHERE rel = ? "
+                "AND ((source = ? AND target = ?) OR (source = ? AND target = ?))",
+                (rel, a_id, b_id, b_id, a_id),
+            )
+            return cur.rowcount > 0
+
+    def links_for(self, entity_id: str) -> list[dict]:
+        """Every record linked to ``entity_id`` (either direction), each as
+        ``{id, type, data, rel, created_at}`` for the *other* end. Dangling
+        edges (other side deleted) are skipped."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source, target, rel, created_at FROM entity_links "
+                "WHERE source = ? OR target = ? ORDER BY created_at DESC",
+                (entity_id, entity_id),
+            ).fetchall()
+            out: list[dict] = []
+            for row in rows:
+                other_id = row["target"] if row["source"] == entity_id else row["source"]
+                other = connection.execute(
+                    "SELECT id, type, data FROM entities WHERE id = ?",
+                    (other_id,),
+                ).fetchone()
+                if other is None:
+                    continue
+                out.append(
+                    {
+                        "id": other["id"],
+                        "type": other["type"],
+                        "data": json.loads(other["data"]),
+                        "rel": row["rel"],
+                        "created_at": row["created_at"],
+                    }
+                )
+        return out
 
     def search(
         self,

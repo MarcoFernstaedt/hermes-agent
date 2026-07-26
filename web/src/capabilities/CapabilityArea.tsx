@@ -33,6 +33,7 @@ import {
   toData,
   type FlatRecord,
 } from "./capability-model";
+import { LinkPanel } from "./LinkPanel";
 import { entityTypeOf, type Capability } from "./types";
 
 /**
@@ -239,6 +240,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
               editing === "new" ? create(values) : update(editing, values)
             }
           />
+          {editing !== "new" && <LinkPanel type={type} id={editing.id} />}
         </RecordDialog>
       )}
 

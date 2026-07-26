@@ -43,6 +43,11 @@ class EntityNotify(BaseModel):
     version: int = Field(default=0, ge=0)
 
 
+class EntityLink(BaseModel):
+    target_id: str
+    rel: str = "related"
+
+
 def default_database_path() -> Path:
     return get_hermes_home() / "state" / "entities.sqlite3"
 
@@ -229,5 +234,50 @@ def create_entities_router(
         action = body.action if body.action in ("created", "updated", "deleted") else "updated"
         await _emit(entity_type, entity_id, action, body.version)
         return {"ok": True}
+
+    def _require_entity(store: EntityStore, entity_type: str, entity_id: str) -> dict:
+        entity = store.get(entity_id)
+        if entity is None or entity["type"] != entity_type:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        return entity
+
+    @router.get("/{entity_type}/{entity_id}/links")
+    def list_links(entity_type: str, entity_id: str, request: Request) -> dict:
+        authorize(request)
+        store = _store()
+        _require_entity(store, entity_type, entity_id)
+        return {"items": store.links_for(entity_id)}
+
+    @router.post("/{entity_type}/{entity_id}/links")
+    def create_link(
+        entity_type: str,
+        entity_id: str,
+        request: Request,
+        body: EntityLink = Body(...),
+    ) -> dict:
+        authorize(request)
+        _require_same_origin(request)
+        store = _store()
+        _require_entity(store, entity_type, entity_id)
+        try:
+            return store.link(entity_id, body.target_id, rel=body.rel)
+        except EntityNotFoundError:
+            raise HTTPException(status_code=404, detail="Target entity not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.delete("/{entity_type}/{entity_id}/links/{target_id}")
+    def delete_link(
+        entity_type: str,
+        entity_id: str,
+        target_id: str,
+        request: Request,
+        rel: str = Query(default="related"),
+    ) -> dict:
+        authorize(request)
+        _require_same_origin(request)
+        store = _store()
+        _require_entity(store, entity_type, entity_id)
+        return {"removed": store.unlink(entity_id, target_id, rel=rel)}
 
     return router
