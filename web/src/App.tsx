@@ -164,9 +164,18 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
-function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
-  if (pluginsLoading) {
-    // Render nothing during the plugin-load window — a spinner here would just flash.
+function UnknownRouteFallback({
+  pluginsLoading,
+  capabilitiesLoading,
+}: {
+  pluginsLoading: boolean;
+  capabilitiesLoading: boolean;
+}) {
+  // Both plugin tabs and capability routes (/c/<id>) arrive asynchronously.
+  // Redirecting before either resolves would bounce a deep-link to a real
+  // capability/plugin route off to /sessions, so hold until both settle.
+  if (pluginsLoading || capabilitiesLoading) {
+    // Render nothing during the load window — a spinner here would just flash.
     return null;
   }
   return <Navigate to="/sessions" replace />;
@@ -482,7 +491,7 @@ export default function App() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
-  const { capabilities } = useCapabilities();
+  const { capabilities, loading: capabilitiesLoading } = useCapabilities();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1272,7 +1281,10 @@ export default function App() {
                       <Route
                         path="*"
                         element={
-                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                          <UnknownRouteFallback
+                            pluginsLoading={pluginsLoading}
+                            capabilitiesLoading={capabilitiesLoading}
+                          />
                         }
                       />
                     </Routes>
