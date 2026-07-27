@@ -50,5 +50,35 @@ capability manifest (default) → dashboard plugin (custom UI) → native page
 (legacy, avoid). Adding a surface should touch its own directory and nothing
 else. The app compounds only if every addition is a clean unit.
 
-This mission is the north star for both the owner and the agent. The detailed
-build plan lives in `docs/plans/imperator-dynamic-ui-self-improvement-response.md`.
+## Canonical specification
+
+The full product specification is the **Master Build Prompt** — architecture,
+backend, every surface, blocks, motion, accessibility, onboarding, performance,
+security, and the agent-platform union. It supersedes and folds in all earlier
+briefs. The verified engineering response and phase plan (grounded in what the
+fork actually is, with honest cuts) live in
+`docs/plans/imperator-master-spec-response.md`.
+
+Load-bearing invariants it adds:
+
+- **The platform and the agent are one system**, not an app that calls an agent:
+  one tool surface, one backend service layer (write once, expose twice), the
+  hub as the agent's context.
+- **Prompt-cache preservation is a hard architectural constraint.** Anything
+  injected into the system prompt must stay byte-stable across turns; volatile
+  cross-module context is carried as a digest in the turn, never by mutating the
+  system prompt.
+- **The native chat client is built on the tui_gateway structured protocol**
+  (real DOM, correct a11y tree, multi-client fan-out); the terminal stays a
+  separate labelled power-user tab.
+- **Generated is never second-class** — a generated table/board/calendar must be
+  virtualized, keyboard-complete, and correct in NVDA *and* VoiceOver, or the
+  approach has failed.
+- **One review queue** for every proposal, approval, and structural change —
+  cleared like an inbox, never scattered as interruptions.
+- **Desktop application**, not a phone layout — keyboard/mouse, multi-pane,
+  tabbed workspace; screen-reader- and voice-first, because the owner uses NVDA.
+
+This mission is the north star for both the owner and the agent. The
+dynamic-UI/self-improvement plan lives in
+`docs/plans/imperator-dynamic-ui-self-improvement-response.md`.
