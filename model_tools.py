@@ -1284,12 +1284,22 @@ def handle_function_call(
             _scope_token = None
         try:
             def _integrity_refusal(next_args: Dict[str, Any]) -> Optional[str]:
+                # Approval integrity: the executed payload must match the approved
+                # one. Then the agent guards: outbound secret-scan + rate ceilings.
                 try:
                     from hermes_cli import approval_integrity as _integrity
 
-                    return _integrity.verify_at_execution(
+                    refused = _integrity.verify_at_execution(
                         tool_call_id or "", function_name, next_args
                     )
+                    if refused is not None:
+                        return refused
+                except Exception:
+                    pass
+                try:
+                    from hermes_cli import agent_guards as _guards
+
+                    return _guards.pre_dispatch_check(function_name, next_args)
                 except Exception:
                     return None
 
