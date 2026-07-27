@@ -62,9 +62,18 @@ def _apply_capability(payload: dict[str, Any]) -> str:
     return f"capability '{cid}' written to {path}"
 
 
+def _apply_improvement(payload: dict[str, Any]) -> str:
+    """A platform improvement proposal is advisory — approving it records the
+    owner's intent to act; there is no code to run. (The follow-up, if any, is
+    its own proposal.) So 'applying' just acknowledges it."""
+    what = payload.get("action") or payload.get("recommendation") or "improvement"
+    return f"acknowledged: {what}"
+
+
 def register_builtin_handlers() -> None:
     """Register the handlers that ship with the platform. Idempotent."""
     register_handler("capability", _apply_capability)
+    register_handler("improvement", _apply_improvement)
 
 
 register_builtin_handlers()

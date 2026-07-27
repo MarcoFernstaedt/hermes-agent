@@ -45,6 +45,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { ComputerUseSection } from "@/components/ComputerUseSection";
 import { ReleaseProvenanceCard } from "@/components/ReleaseProvenanceCard";
+import { PlatformHealthCard } from "@/components/PlatformHealthCard";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -823,6 +824,18 @@ export default function SystemPage() {
           onClose={() => setActiveAction(null)}
         />
       )}
+
+      {/* ── Platform health ───────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <Stethoscope className="h-4 w-4" /> Platform health
+        </H2>
+        <Card>
+          <CardContent className="py-4">
+            <PlatformHealthCard />
+          </CardContent>
+        </Card>
+      </section>
 
       {/* ── Release / provenance ──────────────────────────────────── */}
       <section className="flex flex-col gap-3">

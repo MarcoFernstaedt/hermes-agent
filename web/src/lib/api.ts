@@ -494,6 +494,17 @@ export interface AgentScope {
   description: string;
 }
 
+export type HealthStatus = "ok" | "warn" | "error" | "unknown";
+
+export interface SystemHealth {
+  status: HealthStatus;
+  generated_at: number;
+  sections: Record<
+    string,
+    { status: HealthStatus; [key: string]: unknown }
+  >;
+}
+
 export interface CommitInfo {
   commit: string;
   commit_short: string;
@@ -988,6 +999,7 @@ export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
+  getSystemHealth: () => fetchJSON<SystemHealth>("/api/system/health"),
   getSpotifyMediaState: () =>
     fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
   controlSpotifyMedia: (command: SpotifyMediaCommand) =>

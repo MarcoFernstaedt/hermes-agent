@@ -18,4 +18,11 @@ def create_system_router(authorize: Authorize) -> APIRouter:
         authorize(request)
         return provenance.collect()
 
+    @router.get("/health")
+    def read_health(request: Request) -> dict:
+        authorize(request)
+        from hermes_cli import health
+
+        return health.collect_health()
+
     return router
