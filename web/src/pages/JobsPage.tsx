@@ -33,6 +33,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { cn } from "@/lib/utils";
+import { JobsTodayCommand } from "@/features/jobs/JobsTodayCommand";
 
 export type JobsViewState = "loading" | "ready" | "error" | "unconfigured";
 
@@ -626,7 +627,8 @@ export default function JobsPage() {
   };
 
   return (
-    <div ref={rootRef}>
+    <div ref={rootRef} className="flex flex-col gap-4">
+      <JobsTodayCommand />
       <JobsView
         state={state}
         error={error}

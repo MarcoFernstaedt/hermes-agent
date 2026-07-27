@@ -186,6 +186,31 @@ export function buildJobsQuery(filters: JobsFilters): string {
   return encoded ? `?${encoded}` : "";
 }
 
+function freshnessRank(freshness: JobFreshness): number {
+  // Active first, then unknown, then stale (least urgent to act on now).
+  if (freshness === "active") return 0;
+  if (freshness === "unknown") return 1;
+  return 2;
+}
+
+/**
+ * The day's highest-value income actions: roles whose application packet is
+ * built and just needs submitting. These are a single action away from
+ * progress, so they lead the daily command surface — freshest and best-fit
+ * first. Pure and deterministic so it can be unit-tested without the network.
+ */
+export function selectDailyActions(jobs: JobRole[], limit = 3): JobRole[] {
+  return [...jobs]
+    .filter((j) => j.status === "packet_ready_not_applied")
+    .sort((a, b) => {
+      const fr = freshnessRank(a.freshness) - freshnessRank(b.freshness);
+      if (fr !== 0) return fr;
+      if (b.fit_score !== a.fit_score) return b.fit_score - a.fit_score;
+      return (b.date_found || "").localeCompare(a.date_found || "");
+    })
+    .slice(0, Math.max(0, limit));
+}
+
 export function statusLabel(status: string): string {
   if (status === "packet_ready_not_applied") return "Packet ready — not applied";
   return status
