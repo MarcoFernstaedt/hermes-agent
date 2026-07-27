@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Check, ChevronDown, Inbox, ShieldAlert, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Check, ChevronDown, Inbox, ShieldAlert, Wand2, X } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { cn } from "@/lib/utils";
 import { useReviewQueue } from "@/hooks/useReviewQueue";
@@ -23,6 +24,12 @@ export default function ReviewPage() {
         <span className="ml-auto font-mono-ui text-xs text-text-tertiary">
           {(counts.pending ?? 0)} pending · {(counts.applied ?? 0)} applied
         </span>
+        <Link
+          to="/capabilities/new"
+          className="inline-flex items-center gap-1 rounded-md border border-current/15 px-2.5 py-1 font-sans text-xs text-text-secondary transition-colors hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
+        >
+          <Wand2 className="size-3.5" aria-hidden /> New capability
+        </Link>
       </header>
 
       <p className="text-sm text-text-secondary">

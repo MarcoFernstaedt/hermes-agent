@@ -110,6 +110,7 @@ const GitPage = lazy(() => import("@/pages/GitPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const ReviewPage = lazy(() => import("@/pages/ReviewPage"));
+const CapabilityBuilderPage = lazy(() => import("@/pages/CapabilityBuilderPage"));
 const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
@@ -235,6 +236,7 @@ const BUILTIN_MODULES: BuiltinModule[] = [
   { path: "/settings", component: SettingsPage, nav: { label: "Settings", icon: SlidersHorizontal } },
   // Route-only (no sidebar entry).
   { path: "/profiles/new", component: ProfileBuilderPage },
+  { path: "/capabilities/new", component: CapabilityBuilderPage },
   { path: "/blocks", component: BlocksGalleryPage },
   // Settings-only: Settings hub + command palette, never the sidebar. The
   // /achievements page is provided by a plugin, so it has no component here.
