@@ -45,8 +45,28 @@ _RECENT_DELETES: deque[float] = deque()
 _BURST_DELETE_WINDOW = 60.0
 _BURST_DELETE_THRESHOLD = 5
 
-# Seen email recipients (first-contact flag). Process-local hint, not security.
+# Seen send recipients (first-contact flag). Process-local hint, not security.
 _SEEN_RECIPIENTS: set[str] = set()
+
+# Argument keys that carry an outbound audience on a send-category call.
+_RECIPIENT_KEYS = (
+    "to", "recipient", "recipients", "email", "address", "chat_id",
+    "channel", "channel_id", "phone", "number",
+)
+
+
+def _recipients_of(args: Any) -> list[str]:
+    """Best-effort extraction of the audience from a send payload."""
+    if not isinstance(args, dict):
+        return []
+    out: list[str] = []
+    for key in _RECIPIENT_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip().lower())
+        elif isinstance(val, (list, tuple)):
+            out.extend(str(v).strip().lower() for v in val if str(v).strip())
+    return out
 
 
 # -- modes -----------------------------------------------------------------
@@ -186,6 +206,15 @@ def pre_dispatch_check(tool_name: str, args: Any, tier: Any = None) -> Optional[
                         f"what looks like a credential ({', '.join(hits)}). Remove "
                         "the secret before sending."
                     )
+        # First-contact flag: a send to an audience never seen before. Never
+        # blocks here (the tier system already gates consequential sends); it
+        # marks the send so a new-recipient anomaly is visible in the audit log.
+        new_recipients = [r for r in _recipients_of(args) if r not in _SEEN_RECIPIENTS]
+        if new_recipients:
+            with _LOCK:
+                _SEEN_RECIPIENTS.update(new_recipients)
+            _audit(tool_name, "first_contact", "flagged",
+                   {"new_recipient_count": len(new_recipients)})
 
     now = time.time()
 

@@ -105,6 +105,28 @@ def test_reads_are_never_gated(home, monkeypatch):
         assert g.pre_dispatch_check("bookmark_list", {}, tier=Tier.AUTO) is None
 
 
+def test_first_contact_flag(home):
+    from hermes_cli import audit_log
+
+    # First send to a new recipient is flagged; a repeat is not.
+    g.pre_dispatch_check("email_send", {"to": "new@x.y", "body": "hi"}, tier=Tier.APPROVAL)
+    g.pre_dispatch_check("email_send", {"to": "new@x.y", "body": "again"}, tier=Tier.APPROVAL)
+    rows = [r for r in audit_log.query(module="agent_guards", limit=20)
+            if r["action"] == "first_contact"]
+    assert len(rows) == 1
+    # The audit detail carries a count, never the recipient value (no PII).
+    assert rows[0]["detail"]["new_recipient_count"] == 1
+    assert "new@x.y" not in (rows[0]["detail"] or {}).values()
+
+
+def test_first_contact_does_not_flag_writes(home):
+    from hermes_cli import audit_log
+
+    g.pre_dispatch_check("write_file", {"to": "someone@x.y"}, tier=Tier.APPROVAL)
+    assert not [r for r in audit_log.query(module="agent_guards", limit=20)
+                if r["action"] == "first_contact"]
+
+
 def test_burst_delete_flag(home):
     from hermes_cli import audit_log
 
