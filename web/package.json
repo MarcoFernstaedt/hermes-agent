@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
-    "budget": "node scripts/check-bundle-budget.mjs"
+    "budget": "node scripts/check-bundle-budget.mjs",
+    "build:plugin": "node scripts/build-dashboard-plugin.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
