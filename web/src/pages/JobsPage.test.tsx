@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { commitJobStatus, type JobRole, type JobsSummary } from "@/lib/jobs";
+import { auditA11y } from "@/lib/a11y-audit";
 import { JobsView } from "./JobsPage";
 
 const summary: JobsSummary = {
@@ -189,6 +190,9 @@ describe("JobsView", () => {
     expect(html).toContain("$25/hour");
     expect(html).toContain("Fit 92");
     expect(html).toContain("Active");
+    // Accessibility regression gate: the real Jobs surface must have no
+    // interactive element without an accessible name and no image without alt.
+    expect(auditA11y(html)).toEqual([]);
     expect(html).toContain("Open apply page");
     expect(html).toContain("Open source");
     expect(html).toContain("Open Application Packet.md");

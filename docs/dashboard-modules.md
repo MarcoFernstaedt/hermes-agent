@@ -95,6 +95,26 @@ to fix, not a reason to grow the core.
 
 ---
 
+## Accessibility gate (required for every surface)
+
+Accessibility is load-bearing, and because so much is generated or
+self-authored, the gate runs at author time, not after the fact:
+
+- **Capability surfaces** are accessible *by construction* — the fixed renderer
+  composes semantic blocks, and the schema requires every field to have a label.
+  A declaration cannot inject inaccessible markup.
+- **Every component test** should render the surface to static markup and assert
+  `auditA11y(html)` is empty (`web/src/lib/a11y-audit.ts`) — the automated
+  tripwire for the top violations (an interactive element with no accessible
+  name, an image with no `alt`). See `JobsPage.test.tsx` for the pattern. This
+  is what keeps self-modification from quietly regressing accessibility.
+- **Full axe + manual NVDA passes** (Chrome and Firefox) run on-machine per
+  release — the tripwire is the CI floor, not the ceiling.
+
+Icon-only controls must carry an `aria-label`; decorative icons/images get
+`aria-hidden` / `alt=""`. Reduced motion must remove all motion without losing
+information.
+
 ## The rule of thumb
 
 Adding a surface should touch **its own directory and nothing else.** Nav,
