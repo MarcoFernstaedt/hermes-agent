@@ -630,8 +630,21 @@ export interface CapabilityDef {
   agent?: { expose?: string[] };
 }
 
+export interface CapabilityLoadError {
+  source: string;
+  id: string | null;
+  errors: string[];
+}
+
 export interface CapabilitiesResponse {
   capabilities: CapabilityDef[];
+  /** Declarations rejected at load time (invalid → never served as UI). */
+  load_errors?: CapabilityLoadError[];
+}
+
+export interface CapabilityValidation {
+  valid: boolean;
+  errors: string[];
 }
 
 /** A record linked to another, as returned by the links endpoint (the far end
@@ -1165,6 +1178,13 @@ export const api = {
 
   // -- Capabilities (declarations served for dynamic UI wiring) -----------
   getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+  getCapabilitySchema: () => fetchJSON<Record<string, unknown>>("/api/capabilities/schema"),
+  validateCapability: (declaration: unknown) =>
+    fetchJSON<CapabilityValidation>("/api/capabilities/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(declaration),
+    }),
 
   /** The whole entity link graph (nodes + edges) for the relationships view. */
   getEntityGraph: () => fetchJSON<EntityGraphResponse>("/api/entities/graph"),

@@ -77,9 +77,20 @@ def _plugin_capability_files() -> list[Path]:
     return out
 
 
+# Load-time validation failures, kept for the health surface / diagnostics so a
+# rejected capability is visible instead of silently missing. (source, id, errors)
+LOAD_ERRORS: list[dict[str, Any]] = []
+
+
 def load_capabilities() -> list[dict[str, Any]]:
     """Load capability declarations — core first, then plugin modules — deduped
-    by id (core wins). See the module docstring for the two sources."""
+    by id (core wins). Every declaration is validated against the schema before
+    it is served; an invalid one is **rejected, not rendered** (a malformed
+    capability must fail at author/load time, never as broken UI at view time).
+    Rejections are recorded in ``LOAD_ERRORS`` for diagnostics.
+    See the module docstring for the two sources."""
+    from hermes_cli.capabilities.schema import validate_declaration
+
     files: list[Path] = []
     if _DEFINITIONS_DIR.is_dir():
         files.extend(sorted(_DEFINITIONS_DIR.glob("*.json")))
@@ -87,16 +98,24 @@ def load_capabilities() -> list[dict[str, Any]]:
 
     caps: list[dict[str, Any]] = []
     seen: set[str] = set()
+    errors: list[dict[str, Any]] = []
     for path in files:
         try:
             decl = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            errors.append({"source": str(path), "id": None, "errors": [f"invalid JSON: {exc}"]})
             continue
         cid = decl.get("id")
         if not cid or cid in seen:
             continue
+        problems = validate_declaration(decl)
+        if problems:
+            errors.append({"source": str(path), "id": cid, "errors": problems})
+            continue  # reject — never serve a malformed capability
         seen.add(cid)
         caps.append(decl)
+
+    LOAD_ERRORS[:] = errors
     return caps
 
 
