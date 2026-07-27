@@ -1,7 +1,43 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { execSync } from "node:child_process";
 import path from "path";
+
+/**
+ * Emit `build-info.json` into the build output so the backend can report which
+ * frontend commit is actually deployed (release-drift visibility). No-op in the
+ * dev server; git failures degrade to "unknown" rather than breaking the build.
+ */
+function hermesBuildInfo(): Plugin {
+  function git(cmd: string): string {
+    try {
+      return execSync(cmd, { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"] })
+        .toString()
+        .trim();
+    } catch {
+      return "unknown";
+    }
+  }
+  return {
+    name: "hermes:build-info",
+    apply: "build",
+    generateBundle() {
+      const info = {
+        commit: git("git rev-parse HEAD"),
+        commit_short: git("git rev-parse --short HEAD"),
+        branch: git("git rev-parse --abbrev-ref HEAD"),
+        dirty: git("git status --porcelain") !== "",
+        built_at: new Date().toISOString(),
+      };
+      this.emitFile({
+        type: "asset",
+        fileName: "build-info.json",
+        source: JSON.stringify(info, null, 2),
+      });
+    },
+  };
+}
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
@@ -58,7 +94,7 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), hermesDevToken()],
+  plugins: [react(), tailwindcss(), hermesDevToken(), hermesBuildInfo()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

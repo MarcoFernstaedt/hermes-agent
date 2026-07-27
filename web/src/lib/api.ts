@@ -494,6 +494,27 @@ export interface AgentScope {
   description: string;
 }
 
+export interface CommitInfo {
+  commit: string;
+  commit_short: string;
+  branch: string;
+  dirty: boolean | null;
+  built_at?: string | null;
+  available?: boolean;
+}
+
+export interface SystemProvenance {
+  backend: CommitInfo;
+  frontend: CommitInfo;
+  /** True when the served frontend was built from a different commit than the running backend. */
+  commit_drift: boolean;
+  process: {
+    started_at: number;
+    uptime_seconds: number;
+    python: string;
+  };
+}
+
 export interface AgentGuardrails {
   scopes: AgentScope[];
   default_scope: string;
@@ -918,6 +939,7 @@ export interface AudiobookProgress {
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
   getSpotifyMediaState: () =>
     fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
   controlSpotifyMedia: (command: SpotifyMediaCommand) =>

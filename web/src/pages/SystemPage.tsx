@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   Download,
+  GitCommitHorizontal,
   Globe,
   HardDrive,
   KeyRound,
@@ -43,6 +44,7 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { ComputerUseSection } from "@/components/ComputerUseSection";
+import { ReleaseProvenanceCard } from "@/components/ReleaseProvenanceCard";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -821,6 +823,18 @@ export default function SystemPage() {
           onClose={() => setActiveAction(null)}
         />
       )}
+
+      {/* ── Release / provenance ──────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <GitCommitHorizontal className="h-4 w-4" /> Release
+        </H2>
+        <Card>
+          <CardContent className="py-4">
+            <ReleaseProvenanceCard />
+          </CardContent>
+        </Card>
+      </section>
 
       {/* ── Host / system stats ───────────────────────────────────── */}
       <section className="flex flex-col gap-3">
