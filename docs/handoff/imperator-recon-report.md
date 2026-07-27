@@ -323,7 +323,7 @@ Priority order:
 
 ### 5.4 Desktop-only direction
 
-Do **not** treat desktop-only as an owner requirement. The native desktop app can remain the implementation target for OS integrations, but the owner's established operating preference is screen-reader and iPhone-first, with Telegram and the native dashboard as control surfaces. Mobile-accessible responsive behavior still matters; a separate mobile app is not required by this recon.
+Confirmed: **desktop-first and desktop-only.** Do not spend product-design or implementation effort on mobile or iPhone surfaces. Preserve strong screen-reader accessibility within the desktop app.
 
 ## 6. Agent recommendations from direct use
 
@@ -393,7 +393,7 @@ Ranked:
 2. Native actionable notifications for job replies, approvals, and urgent incidents only.
 3. Screen-reader-friendly tray/menu status showing running commit, connection state, and global stop.
 4. File drag/drop and clipboard intake for resumes, job descriptions, screenshots, and OCR.
-5. Share-to-Imperator from browser/iPhone rather than a desktop-only island.
+5. Desktop context-menu and browser share-to-Imperator actions.
 
 Local model: not currently available. Ollama is installed but inactive/disabled, and no model inventory was verified.
 
