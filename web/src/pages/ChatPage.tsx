@@ -39,6 +39,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
 import { ChatHeaderRename } from "@/components/ChatHeaderRename";
+import { ChatScopeControl } from "@/components/ChatScopeControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -1231,12 +1232,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const renameSessionId = resumeParam ?? activeStoredSessionIdRef.current;
     setAfterTitle(
       renameSessionId ? (
-        <ChatHeaderRename
-          sessionId={renameSessionId}
-          title={sessionTitle}
-          profile={scopedProfile}
-          onRenamed={handleSessionTitleChange}
-        />
+        <span className="inline-flex items-center gap-2">
+          <ChatHeaderRename
+            sessionId={renameSessionId}
+            title={sessionTitle}
+            profile={scopedProfile}
+            onRenamed={handleSessionTitleChange}
+          />
+          <ChatScopeControl sessionId={renameSessionId} />
+        </span>
       ) : null,
     );
     return () => {
