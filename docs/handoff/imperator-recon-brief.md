@@ -165,7 +165,73 @@ queue? (This is the highest-value thing you can collect — real usage friction.
 
 ---
 
-## 6. What's already shipped vs pending (so you know the frame)
+## 6. Help us make Imperator better — questions for YOU, the agent
+
+Answer these from your **direct vantage**: you can see the running app, the real
+data, the owner's actual habits, and this machine's capabilities — things the
+cloud session is blind to. Be specific and opinionated. Prefer concrete
+proposals ("add a quick-capture hotkey that creates an entity") over vague
+praise. Where you can, cite what you observed (a slow route, a confusing label,
+a missing tool). **Add anything we didn't think to ask.**
+
+### 6A. Real usage & friction (highest value)
+- Which surfaces does the owner open most, and which look never-used?
+- Name the **3 worst flows** — tasks that take too many clicks/steps or too much
+  waiting. Describe the ideal shorter path for each.
+- What does the owner still do **outside** Imperator (other apps, manual steps,
+  spreadsheets, notes) that Imperator could absorb?
+- Any surface that is outright **broken, slow (>1s), or confusing**? Give repro
+  steps and, if visible, the console/network error.
+- What single change would most make the owner **live in the app** daily?
+
+### 6B. Agent & tool ergonomics (from operating the app yourself)
+- Which tools are **missing, awkward, or ambiguously named**? Where did you have
+  to fall back to raw shell because no tool fit?
+- Which approval prompts feel **excessive**, and which feel **too permissive**?
+- Are tool results too **verbose or too terse** to decide well? Examples.
+- Any tool that returned a **confusing or unactionable error**?
+
+### 6C. Data realities (sizing drives design)
+- Rough counts: emails, jobs, entities, calendar events, media items, vault
+  notes. Anything else with real volume?
+- Any surface likely to **lag or break** at the owner's real data size?
+- Does **search** find what the owner expects? Where does it miss?
+
+### 6D. Desktop-native opportunities (current design target is desktop)
+- Which OS integrations would earn their keep: native notifications, a **global
+  quick-capture hotkey**, menubar/tray presence, file drag-and-drop, local file
+  access, "share to Imperator"? Rank them.
+- Is a **local model** available (Ollama / LM Studio / etc.)? Which? This decides
+  whether private/offline agent tasks are viable.
+- Should anything run **in the background** as a service (sync, briefing prep)?
+
+### 6E. Proactivity calibration (feeds the daily briefing / automation / adaptation work)
+- **Daily briefing:** what should it contain, in what order, and when should it
+  appear? What would make it worth reading vs. noise?
+- **Automations:** what repetitive decisions does the owner make that a rule
+  could handle (candidates to promote from suggest → auto-execute)?
+- What would feel like **nagging** and must be avoided?
+- **Usage adaptation:** is the owner OK with the app gently reordering nav by
+  usage (shipped off-by-default, pin-wins, reversible), or do they want it fully
+  static? 
+
+### 6F. Integrations wishlist
+- Given the accounts/tools actually present (§4), which **new integrations**
+  would deliver the most value next? Name specific services/APIs the owner uses.
+
+### 6G. Trust & privacy
+- Anything about the guardrails (scopes, global stop, approval integrity, rate
+  ceilings, outbound secret-scan) that feels **wrong, missing, or over-strict**
+  for the owner's real context?
+- Is there data the owner **does not** want the app to touch or store?
+
+### 6H. Your ranked recommendations (open)
+- Give your **top 5 concrete improvements**, ranked, each with a one-line "why".
+- Then: what did you notice that none of the questions above covered?
+
+---
+
+## 7. What's already shipped vs pending (so you know the frame)
 
 **Shipped & tested (cloud):**
 - Session capability scopes + server-enforced **global stop** (refused at the
@@ -185,10 +251,12 @@ key — §2.5, §4.3), and turning Media/Jobs-UI into *removable* dashboard plug
 
 ---
 
-## 7. How to return the results
+## 8. How to return the results
 
-Write `docs/handoff/imperator-recon-report.md` with your answers to §1–§5,
-attach screenshots (§2), and either commit it on a branch and push, or paste the
-report back into chat. Lead with the **three things that most change the plan**:
-(a) the §3 enforce recommendation, (b) whether a model key is configured, and
-(c) any broken surface from §5.3.
+Write `docs/handoff/imperator-recon-report.md` with your answers to **§1–§6**
+(don't skip §6 — the improvement questions are the most valuable part), attach
+screenshots (§2), and either commit it on a branch and push, or paste the report
+back into chat. Lead with the **three things that most change the plan**: (a) the
+§3 enforce recommendation, (b) whether a model key is configured, and (c) the
+worst broken/annoying surface from §5.3 / §6A. Then give your §6H ranked
+recommendations up top so they're impossible to miss.
