@@ -32,6 +32,9 @@ from typing import Any, Optional
 
 _LOCK = threading.Lock()
 _RECORDS: dict[str, "_Record"] = {}
+# tool_call_id -> consumed-at timestamp, so a record can't be replayed after it
+# has already authorised one execution (fail-closed against replay in enforce).
+_CONSUMED: dict[str, float] = {}
 _TTL_SECONDS = 900.0  # 15 min: longer than any human approval round-trip.
 _MAX_RECORDS = 512  # Bound memory; evict oldest past this.
 
@@ -79,6 +82,15 @@ def _evict_locked(now: float) -> None:
             : len(_RECORDS) - _MAX_RECORDS
         ]:
             _RECORDS.pop(k, None)
+    # Age out the consumed-ledger on the same TTL and cap.
+    stale = [k for k, ts in _CONSUMED.items() if now - ts > _TTL_SECONDS]
+    for k in stale:
+        _CONSUMED.pop(k, None)
+    if len(_CONSUMED) > _MAX_RECORDS:
+        for k in sorted(_CONSUMED, key=lambda k: _CONSUMED[k])[
+            : len(_CONSUMED) - _MAX_RECORDS
+        ]:
+            _CONSUMED.pop(k, None)
 
 
 def record_grant(tool_call_id: str, tool_name: str, args: Any) -> None:
@@ -103,9 +115,17 @@ def clear(tool_call_id: str) -> None:
         return
     with _LOCK:
         _RECORDS.pop(tool_call_id, None)
+        _CONSUMED.pop(tool_call_id, None)
 
 
-def _audit_mismatch(tool_call_id: str, tool_name: str, enforced: bool) -> None:
+def reset_state() -> None:
+    """Clear all records and the consumed ledger (tests / a fresh session)."""
+    with _LOCK:
+        _RECORDS.clear()
+        _CONSUMED.clear()
+
+
+def _audit(tool_call_id: str, tool_name: str, action: str, outcome: str, detail: dict) -> None:
     try:
         from hermes_cli import audit_log
 
@@ -113,43 +133,80 @@ def _audit_mismatch(tool_call_id: str, tool_name: str, enforced: bool) -> None:
             actor="agent",
             module="approval_integrity",
             tool=tool_name,
-            action="payload_changed_after_approval",
+            action=action,
             target=tool_call_id,
             decision="approved",
-            outcome="refused" if enforced else "observed",
-            detail={"tool_call_id": tool_call_id, "enforced": enforced},
+            outcome=outcome,
+            detail={"tool_call_id": tool_call_id, **detail},
         )
     except Exception:
         pass
 
 
 def verify_at_execution(
-    tool_call_id: str, tool_name: str, args: Any
+    tool_call_id: str, tool_name: str, args: Any, *, gated: bool = False
 ) -> Optional[str]:
     """Verify the executing payload matches what was approved.
 
-    Returns a refusal message when the payload changed *and* the mode is
-    ``enforce``; otherwise ``None`` (nothing recorded, payload matches, or
-    observe-mode — a mismatch is still audited). The record is consumed either
-    way: an approval covers a single execution.
+    Returns a refusal message when the call must be blocked, else ``None``.
+
+    Behaviour, corrected per the on-machine recon (fail-closed in enforce):
+
+    * **Match** — the record is consumed and, in observe mode, a ``verified``
+      row is written so the audit log has a *denominator* (how many gated calls
+      passed), not only mismatches. Returns None.
+    * **Mismatch** — audited; refused in enforce, allowed-but-audited in observe.
+    * **No record** — in ``enforce`` a call known to be ``gated`` fails **closed**
+      (a human-gated call must carry a valid, unconsumed grant); a replay of an
+      already-consumed grant likewise fails closed. In observe (or for non-gated
+      calls) this stays None so nothing is blocked during measurement.
+    * **Errors** — in enforce mode an unexpected error fails closed rather than
+      silently allowing.
     """
     if not tool_call_id:
         return None
     m = mode()
     if m == "off":
         return None
-    with _LOCK:
-        record = _RECORDS.pop(tool_call_id, None)
-    if record is None:
-        return None  # This call was not gated by a human approval.
-    if canonical_hash(tool_name, args) == record.digest:
-        return None
     enforced = m == "enforce"
-    _audit_mismatch(tool_call_id, tool_name, enforced)
-    if enforced:
-        return (
-            f"Approval integrity check failed for '{tool_name}': the payload "
-            "changed after it was approved. Re-request approval for the current "
-            "arguments."
-        )
-    return None
+    try:
+        with _LOCK:
+            record = _RECORDS.pop(tool_call_id, None)
+            replayed = tool_call_id in _CONSUMED
+            if record is not None:
+                _CONSUMED[tool_call_id] = time.time()
+
+        if record is None:
+            if enforced and (replayed or gated):
+                reason = "replay of a consumed approval" if replayed else "no approval record"
+                _audit(tool_call_id, tool_name, "missing_approval_record", "refused",
+                       {"reason": reason, "enforced": True})
+                return (
+                    f"Approval integrity check failed for '{tool_name}': "
+                    f"{reason}. Re-request approval for the current arguments."
+                )
+            return None
+
+        if canonical_hash(tool_name, args) == record.digest:
+            if not enforced:  # measurement phase — record the denominator.
+                _audit(tool_call_id, tool_name, "verified", "observed", {"enforced": False})
+            return None
+
+        _audit(tool_call_id, tool_name, "payload_changed_after_approval",
+               "refused" if enforced else "observed", {"enforced": enforced})
+        if enforced:
+            return (
+                f"Approval integrity check failed for '{tool_name}': the payload "
+                "changed after it was approved. Re-request approval for the current "
+                "arguments."
+            )
+        return None
+    except Exception:
+        # Never let an integrity bug silently widen autonomy: fail closed in
+        # enforce, fail open (allow) in observe so measurement can't break work.
+        if enforced:
+            return (
+                f"Approval integrity check errored for '{tool_name}'; refusing to "
+                "run the gated call. Re-request approval."
+            )
+        return None

@@ -1072,11 +1072,13 @@ def handle_function_call(
     # approval decision sees here, then verify it is unchanged at dispatch —
     # so nothing mutates a gated call between consent and execution. AUTO tools
     # are never gated, so they are skipped (no cost, no audit noise).
+    _integrity_gated = False
     try:
         from hermes_cli.module_permissions import Tier, get_tier
         from hermes_cli import approval_integrity as _integrity
 
         if tool_call_id and get_tier(function_name) is not Tier.AUTO:
+            _integrity_gated = True
             _integrity.record_grant(tool_call_id, function_name, function_args)
     except Exception:
         pass
@@ -1290,7 +1292,8 @@ def handle_function_call(
                     from hermes_cli import approval_integrity as _integrity
 
                     refused = _integrity.verify_at_execution(
-                        tool_call_id or "", function_name, next_args
+                        tool_call_id or "", function_name, next_args,
+                        gated=_integrity_gated,
                     )
                     if refused is not None:
                         return refused

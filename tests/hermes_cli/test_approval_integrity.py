@@ -16,11 +16,11 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clean_records(monkeypatch):
-    ai._RECORDS.clear()
+    ai.reset_state()
     # Default to enforce for the assertions unless a test overrides it.
     monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", "enforce")
     yield
-    ai._RECORDS.clear()
+    ai.reset_state()
 
 
 def test_canonical_hash_is_order_independent():
@@ -46,11 +46,43 @@ def test_changed_payload_refused_in_enforce(home):
     assert "integrity" in refusal.lower()
 
 
-def test_record_is_consumed(home):
+def test_record_is_consumed_and_replay_fails_closed(home):
     ai.record_grant("call-3", "write_file", {"x": 1})
+    # First execution: the approved payload runs.
     assert ai.verify_at_execution("call-3", "write_file", {"x": 1}) is None
-    # A second verify has nothing recorded → not gated.
-    assert ai.verify_at_execution("call-3", "write_file", {"x": 999}) is None
+    # Replay of the same call id after consumption fails closed in enforce.
+    replay = ai.verify_at_execution("call-3", "write_file", {"x": 1})
+    assert replay is not None
+    assert "replay" in replay.lower()
+
+
+def test_missing_record_fails_closed_for_gated_enforce(home):
+    # A gated call that arrives at dispatch with no recorded grant is refused
+    # in enforce mode (fail closed) — the corrected behaviour from the recon.
+    refusal = ai.verify_at_execution("never-recorded", "write_file", {"x": 1}, gated=True)
+    assert refusal is not None
+    assert "no approval record" in refusal.lower()
+
+
+def test_missing_record_non_gated_is_allowed(home):
+    # A non-gated (AUTO) call has no grant and is not blocked, even in enforce.
+    assert ai.verify_at_execution("auto-call", "bookmark_get", {}, gated=False) is None
+
+
+def test_observe_missing_record_never_blocks(home, monkeypatch):
+    monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", "observe")
+    # During measurement, a missing record for a gated call must not block work.
+    assert ai.verify_at_execution("m1", "write_file", {"x": 1}, gated=True) is None
+
+
+def test_observe_verified_telemetry_records_denominator(home, monkeypatch):
+    monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", "observe")
+    ai.record_grant("v1", "write_file", {"x": 1})
+    assert ai.verify_at_execution("v1", "write_file", {"x": 1}, gated=True) is None
+    from hermes_cli import audit_log
+
+    rows = audit_log.query(module="approval_integrity", limit=10)
+    assert any(r["action"] == "verified" for r in rows)
 
 
 def test_observe_mode_audits_but_allows(home, monkeypatch):
