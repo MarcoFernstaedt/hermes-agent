@@ -32,6 +32,18 @@ from typing import Any
 _DEFINITIONS_DIR = Path(__file__).parent / "definitions"
 
 
+def _user_definitions_dir() -> Path | None:
+    """Writable dir for owner/agent-authored declarations (approved via the
+    review queue). Read alongside the bundled definitions so an approved
+    capability persists and appears without touching the package."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "capabilities"
+    except Exception:
+        return None
+
+
 def _disabled_plugin_names() -> set[str]:
     """Plugin keys the operator has disabled (best-effort; empty if unavailable)."""
     try:
@@ -94,6 +106,9 @@ def load_capabilities() -> list[dict[str, Any]]:
     files: list[Path] = []
     if _DEFINITIONS_DIR.is_dir():
         files.extend(sorted(_DEFINITIONS_DIR.glob("*.json")))
+    user_dir = _user_definitions_dir()
+    if user_dir and user_dir.is_dir():
+        files.extend(sorted(user_dir.glob("*.json")))
     files.extend(_plugin_capability_files())
 
     caps: list[dict[str, Any]] = []

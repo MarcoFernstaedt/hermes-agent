@@ -524,6 +524,7 @@ from hermes_cli.entities.router import create_entities_router as _create_entitie
 from hermes_cli.capabilities.router import create_capabilities_router as _create_capabilities_router  # noqa: E402
 from hermes_cli.agent_scopes_router import create_agent_scopes_router as _create_agent_scopes_router  # noqa: E402
 from hermes_cli.system_router import create_system_router as _create_system_router  # noqa: E402
+from hermes_cli.review.router import create_review_router as _create_review_router  # noqa: E402
 
 app.include_router(_create_jobs_router(_require_token, initialize=False))
 app.include_router(_create_life_router(_require_token, initialize=False))
@@ -543,6 +544,7 @@ app.include_router(
 app.include_router(_create_capabilities_router(_require_token))
 app.include_router(_create_agent_scopes_router(_require_token))
 app.include_router(_create_system_router(_require_token))
+app.include_router(_create_review_router(_require_token, publish=_publish_entity_event))
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks

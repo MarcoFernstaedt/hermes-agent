@@ -630,6 +630,41 @@ export interface CapabilityDef {
   agent?: { expose?: string[] };
 }
 
+export type ProposalKind =
+  | "capability" | "skill" | "mcp" | "plugin" | "tool" | "automation" | "improvement";
+export type ProposalStatus = "pending" | "approved" | "rejected" | "applied" | "failed";
+
+export interface ReviewProposal {
+  id: string;
+  kind: ProposalKind;
+  title: string;
+  summary: string;
+  source: string;
+  risk: "low" | "medium" | "high";
+  status: ProposalStatus;
+  payload: Record<string, unknown>;
+  preview: Record<string, unknown>;
+  outcome: string;
+  created_at: number;
+  decided_at: number | null;
+  applied_at: number | null;
+}
+
+export interface ReviewQueueResponse {
+  proposals: ReviewProposal[];
+  counts: Partial<Record<ProposalStatus, number>>;
+}
+
+export interface NewProposal {
+  kind: ProposalKind;
+  title: string;
+  summary?: string;
+  source?: string;
+  risk?: "low" | "medium" | "high";
+  payload?: Record<string, unknown>;
+  preview?: Record<string, unknown>;
+}
+
 export interface CapabilityLoadError {
   source: string;
   id: string | null;
@@ -1177,6 +1212,23 @@ export const api = {
     ),
 
   // -- Capabilities (declarations served for dynamic UI wiring) -----------
+  getReviewQueue: (status?: string) =>
+    fetchJSON<ReviewQueueResponse>(
+      `/api/review${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  getProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}`),
+  createProposal: (proposal: NewProposal) =>
+    fetchJSON<ReviewProposal>("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    }),
+  approveProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  rejectProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}/reject`, { method: "POST" }),
+
   getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
   getCapabilitySchema: () => fetchJSON<Record<string, unknown>>("/api/capabilities/schema"),
   validateCapability: (declaration: unknown) =>

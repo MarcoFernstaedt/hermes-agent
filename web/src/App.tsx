@@ -41,6 +41,7 @@ import {
   Globe,
   Heart,
   KeyRound,
+  Inbox,
   Mail,
   Menu,
   MessageSquare,
@@ -108,6 +109,7 @@ const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
+const ReviewPage = lazy(() => import("@/pages/ReviewPage"));
 const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
@@ -208,6 +210,7 @@ const BUILTIN_MODULES: BuiltinModule[] = [
   { path: "/search", component: SearchPage, nav: { label: "Search", icon: Search } },
   { path: "/graph", component: GraphPage, nav: { label: "Graph", icon: Share2 } },
   { path: "/sessions", component: SessionsPage, nav: { label: "Sessions", labelKey: "sessions", icon: MessageSquare } },
+  { path: "/review", component: ReviewPage, nav: { label: "Review", icon: Inbox } },
   { path: "/media", component: MediaPage, nav: { label: "Media", icon: Music } },
   { path: "/email", component: EmailPage, nav: { label: "Email", icon: Mail } },
   { path: "/calendar", component: CalendarPage, nav: { label: "Calendar", icon: CalendarDays } },
