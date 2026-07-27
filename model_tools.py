@@ -1083,6 +1083,16 @@ def handle_function_call(
     except Exception:
         pass
 
+    def _integrity_clear_on_block() -> None:
+        # A blocked/denied gated call must not leave a usable grant behind.
+        if _integrity_gated and tool_call_id:
+            try:
+                from hermes_cli import approval_integrity as _ai
+
+                _ai.clear(tool_call_id)
+            except Exception:
+                pass
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
@@ -1226,6 +1236,7 @@ def handle_function_call(
                     error_message=block_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                _integrity_clear_on_block()
                 return result
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
@@ -1236,10 +1247,12 @@ def handle_function_call(
 
             edit_block_message = maybe_require_edit_approval(function_name, function_args)
             if edit_block_message is not None:
+                _integrity_clear_on_block()
                 return edit_block_message
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
+                _integrity_clear_on_block()
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,

@@ -147,6 +147,42 @@ def test_gated_tool_through_handle_function_call_is_not_false_refused(home):
         registry.deregister("t_apr")
 
 
+def test_denied_gated_call_clears_its_record(home, monkeypatch):
+    """A gated call that is blocked at the edit-approval gate must not leave a
+    grant record behind — otherwise a later call reusing the id could inherit
+    approval it never got. Exercises the denial-clear wiring in
+    handle_function_call."""
+    import json as _json
+
+    import model_tools
+    from hermes_cli.module_permissions import Tier, register_tool_permission
+    from tools.registry import registry
+
+    # Force the edit-approval gate to DENY.
+    monkeypatch.setattr(
+        "acp_adapter.edit_approval.maybe_require_edit_approval",
+        lambda name, args: _json.dumps({"error": "denied by test"}),
+    )
+    register_tool_permission("t_denied", Tier.APPROVAL)
+    registry.register(
+        name="t_denied",
+        toolset="demo",
+        schema={"name": "t_denied", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _a, **_k: _json.dumps({"ok": True}),
+    )
+    try:
+        out = _json.loads(
+            model_tools.handle_function_call(
+                "t_denied", {"x": 1}, session_id="s", tool_call_id="tc-denied"
+            )
+        )
+        assert out.get("error") == "denied by test"
+        # The grant record was cleared by the denial — nothing to replay.
+        assert "tc-denied" not in ai._RECORDS
+    finally:
+        registry.deregister("t_denied")
+
+
 def test_ttl_eviction(home, monkeypatch):
     ai.record_grant("old", "write_file", {"x": 1})
     # Fast-forward past the TTL by ageing the record.
