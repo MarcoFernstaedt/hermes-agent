@@ -120,9 +120,13 @@ def _register_permissions() -> None:
 
 
 _register_permissions()
-for _name, _toolset, _schema, _handler in _TOOLS:
-    try:
-        registry.register(name=_name, toolset=_toolset, schema=_schema,
-                          handler=_handler, check_fn=_available, emoji="")
-    except Exception:
-        pass
+
+# Direct top-level registration so the registry's auto-discovery
+# (_module_registers_tools requires a top-level registry.register call) imports
+# this module. A loop-wrapped call is not detected and the module never loads.
+registry.register(name="progress_today", toolset="progress", schema=_SCHEMAS["progress_today"],
+                  handler=_handle_today, check_fn=_available, emoji="")
+registry.register(name="progress_history", toolset="progress", schema=_SCHEMAS["progress_history"],
+                  handler=_handle_history, check_fn=_available, emoji="")
+registry.register(name="progress_log", toolset="progress", schema=_SCHEMAS["progress_log"],
+                  handler=_handle_log, check_fn=_available, emoji="")
