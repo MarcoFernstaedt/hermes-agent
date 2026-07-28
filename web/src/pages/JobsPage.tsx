@@ -115,7 +115,13 @@ function GoalBar({ label, current, target }: { label: string; current: number; t
         className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary/60"
       >
         <div
-          className={cn("h-full rounded-full transition-all", met ? "bg-success" : "bg-primary")}
+          className={cn(
+            // Scope the transition: a progress bar changes width and colour, so
+            // animate exactly those. Blanket transitions animate every
+            // layout-triggering property (motion discipline: one at a time).
+            "h-full rounded-full transition-[width,background-color] duration-[var(--motion-state)] ease-[var(--ease-out)]",
+            met ? "bg-success" : "bg-primary",
+          )}
           style={{ width: `${pct}%` }}
         />
       </div>

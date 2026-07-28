@@ -2355,7 +2355,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
-            "transition-transform duration-200 ease-out",
+            "transition-transform duration-[var(--motion-panel)] ease-[var(--ease-spring)]",
             mobilePanelOpen
               ? "translate-x-0"
               : "pointer-events-none translate-x-full",

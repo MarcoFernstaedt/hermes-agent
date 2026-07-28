@@ -118,7 +118,9 @@ function TokenBar({
         {segments.map((s, i) => (
           <div
             key={i}
-            className="relative flex items-center transition-all duration-300"
+            // Segment widths change as usage does — animate width alone, on the
+            // shared band (300ms sat outside every motion band).
+            className="relative flex items-center transition-[width] duration-[var(--motion-move)] ease-[var(--ease-spring)]"
             style={{
               backgroundColor: `color-mix(in srgb, ${s.color} 70%, transparent)`,
               width: `${(s.value / total) * 100}%`,
