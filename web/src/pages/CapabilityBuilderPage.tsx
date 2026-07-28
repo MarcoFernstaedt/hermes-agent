@@ -177,7 +177,7 @@ export default function CapabilityBuilderPage() {
           <h2 id="fields-h" className="text-sm font-semibold text-text-secondary">Fields</h2>
           <Button
             size="sm"
-            variant="ghost"
+            ghost
             prefix={<Plus />}
             onClick={() =>
               update({ fields: [...draft.fields, { name: "", label: "", type: "text" }] })
@@ -341,7 +341,7 @@ export default function CapabilityBuilderPage() {
       </section>
 
       <div className="flex items-center justify-end gap-2">
-        <Button variant="ghost" onClick={() => navigate("/review")}>Cancel</Button>
+        <Button ghost onClick={() => navigate("/review")}>Cancel</Button>
         <Button disabled={!valid || busy} onClick={propose}>
           Propose to review
         </Button>
