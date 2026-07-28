@@ -376,6 +376,74 @@ html[data-motion="reduced"] *::after {
   scroll-behavior: auto !important;
 }
 
+/* ── The motion catalogue ─────────────────────────────────────────────────
+   The visual half of the motion system. Every class here is *caused* — it
+   fires because something actually happened, never for atmosphere. Both
+   reduced-motion rules below collapse all of it to an instant state change
+   with no information lost, so these can be used freely. */
+
+/* Entrance: a new row fades in and rises. Stagger via `animation-delay`
+   (see staggerDelay() in lib/motion.ts — capped so a batch never drags). */
+@keyframes imperator-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.motion-enter {
+  animation: imperator-enter var(--motion-state) var(--ease-out) both;
+}
+
+/* Exit: the list closes rather than snapping shut. */
+@keyframes imperator-exit {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(-2px); }
+}
+.motion-exit {
+  animation: imperator-exit 160ms var(--ease-out) both;
+}
+
+/* Live update: a row changed because something pushed. It warms toward gold
+   and decays — attention without alarm. */
+@keyframes imperator-warm {
+  from { background-color: color-mix(in srgb, var(--midground-base) 8%, transparent); }
+  to   { background-color: transparent; }
+}
+.motion-live {
+  animation: imperator-warm var(--motion-warm, 800ms) var(--ease-out) both;
+}
+
+/* Optimistic pending: written, not yet confirmed. Reads as provisional at a
+   glance, and the gold edge marks it as *ours* rather than an error. */
+.motion-pending {
+  opacity: 0.7;
+  box-shadow: inset 2px 0 0 0 var(--midground);
+  transition: opacity var(--transition-state);
+}
+.motion-pending[data-settled="true"] {
+  opacity: 1;
+  box-shadow: inset 2px 0 0 0 transparent;
+}
+
+/* FLIP: set the inverted transform, then add this class and clear it to let
+   the element physically travel to its new position. */
+.motion-flip {
+  transition: transform var(--transition-move);
+}
+
+/* Shared-element morph — a card opening into its detail view. */
+.motion-morph {
+  transition:
+    transform var(--transition-panel),
+    opacity var(--transition-panel);
+}
+
+/* The one permitted continuous motion: genuinely ongoing work. */
+@keyframes imperator-spin {
+  to { transform: rotate(360deg); }
+}
+.motion-working {
+  animation: imperator-spin 900ms linear infinite;
+}
+
 /* OS-level reduced motion. Independent of the app setting above: a user who
    asked their system for less motion must get it without opening settings.
    Motion becomes an instant state change — no information and no function is

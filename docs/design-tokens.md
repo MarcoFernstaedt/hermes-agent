@@ -99,6 +99,34 @@ className="transition-transform duration-[var(--motion-panel)] ease-[var(--ease-
 - Nothing loops for atmosphere. The single permitted continuous motion is an
   indicator of genuinely ongoing work.
 
+### The catalogue — the motion you actually see
+
+Tokens are the timing; these are the animations. **The app is meant to look
+rich.** Accessibility is delivered by making each one degrade to an instant,
+information-complete state change — not by making the app austere. Use them.
+
+| Class / helper | Fires when | Feel |
+|---|---|---|
+| `.motion-enter` | a row arrives | fades in, rises 4px |
+| `.motion-exit` | a row leaves | fades, list closes rather than snaps |
+| `.motion-live` | a push updated this row | warms toward gold 8%, decays over 800ms |
+| `.motion-pending` | optimistic write in flight | 70% opacity + gold inset edge; `data-settled="true"` settles it |
+| `.motion-flip` | a card advances a stage / reorders | physically travels to its new position |
+| `.motion-morph` | a card opens into detail | shared-element transform + opacity |
+| `.motion-working` | genuinely ongoing work | the one permitted continuous motion |
+
+JS-driven motion lives in `web/src/lib/motion.ts` (pure, unit-tested):
+
+- `staggerDelay(i)` — batch entrances cascade 30ms apart, **capped at 6** so a
+  long list never reads as slow.
+- `shouldAnimateValue(from, to, { sameContext })` — counts a number only when
+  the delta is meaningful *and* the change wasn't caused by navigation.
+- `countValue(from, to, t)` — the eased value while counting.
+- `flipDelta` / `flipTransform` / `isFlipWorthAnimating` — FLIP, skipping
+  animation when nothing meaningfully moved.
+- `prefersReducedMotion()` — honours **both** the OS and in-app settings, so
+  JS-driven motion can never animate while CSS motion is off.
+
 ### Reduced motion
 
 Two independent paths, both collapsing motion to ~0ms with **zero loss of
