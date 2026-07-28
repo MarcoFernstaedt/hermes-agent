@@ -72,6 +72,64 @@ describe("draftToDeclaration", () => {
   });
 });
 
+describe("gallery and agenda views", () => {
+  it("emits a gallery view when asked", () => {
+    const d = draftWithStatus();
+    d.gallery = true;
+    const views = draftToDeclaration(d).views as Array<{ kind: string }>;
+    expect(views.some((v) => v.kind === "gallery")).toBe(true);
+  });
+
+  it("emits an agenda only for a real date field", () => {
+    const d = draftWithStatus();
+    d.agendaField = "status"; // a select, not a date — must not become an agenda
+    expect((draftToDeclaration(d).views as Array<{ kind: string }>).some((v) => v.kind === "agenda"))
+      .toBe(false);
+
+    d.fields.push({ name: "due", label: "Due", type: "date" });
+    d.agendaField = "due";
+    const views = draftToDeclaration(d).views as Array<{ kind: string; dateField?: string }>;
+    const agenda = views.find((v) => v.kind === "agenda");
+    expect(agenda?.dateField).toBe("due");
+  });
+
+  it("round-trips the new view kinds", () => {
+    const d = draftWithStatus();
+    d.gallery = true;
+    d.fields.push({ name: "due", label: "Due", type: "date" });
+    d.agendaField = "due";
+    const decl = draftToDeclaration(d);
+    const back = declarationToDraft(decl);
+    expect(back.gallery).toBe(true);
+    expect(back.agendaField).toBe("due");
+    expect(draftToDeclaration(back)).toEqual(decl);
+  });
+});
+
+describe("templates", () => {
+  it("every template lowers to a declaration the schema shape expects", async () => {
+    const { TEMPLATES } = await import("./templates");
+    expect(TEMPLATES.length).toBeGreaterThanOrEqual(7);
+    for (const t of TEMPLATES) {
+      const decl = draftToDeclaration(t.draft) as Record<string, unknown>;
+      // Same invariants the server validator enforces.
+      expect(typeof decl.id).toBe("string");
+      expect(decl.id).toMatch(/^[a-z][a-z0-9_-]*$/);
+      const fields = decl.fields as Array<{ name: string }>;
+      expect(fields.length).toBeGreaterThan(0);
+      expect(fields.some((f) => f.name === decl.title_field)).toBe(true);
+      const views = decl.views as Array<{ kind: string; default?: boolean }>;
+      expect(views.length).toBeGreaterThan(0);
+      expect(views.filter((v) => v.default).length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("gives distinct template ids", async () => {
+    const { TEMPLATES } = await import("./templates");
+    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(TEMPLATES.length);
+  });
+});
+
 describe("describeDeclaration", () => {
   it("summarises the surface in plain language", () => {
     const lines = describeDeclaration(draftToDeclaration(draftWithStatus()));

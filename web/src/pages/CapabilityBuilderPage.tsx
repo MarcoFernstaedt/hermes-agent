@@ -20,6 +20,7 @@ import {
   type Draft,
   type DraftField,
 } from "@/capabilities/builder-model";
+import { TEMPLATES } from "@/capabilities/templates";
 
 /**
  * The visual capability builder — the human authoring path. Define entities,
@@ -105,6 +106,25 @@ export default function CapabilityBuilderPage() {
           <Wand2 className="size-5 text-midground" aria-hidden />
           <h1 className="text-lg font-semibold">New capability</h1>
         </div>
+        <label className="flex items-center gap-2 text-xs text-text-secondary">
+          <span>Template</span>
+          <Select
+            value=""
+            onValueChange={(id) => {
+              const t = TEMPLATES.find((x) => x.id === id);
+              if (t) {
+                setIdEdited(true);
+                setDraft({ ...t.draft });
+              }
+            }}
+            aria-label="Start from a template"
+          >
+            <SelectOption value="">Blank</SelectOption>
+            {TEMPLATES.map((t) => (
+              <SelectOption key={t.id} value={t.id}>{t.name}</SelectOption>
+            ))}
+          </Select>
+        </label>
         {existing.length > 0 && (
           <label className="flex items-center gap-2 text-xs text-text-secondary">
             <span>Start from</span>
@@ -266,6 +286,39 @@ export default function CapabilityBuilderPage() {
               <SelectOption key={f.name} value={f.name}>{f.label || f.name}</SelectOption>
             ))}
           </Select>
+        </div>
+      </section>
+
+      {/* Views */}
+      <section className="flex flex-col gap-2" aria-labelledby="views-h">
+        <h2 id="views-h" className="text-sm font-semibold text-text-secondary">Views</h2>
+        <p className="text-xs text-text-tertiary">
+          A table is always available. Add the shapes that suit this data.
+        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={!!draft.gallery}
+              onCheckedChange={(v) => update({ gallery: !!v })}
+              aria-label="Add a gallery view"
+            />
+            Gallery (cards)
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <span>Agenda by</span>
+            <Select
+              value={draft.agendaField ?? ""}
+              onValueChange={(v) => update({ agendaField: v || undefined })}
+              aria-label="Agenda date field"
+            >
+              <SelectOption value="">No agenda</SelectOption>
+              {draft.fields
+                .filter((f) => f.type === "date" && f.name)
+                .map((f) => (
+                  <SelectOption key={f.name} value={f.name}>{f.label || f.name}</SelectOption>
+                ))}
+            </Select>
+          </label>
         </div>
       </section>
 

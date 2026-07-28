@@ -34,6 +34,10 @@ export interface Draft {
   lifecycleField?: string;
   /** Field names shown as table columns; empty = all fields. */
   tableColumns: string[];
+  /** Extra view kinds beyond the always-present table. */
+  gallery?: boolean;
+  /** Field to group an agenda by; set ⇒ an agenda view is emitted. */
+  agendaField?: string;
 }
 
 export function emptyDraft(): Draft {
@@ -90,6 +94,20 @@ export function draftToDeclaration(draft: Draft): Record<string, unknown> {
     };
     views.push({ id: "board", kind: "board", default: true });
   }
+  if (draft.gallery) {
+    views.push({ id: "gallery", kind: "gallery", ...(views.length === 0 ? { default: true } : {}) });
+  }
+  const agendaField = draft.fields.find(
+    (f) => f.name === draft.agendaField && f.type === "date",
+  );
+  if (agendaField) {
+    views.push({
+      id: "agenda",
+      kind: "agenda",
+      dateField: agendaField.name,
+      ...(views.length === 0 ? { default: true } : {}),
+    });
+  }
   const tableView: Record<string, unknown> = { id: "table", kind: "table" };
   if (draft.tableColumns.length) tableView.columns = draft.tableColumns;
   if (views.length === 0) tableView.default = true;
@@ -105,9 +123,9 @@ export function declarationToDraft(decl: Record<string, unknown>): Draft {
     name: f.name, label: f.label, type: f.type, required: f.required, options: f.options,
   }));
   const lifecycle = decl.lifecycle as { field?: string } | undefined;
-  const tableView = ((decl.views as Array<{ kind: string; columns?: string[] }>) ?? []).find(
-    (v) => v.kind === "table",
-  );
+  const declViews = (decl.views as Array<{ kind: string; columns?: string[]; dateField?: string }>) ?? [];
+  const tableView = declViews.find((v) => v.kind === "table");
+  const agendaView = declViews.find((v) => v.kind === "agenda");
   return {
     id: typeof decl.id === "string" ? decl.id : "",
     label: typeof decl.label === "string" ? decl.label : "",
@@ -117,6 +135,8 @@ export function declarationToDraft(decl: Record<string, unknown>): Draft {
     fields,
     lifecycleField: lifecycle?.field,
     tableColumns: tableView?.columns ?? [],
+    gallery: declViews.some((v) => v.kind === "gallery"),
+    agendaField: agendaView?.dateField,
   };
 }
 
