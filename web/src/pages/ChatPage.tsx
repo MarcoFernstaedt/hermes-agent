@@ -356,6 +356,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  // Chat is mounted persistently (so the conversation survives navigation), but
+  // the PTY must NOT be. Without this latch, merely visiting /jobs in a fresh
+  // browser context spawned a TUI child + slash worker; the on-machine report
+  // measured 16 Node and 15 Python workers and ~2.4 GB retained. We keep the
+  // warm-PTY benefit for people who use chat by latching on FIRST activation
+  // and never un-latching: navigate away and the PTY stays warm, but a session
+  // that never opens Chat never spawns one.
+  const [chatEverShown, setChatEverShown] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch on first activation.
+    if (isActive) setChatEverShown(true);
+  }, [isActive]);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -1454,6 +1466,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   useEffect(() => {
+    // Don't open a PTY for a document that has never shown Chat (see the
+    // chatEverShown latch): no spawn, no retained worker, no reconnect churn.
+    if (!chatEverShown) return;
     if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;
@@ -2225,6 +2240,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectNonce,
     ptyAttachIdentity,
     eventSocketReady,
+    chatEverShown,
   ]);
 
   // Refit the off-screen terminal on tab activation. Only return focus to
