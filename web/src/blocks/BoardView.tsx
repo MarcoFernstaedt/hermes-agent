@@ -201,6 +201,10 @@ function BoardCard({ id, children }: { id: string; children: ReactNode }) {
       className={cn(
         "cursor-grab rounded-md border border-border bg-background-base p-2 active:cursor-grabbing",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40",
+        // Caused motion: a card arriving fades+rises, and settling into a new
+        // column travels on the shared spring rather than teleporting. Both
+        // collapse to an instant state change under reduced motion.
+        "motion-enter transition-[transform,opacity] duration-[var(--motion-move)] ease-[var(--ease-spring)]",
         isDragging && "opacity-30",
       )}
     >

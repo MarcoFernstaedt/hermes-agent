@@ -133,3 +133,34 @@ def test_loader_rejects_invalid(tmp_path, monkeypatch):
     assert "widget" in ids
     assert "broken" not in ids
     assert any(e["id"] == "broken" for e in decl_mod.LOAD_ERRORS)
+
+
+def test_every_valid_declaration_can_generate_tools():
+    """A declaration that passes validation must never crash tool generation.
+
+    The generator read cap["entity"] and cap["lifecycle"] directly, but both are
+    OPTIONAL in the schema — so a *valid* declaration (no entity, no lifecycle)
+    raised at tool-discovery time. Found on the live machine. Now that the agent
+    can author declarations, a schema-passing proposal must never be able to
+    break tool discovery.
+    """
+    from tools.capability_tools import build_tools
+
+    minimal = {
+        "id": "notes", "label": "Notes", "title_field": "t",
+        "fields": [{"name": "t", "label": "T", "type": "text"}],
+        "views": [{"id": "table", "kind": "table", "default": True}],
+        # 'advance' requested but there is no lifecycle to advance through.
+        "agent": {"expose": ["list", "get", "create", "advance"]},
+    }
+    assert schema.validate_declaration(minimal) == []
+
+    names = [t[0] for t in build_tools([minimal])]
+    # entity defaults to id, matching the renderer's entityTypeOf.
+    assert names == ["notes_list", "notes_get", "notes_create"]
+    # advance is skipped rather than generating a tool that cannot work.
+    assert not any("advance" in n for n in names)
+
+    # And the shipped declarations still generate cleanly.
+    from hermes_cli.capabilities.declarations import load_capabilities
+    assert build_tools(load_capabilities())

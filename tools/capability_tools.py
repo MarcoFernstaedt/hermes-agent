@@ -117,7 +117,7 @@ def _create_schema(cap: dict[str, Any]) -> dict[str, Any]:
 
 
 def _make_list(cap: dict[str, Any]) -> Callable:
-    entity = cap["entity"]
+    entity = _entity_of(cap)
     status_field = (cap.get("lifecycle") or {}).get("field")
 
     def handler(args: dict, **_kw) -> str:
@@ -135,7 +135,7 @@ def _make_list(cap: dict[str, Any]) -> Callable:
 
 
 def _make_get(cap: dict[str, Any]) -> Callable:
-    entity = cap["entity"]
+    entity = _entity_of(cap)
 
     def handler(args: dict, **_kw) -> str:
         entity_id = args.get("id")
@@ -153,7 +153,7 @@ def _make_get(cap: dict[str, Any]) -> Callable:
 
 
 def _make_create(cap: dict[str, Any]) -> Callable:
-    entity = cap["entity"]
+    entity = _entity_of(cap)
     lifecycle = cap.get("lifecycle")
 
     def handler(args: dict, **_kw) -> str:
@@ -172,8 +172,8 @@ def _make_create(cap: dict[str, Any]) -> Callable:
 
 
 def _make_advance(cap: dict[str, Any]) -> Callable:
-    entity = cap["entity"]
-    lifecycle = cap["lifecycle"]
+    entity = _entity_of(cap)
+    lifecycle = cap.get("lifecycle") or {}
     field = lifecycle["field"]
 
     def handler(args: dict, **_kw) -> str:
@@ -207,13 +207,25 @@ def _make_advance(cap: dict[str, Any]) -> Callable:
     return handler
 
 
+def _entity_of(cap: dict[str, Any]) -> str:
+    """The store entity type for a capability.
+
+    ``entity`` is OPTIONAL in the declaration schema and defaults to ``id`` (the
+    same rule the renderer's ``entityTypeOf`` uses). Reading ``cap["entity"]``
+    directly made a *valid* declaration crash tool generation — which matters
+    now that the agent can author declarations, because a schema-passing
+    proposal must never be able to break tool discovery.
+    """
+    return cap.get("entity") or cap["id"]
+
+
 def build_tools(capabilities: list[dict[str, Any]] | None = None) -> list[tuple]:
     """Return the (name, toolset, schema, handler, tier) tuples a set of
     capability declarations generates. Exposed for tests."""
     caps = CAPABILITIES if capabilities is None else capabilities
     tools: list[tuple] = []
     for cap in caps:
-        entity = cap["entity"]
+        entity = _entity_of(cap)
         expose = set((cap.get("agent") or {}).get("expose", []))
         lifecycle = cap.get("lifecycle")
         str_id = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
