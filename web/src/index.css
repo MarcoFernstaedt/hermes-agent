@@ -85,8 +85,18 @@
      of these to ~0ms, so consumers never branch on the preference themselves.
      Usage: `transition: transform var(--motion-state) var(--ease-spring);` */
   --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --motion-state: 160ms; /* in-place state changes (120–200ms band) */
-  --motion-panel: 280ms; /* panels, sheets, overlays (240–320ms band) */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-micro: 100ms; /* press, checkbox, icon swap (80–120ms band, ease-out) */
+  --motion-state: 160ms; /* in-place state changes (120–200ms band, ease-out) */
+  --motion-move: 240ms;  /* elements travelling: FLIP, reorder, stage change (200–280ms, spring) */
+  --motion-panel: 280ms; /* panels, sheets, overlays (240–320ms band, spring) */
+  --motion-route: 260ms; /* route + view transitions (240–300ms band) */
+  /* Composite shorthands so consumers never re-pair a duration with the wrong
+     easing. Motion is *caused*: use the band that matches why it moved. */
+  --transition-micro: var(--motion-micro) var(--ease-out);
+  --transition-state: var(--motion-state) var(--ease-out);
+  --transition-move: var(--motion-move) var(--ease-spring);
+  --transition-panel: var(--motion-panel) var(--ease-spring);
 
   /* Data-series accents — consumed by Analytics + Models pages for the
      input-vs-output token visualisations (chart bars, table values,
@@ -364,6 +374,21 @@ html[data-motion="reduced"] *::after {
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
   scroll-behavior: auto !important;
+}
+
+/* OS-level reduced motion. Independent of the app setting above: a user who
+   asked their system for less motion must get it without opening settings.
+   Motion becomes an instant state change — no information and no function is
+   lost, because nothing in this app conveys meaning through motion alone. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Chat composer floats flush above the mini-player — no extra spacing.
