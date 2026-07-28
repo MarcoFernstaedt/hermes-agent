@@ -1,0 +1,174 @@
+# Hermes TUI gateway protocol catalogue
+
+Generated from `tui_gateway/server.py` in deployed source commit `5ca9f1795c5a0930285df2ab9900b3d79cd29000`. JSON-RPC requests are `{jsonrpc:"2.0", id, method, params}`. Success replies are `{jsonrpc:"2.0", id, result}`; errors are `{jsonrpc:"2.0", id, error:{code,message}}` (server.py:1209-1253). Request/response key sets below are static unions inferred from each handler; `—` means the handler delegates or returns a computed object.
+
+## Methods
+Count: 128
+
+- `agents.list` — params: `—`; result keys: `processes`; source line 14206.
+- `approval.respond` — params: `all, choice`; result keys: `resolved`; source line 10296.
+- `billing.auto_reload` — params: `enabled, threshold, top_up_amount`; result keys: `error, message, ok`; source line 7799.
+- `billing.charge` — params: `amount_usd, idempotency_key`; result keys: `charge_id, error, idempotency_key, message, ok`; source line 7744.
+- `billing.charge_status` — params: `charge_id`; result keys: `amount_usd, error, message, ok, reason, settled_at, status`; source line 7770.
+- `billing.state` — params: `—`; result keys: `error, logged_in, ok`; source line 7728.
+- `billing.step_up` — params: `session_id`; result keys: `error, granted, message, ok`; source line 7821.
+- `browser.manage` — params: `action`; result keys: `connected, url`; source line 13833.
+- `clarify.respond` — params: `—`; result keys: `—`; source line 10275.
+- `cli.exec` — params: `argv, timeout`; result keys: `blocked, code, hint, output`; source line 11867.
+- `clipboard.paste` — params: `—`; result keys: `attached, count, message, path`; source line 9485.
+- `command.dispatch` — params: `arg, name, session_id`; result keys: `message, name, notice, output, target, type`; source line 11929.
+- `command.resolve` — params: `name`; result keys: `canonical, category, description`; source line 11899.
+- `commands.catalog` — params: `—`; result keys: `canon, categories, pairs, skill_count, sub, warning`; source line 11752.
+- `complete.path` — params: `word`; result keys: `items`; source line 12655.
+- `complete.slash` — params: `text`; result keys: `items, replace_from`; source line 12878.
+- `config.get` — params: `cwd, key, session_id`; result keys: `branch, config, cwd, display, home, model, mtime, prompt, provider, providers, value`; source line 11298.
+- `config.set` — params: `confirm_expensive_model, key, scope, session_id, value`; result keys: `branch, confirm_message, confirm_required, cwd, key, scope, value, warning`; source line 10321.
+- `config.show` — params: `—`; result keys: `sections`; source line 13999.
+- `credits.view` — params: `—`; result keys: `balance_lines, depleted, identity_line, logged_in, topup_url`; source line 7608.
+- `cron.manage` — params: `action, name, prompt, schedule`; result keys: `—`; source line 14230.
+- `delegation.pause` — params: `paused`; result keys: `paused`; source line 8279.
+- `delegation.status` — params: `—`; result keys: `active, max_concurrent_children, max_spawn_depth, paused`; source line 8259.
+- `file.attach` — params: `data_url, name, path`; result keys: `attached, name, path, ref_path, ref_text, uploaded`; source line 9985.
+- `handoff.fail` — params: `error`; result keys: `failed, state`; source line 6546.
+- `handoff.request` — params: `platform`; result keys: `home_name, platform, queued, session_key`; source line 6431.
+- `handoff.state` — params: `—`; result keys: `error, platform, state`; source line 6519.
+- `image.attach` — params: `path`; result keys: `attached, count, path, remainder, text`; source line 9525.
+- `image.attach_bytes` — params: `content_base64, data, ext, filename`; result keys: `attached, bytes, count, path, remainder, text`; source line 9657.
+- `image.detach` — params: `path`; result keys: `count, detached`; source line 10032.
+- `input.detect_drop` — params: `text`; result keys: `count, is_image, matched, name, path, text`; source line 10052.
+- `insights.get` — params: `days`; result keys: `days, messages, sessions`; source line 13603.
+- `learning.delete` — params: `id`; result keys: `—`; source line 14292.
+- `learning.detail` — params: `id`; result keys: `—`; source line 14281.
+- `learning.edit` — params: `content, id`; result keys: `—`; source line 14303.
+- `learning.frames` — params: `cols, frames, rows`; result keys: `—`; source line 14257.
+- `llm.oneshot` — params: `input, instructions, max_tokens, session_id, task, temperature, template, variables`; result keys: `text`; source line 6372.
+- `model.disconnect` — params: `slug`; result keys: `disconnected, name, slug`; source line 13085.
+- `model.options` — params: `explicit_only, include_unconfigured, refresh, session_id`; result keys: `—`; source line 12960.
+- `model.save_key` — params: `api_key, session_id, slug`; result keys: `provider`; source line 13003.
+- `paste.collapse` — params: `text`; result keys: `lines, path, placeholder`; source line 12451.
+- `pdf.attach` — params: `content_base64, data, filename, first_page, last_page, path`; result keys: `attached, count, filename, pages, pages_attached, text`; source line 9718.
+- `pet.cancel` — params: `token`; result keys: `ok`; source line 7351.
+- `pet.cells` — params: `cols, graphics, state`; result keys: `color, cols, displayName, enabled, frameMs, frames, graphics, imageId, placeholder, rows, scale, slug, state`; source line 6858.
+- `pet.disable` — params: `—`; result keys: `ok`; source line 7203.
+- `pet.export` — params: `slug`; result keys: `filename, ok, zipBase64`; source line 7103.
+- `pet.gallery` — params: `localOnly`; result keys: `active, enabled, pets`; source line 6963.
+- `pet.generate` — params: `count, prompt, provider, referenceImage, style`; result keys: `drafts, ok, token`; source line 7396.
+- `pet.generate.status` — params: `—`; result keys: `available, providers`; source line 7365.
+- `pet.hatch` — params: `cancelToken, description, index, name, prompt, provider, style, token`; result keys: `displayName, ok, pet, slug, warnings`; source line 7509.
+- `pet.info` — params: `—`; result keys: `enabled`; source line 6809.
+- `pet.info.meta` — params: `—`; result keys: `displayName, enabled, scale, slug, spritesheetRevision`; source line 6835.
+- `pet.remove` — params: `slug`; result keys: `ok, slug`; source line 7073.
+- `pet.rename` — params: `name, slug`; result keys: `displayName, ok, slug`; source line 7130.
+- `pet.scale` — params: `scale`; result keys: `ok, scale`; source line 7217.
+- `pet.select` — params: `slug`; result keys: `displayName, ok, slug`; source line 7046.
+- `pet.thumb` — params: `slug, url`; result keys: `dataUri, ok, slug`; source line 7168.
+- `plugins.list` — params: `—`; result keys: `plugins`; source line 13977.
+- `plugins.manage` — params: `action, enable, name`; result keys: `bundled_count, name, ok, plugin, plugins, unchanged, user_count`; source line 14398.
+- `preview.restart` — params: `context, cwd, session_id, url`; result keys: `task_id`; source line 10145.
+- `process.kill` — params: `process_id`; result keys: `—`; source line 11574.
+- `process.list` — params: `—`; result keys: `processes`; source line 11562.
+- `process.stop` — params: `—`; result keys: `killed`; source line 11535.
+- `project.facts` — params: `cwd`; result keys: `facts`; source line 5492.
+- `projects.add_folder` — params: `is_primary, label, path`; result keys: `project`; source line 10950.
+- `projects.archive` — params: `restore`; result keys: `—`; source line 10977.
+- `projects.create` — params: `board_slug, color, description, folders, icon, name, primary_path, slug, use`; result keys: `project`; source line 10916.
+- `projects.delete` — params: `—`; result keys: `—`; source line 10984.
+- `projects.discover_repos` — params: `—`; result keys: `repos`; source line 11112.
+- `projects.for_cwd` — params: `cwd`; result keys: `branch, cwd, project`; source line 10997.
+- `projects.get` — params: `—`; result keys: `project`; source line 10911.
+- `projects.list` — params: `—`; result keys: `—`; source line 10906.
+- `projects.project_sessions` — params: `project_id, session_limit`; result keys: `project`; source line 11272.
+- `projects.record_repos` — params: `repos`; result keys: `repos`; source line 11124.
+- `projects.remove_folder` — params: `path`; result keys: `project`; source line 10963.
+- `projects.set_active` — params: `id`; result keys: `active_id`; source line 10991.
+- `projects.set_primary` — params: `path`; result keys: `project`; source line 10970.
+- `projects.tree` — params: `preview_limit, session_limit`; result keys: `active_id, projects, scoped_session_ids`; source line 11245.
+- `projects.update` — params: `board_slug, color, description, icon, name`; result keys: `project`; source line 10935.
+- `prompt.background` — params: `session_id, text`; result keys: `task_id`; source line 10099.
+- `prompt.submit` — params: `session_id, text, truncate_before_user_ordinal`; result keys: `status`; source line 8515.
+- `reload.env` — params: `—`; result keys: `updated`; source line 11686.
+- `reload.mcp` — params: `always, confirm, session_id`; result keys: `message, status`; source line 11597.
+- `rollback.diff` — params: `hash`; result keys: `—`; source line 13708.
+- `rollback.list` — params: `—`; result keys: `checkpoints, enabled`; source line 13631.
+- `rollback.restore` — params: `file_path, hash`; result keys: `—`; source line 13661.
+- `secret.respond` — params: `—`; result keys: `—`; source line 10291.
+- `session.activate` — params: `session_id`; result keys: `—`; source line 6203.
+- `session.active_list` — params: `current_session_id`; result keys: `sessions`; source line 6165.
+- `session.branch` — params: `name`; result keys: `parent, session_id, title`; source line 8125.
+- `session.close` — params: `session_id`; result keys: `closed`; source line 8113.
+- `session.compress` — params: `focus_topic, session_id`; result keys: `after_messages, after_tokens, before_messages, before_tokens, info, messages, removed, status, summary, usage`; source line 7962.
+- `session.context_breakdown` — params: `—`; result keys: `categories, context_max, context_percent, context_used, estimated_total, model`; source line 6596.
+- `session.create` — params: `close_on_disconnect, cols, cwd, fast, messages, model, parent_session_id, profile, provider, reasoning_effort, source, title`; result keys: `info, message_count, messages, session_id, stored_session_id`; source line 5256.
+- `session.cwd.set` — params: `cwd, session_id`; result keys: `—`; source line 6008.
+- `session.delete` — params: `session_id`; result keys: `deleted`; source line 6227.
+- `session.history` — params: `—`; result keys: `count, messages`; source line 7911.
+- `session.interrupt` — params: `session_id`; result keys: `status`; source line 8209.
+- `session.list` — params: `limit`; result keys: `sessions`; source line 5402.
+- `session.most_recent` — params: `—`; result keys: `session_id, source, started_at, title`; source line 5448.
+- `session.resume` — params: `close_on_disconnect, cols, eager_build, lazy, profile, session_id, source`; result keys: `inflight, info, message_count, messages, resumed, running, session_id, session_key, started_at, status`; source line 5638.
+- `session.save` — params: `—`; result keys: `file`; source line 8058.
+- `session.status` — params: `session_id`; result keys: `output`; source line 7854.
+- `session.steer` — params: `text`; result keys: `status, text`; source line 8478.
+- `session.title` — params: `session_id, title`; result keys: `pending, session_key, title`; source line 6269.
+- `session.undo` — params: `—`; result keys: `removed`; source line 7934.
+- `session.usage` — params: `—`; result keys: `—`; source line 6570.
+- `setup.runtime_check` — params: `provider`; result keys: `error, model, ok, provider, source`; source line 11462.
+- `setup.status` — params: `—`; result keys: `provider_configured`; source line 11452.
+- `shell.exec` — params: `command`; result keys: `code, stderr, stdout`; source line 14477.
+- `skills.manage` — params: `action, page, page_size, query`; result keys: `info, installed, name, results, skills`; source line 14314.
+- `skills.reload` — params: `—`; result keys: `output, result`; source line 14373.
+- `slash.exec` — params: `command, session_id`; result keys: `output`; source line 13228.
+- `spawn_tree.list` — params: `cross_session, limit, session_id`; result keys: `entries`; source line 8403.
+- `spawn_tree.load` — params: `path`; result keys: `—`; source line 8454.
+- `spawn_tree.save` — params: `finished_at, label, session_id, started_at, subagents`; result keys: `path, session_id`; source line 8360.
+- `subagent.interrupt` — params: `subagent_id`; result keys: `found, subagent_id`; source line 8287.
+- `sudo.respond` — params: `—`; result keys: `—`; source line 10286.
+- `terminal.read.respond` — params: `—`; result keys: `—`; source line 10280.
+- `terminal.resize` — params: `cols`; result keys: `cols`; source line 8503.
+- `tools.configure` — params: `action, names, session_id`; result keys: `changed, enabled_toolsets, info, missing_servers, reset, unknown`; source line 14109.
+- `tools.list` — params: `session_id`; result keys: `toolsets`; source line 14038.
+- `tools.show` — params: `session_id`; result keys: `sections, total`; source line 14069.
+- `toolsets.list` — params: `session_id`; result keys: `toolsets`; source line 14176.
+- `verification.status` — params: `cwd, session_id, session_key`; result keys: `verification`; source line 5510.
+- `voice.record` — params: `action, session_id`; result keys: `status`; source line 13507.
+- `voice.toggle` — params: `action`; result keys: `enabled, record_key, tts`; source line 13410.
+- `voice.tts` — params: `text`; result keys: `status`; source line 13584.
+
+## Events
+Count: 34
+
+Every event frame is `{jsonrpc:"2.0", method:"event", params:{type,session_id,event_id,payload?}}` (server.py:1141-1149).
+- `agent.terminal.output` — payload: {process_id, chunk} @ 8952.
+- `approval.request` — payload: payload @ 1164.
+- `background.complete` — payload: {task_id, text} @ 10119; {task_id, text} @ 10132.
+- `billing.step_up.verification` — payload: {verification_url, user_code} @ 7839.
+- `browser.progress` — payload: {message, level} @ 13873.
+- `error` — payload: {message} @ 3058; {message} @ 8577; {message} @ 1463; {message} @ 9394; {message} @ 9052.
+- `message.complete` — payload: payload @ 9254; {text} @ 3949.
+- `message.delta` — payload: payload @ 9126; {text} @ 3926; {text} @ 3931.
+- `message.start` — payload: none @ 8997; none @ 3917; none @ 8857; none @ 8909; none @ 9430; none @ 9462.
+- `moa.aggregating` — payload: {aggregator} @ 3778.
+- `moa.reference` — payload: ref_payload @ 3775.
+- `notification.clear` — payload: {key} @ 3993.
+- `notification.show` — payload: {text, level, kind, ttl_ms, key, id} @ 3981.
+- `pet.generate.progress` — payload: {token, count} @ 7457; {token, index, dataUri, count} @ 7473.
+- `pet.hatch.progress` — payload: payload @ 7569.
+- `preview.restart.complete` — payload: {task_id, text} @ 10237; {task_id, text} @ 10239.
+- `preview.restart.progress` — payload: {task_id, level, text} @ 4382; {task_id, text} @ 10219.
+- `reaction` — payload: {kind} @ 3969.
+- `reasoning.available` — payload: payload @ 3760.
+- `reasoning.delta` — payload: {text} @ 3970; {text} @ 3920.
+- `review.summary` — payload: {text} @ 4815; {text} @ 1430.
+- `session.info` — payload: info @ 4445; _session_info(agent, _sessions.get(sid, {})) @ 4831; info @ 6027; _session_info(agent, session) @ 2986; _session_info(agent, session) @ 3472; info @ 4059; info @ 4194; info @ 4516; info @ 1455; info @ 8032; _session_info(agent, session) @ 9408; _session_info(agent, session) @ 10441; _session_info(agent, session) @ 11665; _session_info(session.get('agent'), session) @ 12429; _session_info(agent, session) @ 10541; _session_info(session['agent'], session) @ 10653; _session_info(agent, sess) @ 10527; _session_info(agent, session) @ 13201; _session_info(agent, session) @ 13215.
+- `session.title` — payload: {session_id, title} @ 9349.
+- `skin.changed` — payload: resolve_skin() @ 10832.
+- `status.update` — payload: {kind, text} @ 1180; {kind, text} @ 8838; {kind, text} @ 8898; {kind, text} @ 9292.
+- `terminal.close` — payload: {process_id} @ 8962.
+- `thinking.delta` — payload: {text} @ 3966.
+- `tool.complete` — payload: payload @ 3725; st['open_tool'] @ 3934; st['open_tool'] @ 3947.
+- `tool.generating` — payload: {name} @ 3965.
+- `tool.output_risk` — payload: payload @ 3754.
+- `tool.start` — payload: payload @ 3635; tool @ 3944.
+- `voice.status` — payload: `{state}` @ 13555.
+- `voice.transcript` — payload: `{text}` or `{no_speech_limit}` @ 13554-13557.
+- `write_approval.request` — payload: {subsystem, pending_id, profile, summary} @ 3678.
