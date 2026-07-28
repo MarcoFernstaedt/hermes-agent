@@ -1072,16 +1072,18 @@ def handle_function_call(
     # approval decision sees here, then verify it is unchanged at dispatch —
     # so nothing mutates a gated call between consent and execution. AUTO tools
     # are never gated, so they are skipped (no cost, no audit noise).
+    # Approval integrity: is this call human-gated at all? The payload snapshot
+    # itself is taken later, at the post-middleware boundary (see below) — the
+    # request/execution middleware layers legitimately rewrite args, so
+    # snapshotting here produced false mismatches on real tools (found live on
+    # the terminal tool). Only the tier decision is made here.
     _integrity_gated = False
     try:
         from hermes_cli.module_permissions import Tier, get_tier
-        from hermes_cli import approval_integrity as _integrity
 
-        if tool_call_id and get_tier(function_name) is not Tier.AUTO:
-            _integrity_gated = True
-            _integrity.record_grant(tool_call_id, function_name, function_args)
+        _integrity_gated = bool(tool_call_id) and get_tier(function_name) is not Tier.AUTO
     except Exception:
-        pass
+        _integrity_gated = False
 
     def _integrity_clear_on_block() -> None:
         # A blocked/denied gated call must not leave a usable grant behind.
@@ -1187,6 +1189,23 @@ def handle_function_call(
             _tool_middleware_trace = _tool_request_mw.trace
         except Exception as _mw_err:
             logger.debug("tool_request middleware error: %s", _mw_err)
+
+    # THE canonical integrity boundary: the payload as it stands after every
+    # legitimate request-side transform, which is what actually heads to
+    # execution. Snapshotting earlier compared a pre-transform payload against a
+    # post-transform one and refused honest calls. The window this protects is
+    # narrow and deliberate — anything that mutates the payload between here and
+    # dispatch was not part of what the tier gate authorised.
+    if _integrity_gated:
+        try:
+            from hermes_cli import approval_integrity as _integrity
+
+            _integrity.record_grant(
+                tool_call_id, function_name, function_args,
+                context={"middleware": [str(t) for t in _tool_middleware_trace][:8]},
+            )
+        except Exception:
+            pass
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:

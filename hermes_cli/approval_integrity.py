@@ -44,6 +44,9 @@ class _Record:
     digest: str
     tool_name: str
     created_at: float
+    # Diagnostic only (never payload data): which transforms ran before the
+    # snapshot, so a mismatch is investigable instead of an unexplained refusal.
+    context: tuple = ()
 
 
 def canonical_hash(tool_name: str, args: Any) -> str:
@@ -93,19 +96,35 @@ def _evict_locked(now: float) -> None:
             _CONSUMED.pop(k, None)
 
 
-def record_grant(tool_call_id: str, tool_name: str, args: Any) -> None:
-    """Record the payload a human just approved for ``tool_call_id``.
+def record_grant(
+    tool_call_id: str,
+    tool_name: str,
+    args: Any,
+    *,
+    context: Optional[dict] = None,
+) -> None:
+    """Snapshot the gated payload for ``tool_call_id``.
+
+    Must be called at the **post-middleware boundary** — the payload as it
+    stands after every legitimate request-side transform. Snapshotting earlier
+    compares a pre-transform payload against a post-transform one and refuses
+    honest calls (observed live on the terminal tool).
+
+    ``context`` is diagnostic metadata only (e.g. which middleware ran); it is
+    never payload data and never affects the digest.
 
     No-op when integrity is off or there is no call id to key on."""
     if not tool_call_id or mode() == "off":
         return
     now = time.time()
+    trail = tuple((context or {}).get("middleware", ()) or ())
     with _LOCK:
         _evict_locked(now)
         _RECORDS[tool_call_id] = _Record(
             digest=canonical_hash(tool_name, args),
             tool_name=tool_name,
             created_at=now,
+            context=trail,
         )
 
 
@@ -193,7 +212,11 @@ def verify_at_execution(
             return None
 
         _audit(tool_call_id, tool_name, "payload_changed_after_approval",
-               "refused" if enforced else "observed", {"enforced": enforced})
+               "refused" if enforced else "observed",
+               {"enforced": enforced,
+                # Which transforms preceded the snapshot — the first thing to
+                # check when a mismatch appears.
+                "middleware_before_snapshot": list(record.context)})
         if enforced:
             return (
                 f"Approval integrity check failed for '{tool_name}': the payload "

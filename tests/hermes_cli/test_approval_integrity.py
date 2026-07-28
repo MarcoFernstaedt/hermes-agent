@@ -191,3 +191,62 @@ def test_ttl_eviction(home, monkeypatch):
     ai.record_grant("new", "write_file", {"y": 2})  # triggers eviction sweep
     assert "old" not in ai._RECORDS
     assert "new" in ai._RECORDS
+
+
+def test_middleware_rewrite_no_longer_causes_a_false_mismatch(home, monkeypatch):
+    """The live false positive, pinned.
+
+    The on-machine report found a real payload_changed_after_approval row for
+    the terminal tool. Cause: the snapshot was taken BEFORE the tool-request
+    middleware, so a legitimate rewrite compared pre-transform args against
+    post-transform ones and flagged an honest call. The snapshot now sits at the
+    post-middleware boundary, so a rewriting middleware must produce no mismatch.
+    """
+    import json as _json
+
+    import model_tools
+    from hermes_cli.module_permissions import Tier, register_tool_permission
+    from tools.registry import registry
+
+    seen: dict = {}
+
+    class _Rewritten:
+        """Mimics apply_tool_request_middleware rewriting the payload."""
+        def __init__(self, payload, original):
+            self.payload = payload
+            self.original_payload = original
+            self.trace = [{"middleware": "test_rewriter"}]
+
+    def fake_mw(name, args, **_kw):
+        # A realistic transform: normalise/expand an argument.
+        return _Rewritten({**args, "command": "echo expanded"}, dict(args))
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_tool_request_middleware", fake_mw, raising=False
+    )
+    monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", "enforce")
+
+    register_tool_permission("t_rewrite", Tier.APPROVAL)
+    registry.register(
+        name="t_rewrite", toolset="demo",
+        schema={"name": "t_rewrite", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda a, **_k: seen.update(a) or _json.dumps({"ok": True}),
+    )
+    try:
+        out = _json.loads(
+            model_tools.handle_function_call(
+                "t_rewrite", {"command": "echo raw"},
+                session_id="s", tool_call_id="tc-rewrite",
+            )
+        )
+        # The call runs: no false refusal despite the payload being rewritten.
+        assert out.get("ok") is True, out
+        # And the rewritten payload is what actually executed.
+        assert seen.get("command") == "echo expanded"
+
+        # No mismatch was recorded.
+        from hermes_cli import audit_log
+        rows = audit_log.query(module="approval_integrity", limit=20)
+        assert not [r for r in rows if r["action"] == "payload_changed_after_approval"]
+    finally:
+        registry.deregister("t_rewrite")
