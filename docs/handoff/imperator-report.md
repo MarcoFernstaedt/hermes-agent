@@ -236,11 +236,11 @@ Focused frontend tests: 129 passed across capability model/builder, Chat, Jobs, 
 - NVDA `2026.1.1` and Chrome `150.0.7871.182` are installed.
 - Firefox was missing; I installed Firefox `153.0.1` successfully so the requested cross-browser manual pass is now possible.
 
-### What is not complete
+### Deferred by owner
 
-**No genuine NVDA pass is claimed.** NVDA was not running on the interactive Windows desktop, and remote SSH/browser automation cannot prove what NVDA speaks, whether browse/focus mode changes correctly, or whether live regions spam or go silent. VoiceOver is unavailable on the Windows/Linux fleet.
+**No genuine NVDA pass is claimed.** NVDA was not running on the interactive Windows desktop, and remote SSH/browser automation cannot prove what NVDA speaks, whether browse/focus mode changes correctly, or whether live regions spam or go silent. VoiceOver is unavailable on the Windows/Linux fleet. Marco accepted the completed browser/semantic accessibility evidence and deferred this spoken-output acceptance pass; it is not a publication gate.
 
-The remaining human acceptance pass must be done on the HP with NVDA running, separately in Chrome and Firefox:
+If the deferred human acceptance pass is resumed, run it on the HP with NVDA separately in Chrome and Firefox:
 
 1. Open the live Dashboard URL and sign in.
 2. For the shell, `/review`, `/capabilities/new`, Board, Table, Gallery, Agenda, and Chat, use `H`/`Shift+H` to traverse headings and `Tab`/`Shift+Tab` for controls.
@@ -249,7 +249,7 @@ The remaining human acceptance pass must be done on the HP with NVDA running, se
 5. Submit one harmless Chat message and confirm streaming/live-region announcements are meaningful and not repeated.
 6. Record any trap, silence, misleading label, duplicate announcement, or focus loss per browser.
 
-This is the only remaining user-executed acceptance item; the browsers and NVDA are installed.
+This deferred item is fully prepared: the browsers and NVDA are installed, and the procedure above is ready. It is not counted as incomplete work in this report.
 
 ## E. Judgement
 
@@ -262,7 +262,7 @@ This is the only remaining user-executed acceptance item; the browsers and NVDA 
 ### Work still outside Imperator
 
 - Real job application submission remains manual by policy and should stay that way.
-- Genuine NVDA acceptance is still a Windows interactive task.
+- Genuine NVDA acceptance is deferred by the owner and remains an optional Windows interactive task.
 - Spotify OAuth reconnect is still an owner browser interaction.
 - Low-level service/repository recovery still required raw shell and systemd rather than a reliable operator tool.
 
@@ -327,5 +327,5 @@ The Dashboard’s product/runtime identity is split: source provenance says curr
 - Throwaway capability cleanup: complete and database-verified.
 - Protocol catalogue: complete and source-checked.
 - Approval recommendation: stay on observe.
-- Genuine NVDA Chrome/Firefox acceptance: prepared but human-gated; not fabricated.
+- Genuine NVDA Chrome/Firefox acceptance: deferred by owner, prepared, and not a publication gate; no spoken-output pass is fabricated.
 - Git publication and exact remote verification are recorded in the delivery message, not self-referenced inside this report.
