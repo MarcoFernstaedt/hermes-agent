@@ -1,262 +1,202 @@
-# Imperator — Recon Brief for the On-Machine Agent
+# Imperator — Work Order for the On-Machine Agent
 
-**You are an agent running on the owner's actual machine.** A separate Claude
-session has been building Imperator in the cloud, where it *cannot* see the live
-app, run the real chat (no model key there), take screenshots, or inspect the
-owner's system and connected accounts. Your job is to gather everything that
-session needs and **write the answers to a report file** so it can finish the
-work and verify nothing is broken.
+**Supersedes every previous version of this file.** Ignore anything you
+remember from the earlier brief; the repo has moved on substantially.
 
-Do **not** guess or fabricate. If something can't be determined, say
-"unknown" and why. Never print secret *values* — report only whether a secret
-is present/configured.
+You are an agent running on the owner's actual machine. A Claude session builds
+Imperator in a cloud container that **cannot** see the live app, run the real
+agent (no model key there), take screenshots, or touch the owner's system. This
+file is the interface between the two of you.
+
+This is a **work order**, not just a survey. Sections A–D are things to *do*.
+Section E is judgement I'm asking for. Write everything to
+`docs/handoff/imperator-report.md` and push it.
+
+Ground rules: never print secret **values** (presence only). If something can't
+be determined, write "unknown" and why — do not guess. If you disagree with
+something here, say so in the report; you can see things I can't.
 
 ---
 
-## 0. First steps
+## 0. Start here
 
 ```bash
 cd <path-to>/hermes-agent
 git checkout main
-git pull origin main          # get the latest; retry on transient network errors
+git pull origin main
 ```
 
-Then create your report at `docs/handoff/imperator-recon-report.md` (or paste it
-back into chat). Answer every numbered item below. Keep it factual and terse.
-
-**Key facts (from the cloud session, verify they still hold):**
-- Repo: `MarcoFernstaedt/hermes-agent`, default branch `main`. Active feature
-  branch: `claude/imperator-dashboard-mobile-xw09ri` (kept fast-forward-merged
-  into `main`).
-- Dashboard server entry: `hermes_cli/web_server.py` → `start_server(host, port=9119, open_browser=...)`.
-- Data home: `hermes_constants.get_hermes_home()` — honors `HERMES_HOME`,
-  else `~/.hermes`. SQLite DBs, OAuth token store, and state JSON live under it.
-- Frontend builds from `web/` to `hermes_cli/web_dist/` (gitignored — must be
-  built locally: `cd web && npx vite build`).
-- Auth header for API calls: `X-Hermes-Session-Token` (injected into the SPA as
-  `window.__HERMES_SESSION_TOKEN__` on loopback binds).
+Then read, in this order:
+1. `docs/imperator-mission.md` — what this app is and its invariants.
+2. `docs/dashboard-modules.md` — **how we build every new surface.**
+3. `docs/design-tokens.md` — tokens, motion, the conformance rule.
+4. `docs/plans/imperator-master-spec-checkpoint.md` — current state + phase plan.
 
 ---
 
-## 1. Build & test health (run these, paste output/tails)
+## A. Deploy — this is the top priority, everything else is blocked on it
 
-1.1 Python tests green?
-```bash
-.venv/bin/pytest tests/hermes_cli/test_agent_scopes.py \
-  tests/hermes_cli/test_agent_scopes_router.py \
-  tests/hermes_cli/test_approval_integrity.py -q
-```
-Then a broad run of the suite you can afford; report pass/fail counts and any
-failures (name + short reason).
+The last recon found the daily runtime on **port 9119 serving an older checkout**
+than `main`. That means roughly fifteen merged increments — the entire guardrail
+layer, the review queue, capability authoring, the accessibility fixes — **do not
+exist for the owner.** Nothing else in this file matters until this is fixed.
 
-1.2 Frontend gate from `web/`:
-```bash
-cd web && npx tsc --noEmit && npx eslint src && npx vitest run && npx vite build
-```
-Report each step's result. If `vite build` warns about chunk size only, that's
-pre-existing — note it and move on.
+1. Identify what serves :9119 (process, working directory, service unit).
+2. Bring that checkout to current `main` and rebuild the frontend:
+   ```bash
+   cd web && npm install && npm run build     # emits build-info.json + web_dist
+   ```
+3. Restart the service from that checkout.
+4. Open **Settings → System → Release**. Backend and frontend commits must match
+   and the drift banner must be **gone**. Screenshot it.
+5. If any step needs a decision you can't make safely (a service file you don't
+   own, a port conflict), stop and report — do not improvise around it.
 
-1.3 Does the dashboard launch and serve? Start the server, load it in a browser,
-confirm it renders. Report the exact launch command you used and the URL/port.
-
----
-
-## 2. Live-app verification + screenshots
-
-Take screenshots (attach them / save under `docs/handoff/screens/`) and confirm
-each works. For anything broken, capture the console error and network failure.
-
-2.1 **Global stop** — in the left sidebar there is a "Stop agent" control
-(bottom cluster, above system actions). Click it → it should flip to a red
-"Agent halted" banner; while halted, the agent must refuse tool calls. Click
-"resume" → returns to normal. Screenshot both states. Confirm the state
-persists across a page reload (it's server-side).
-
-2.2 **Session scope indicator** — the guardrails API is `GET /api/agent/guardrails`.
-Confirm it returns `scopes`, `default_scope`, `halted`, `approval_integrity`.
-Note whether the UI surfaces the per-session scope anywhere yet (it may not —
-that's expected; report what you see).
-
-2.3 **Capability boards** — for each capability route (`/c/<id>`; the nav lists
-them), load it directly (type the URL, don't just click) and confirm it renders
-the board/table and that create/advance actions work. List which capability ids
-exist and whether each renders. This directly checks the dynamic-route fix.
-
-2.4 **Media / Spotify re-auth** — open the Media area's Spotify connection card.
-If disconnected or token-expired, confirm the "Reconnect Spotify" button opens
-the OAuth flow and that after completing it the card shows connected. Report
-whether `SPOTIPY_CLIENT_ID` (or equivalent) is configured; if not, the card
-should show actionable guidance, **not** a 500. Screenshot.
-
-2.5 **Chat / gateway** — the cloud session cannot test this (no model key). Send
-a real chat message, confirm the agent responds, approvals prompt correctly, and
-tool calls stream. Report the model/provider in use and any errors.
+**Report:** the exact commands, the before/after commits, and confirmation the
+drift banner cleared.
 
 ---
 
-## 3. Approval integrity — THE decision that unblocks enforcement
+## B. Verify what shipped (screenshot each; save under `docs/handoff/screens/`)
 
-The cloud session shipped `hermes_cli/approval_integrity.py` in **observe mode**
-(env `HERMES_APPROVAL_INTEGRITY`, default `observe`). It snapshots the payload of
-every human-gated (non-AUTO) tool call at approval time and re-checks it at
-dispatch. In `observe` it only writes an audit row on a mismatch; in `enforce`
-it refuses the call. **We need real-app evidence before flipping to `enforce`,**
-because legitimate middleware transforms could theoretically change args between
-approval and dispatch and cause false refusals.
+All of this is on `main` and untested by a human. For anything broken, capture
+the console error and the failing network request.
 
-3.1 Run the app normally for a bit, triggering several **approval-gated** actions
-(a file write, an email label/send if configured, a terminal command needing
-approval). Approve them as usual.
+- **B1 Global stop** — sidebar control. Engage → red "Agent halted" state; the
+  agent must refuse tool calls while halted. Reload → state persists (it's
+  server-side). Release. **This must work on :9119, not just a test server.**
+- **B2 Session scope** — chat header has a scope control (Full / Read-only /
+  Research / Triage). Change it; confirm it persists per session. In Read-only,
+  confirm a write tool is actually *refused*, not merely hidden.
+- **B3 Review queue** (`/review`) — should render, empty is fine. Check the
+  "Inspect exactly what will happen" disclosure works.
+- **B4 Capability builder** (`/capabilities/new`, linked from Review) — build a
+  throwaway capability: pick a **Template**, tick **Gallery**, set an **Agenda by**
+  date field. Confirm live validation errors appear and clear. Propose it →
+  approve it in Review → **confirm the new surface appears at `/c/<id>` and is
+  usable**. Then delete the declaration from `~/.hermes/capabilities/` to clean up.
+- **B5 The four view kinds** — on that capability (or `/c/tasks`, `/c/contacts`,
+  `/c/reading`): board, table, gallery, agenda. Confirm agenda groups by day,
+  shows "Today", and puts undated records in a "No date" group rather than
+  dropping them.
+- **B6 Motion** — confirm it looks *good*, not just correct: rows fade+rise on
+  arrival, a card travels when it changes column, live updates warm gold briefly.
+  Then set OS reduced-motion and confirm all of it becomes instant **with nothing
+  lost**. This was a real bug fixed recently; verify the fix.
+- **B7 Jobs "Today — ready to apply"** — top of `/jobs`. Should list real
+  packet-ready roles; "Open application" and "Mark applied" both work.
+- **B8 Spotify** — Media connection card. If the token is healthy, say so; if you
+  can safely test the reconnect flow, do.
+- **B9 Chat** — the existing chat still works end to end (send, stream, approve).
+  Report the reliability defects from last time: does a response still duplicate,
+  does a second client still time out?
 
-3.2 Query the audit log for integrity events:
+---
+
+## C. The decisions I need before I can write more code
+
+### C1. Approval integrity → `enforce`? (the one I most need)
+
+`hermes_cli/approval_integrity.py` runs in **observe** mode. It now fails closed,
+rejects replays, and — new — writes a `verified` audit row on every *successful*
+gated call, which gives the denominator that was missing last time.
+
+Do this:
+1. Use the app normally for a while, triggering **several approval-gated actions**
+   (a file write, a terminal command needing approval, an email label if
+   configured). Approve them as usual.
+2. Then:
 ```bash
-# via the app's audit surface, or directly:
 sqlite3 "$(python -c 'from hermes_constants import get_hermes_home;print(get_hermes_home())')/audit_log.db" \
-  "SELECT ts,tool,action,outcome,detail FROM audit_log WHERE module='approval_integrity' ORDER BY id DESC LIMIT 50;"
+  "SELECT action, outcome, COUNT(*) FROM audit_log WHERE module='approval_integrity' GROUP BY action, outcome;"
 ```
-Report **how many** `payload_changed_after_approval` rows appeared and for which
-tools. **Zero across a representative set of approvals = safe to enable
-`enforce`.** Any hits: paste the tool + detail so the cloud session can see
-which middleware legitimately mutates args and special-case it.
+3. Report the counts. **`verified` rows with zero `payload_changed_after_approval`
+   rows across a representative set ⇒ enforce is safe.** Any mismatches: paste the
+   tool and detail so I can see which middleware legitimately mutates args.
+4. State plainly: **"enforce is safe"** or **"stay on observe because X."**
 
-3.3 Recommendation you should state explicitly in the report: **"enforce is
-safe"** or **"stay on observe because tools X,Y show benign mismatches."**
+### C2. Hermes version and the two protocols
 
----
+The next big build is the **native structured chat client**, and I will not write
+it against assumptions.
 
-## 4. System, accounts & data state (presence only — never values)
+- Confirm the installed Hermes version (expected **v0.19.0 "Quicksilver"**). If
+  older, update first and say so.
+- From the installed source, report the **actual** tui_gateway method and event
+  catalogue (`tui_gateway/server.py`) — names and payload shapes.
+- Confirm whether **smart-approval verdicts** (the LLM reviewer's judgement +
+  reasoning) are carried on the approval event. The approval card design depends
+  on this. If they aren't, say where they *are* available.
+- Confirm the plugin registration contract in your version: what
+  `PluginContext.register_*` accepts, and that dashboard tabs are still the
+  `dashboard/manifest.json` mechanism.
 
-4.1 **Connected providers** — which are connected: Spotify, Gmail, Google
-Calendar, any others? For each: connected? scopes? token present under the home
-dir's token store? (presence only).
+### C3. Guardrail calibration
 
-4.2 **Vault / Obsidian** — is a vault path configured? Where? Does the app treat
-it as read/write? (Rule: the vault is Obsidian's store, never the app's — confirm
-nothing writes app data into it.)
+Rate ceilings ship in **observe** (`HERMES_AGENT_RATE_LIMIT`), outbound
+secret-scan in **enforce**. Check for false positives:
 
-4.3 **Model / API keys** — which model providers are configured (Anthropic,
-OpenAI, OpenRouter, …)? Presence only. This tells us whether gateway chat and
-agent turns can run.
-
-4.4 **Data home inventory** — list the sqlite DBs and state JSON under the home
-dir and their rough sizes:
 ```bash
-ls -la "$(python -c 'from hermes_constants import get_hermes_home;print(get_hermes_home())')"
+sqlite3 ".../audit_log.db" "SELECT action, outcome, COUNT(*) FROM audit_log WHERE module='agent_guards' GROUP BY action, outcome;"
 ```
-Note especially: `entities.sqlite3`, `audit_log.db`, `jobs`/life DBs,
-`state/agent-guardrails.json` (the scopes+halt store).
 
-4.5 **OS / runtime** — OS + version, Python version, Node version, how the app is
-normally launched (script? service? terminal?), and whether it runs desktop-only
-(the current design target) or also on phone.
+Report any `outbound_secret_detected` that was a **false alarm**, and whether the
+default ceilings (write 400/h, send 40/h, delete 60/h) are sane for real use.
 
 ---
 
-## 5. Open questions for the owner (answer if you know, else flag)
+## D. Accessibility — only you can do this
 
-5.1 Should approval integrity default to `enforce` once §3 shows it's clean?
-5.2 For the next increments (rate-limit + anomaly + outbound secret-scan, then
-daily briefing, automation rules, usage adaptation): any per-category
-send/write/delete ceilings the owner wants, or should the cloud session propose
-defaults?
-5.3 Any surfaces currently broken or annoying in daily use that should jump the
-queue? (This is the highest-value thing you can collect — real usage friction.)
-5.4 Confirm the desktop-only direction still holds (no mobile work needed).
+The CI tripwire catches missing accessible names and alt text. It cannot replace
+a real reader. The owner uses **NVDA as a primary interface**.
 
----
-
-## 6. Help us make Imperator better — questions for YOU, the agent
-
-Answer these from your **direct vantage**: you can see the running app, the real
-data, the owner's actual habits, and this machine's capabilities — things the
-cloud session is blind to. Be specific and opinionated. Prefer concrete
-proposals ("add a quick-capture hotkey that creates an entity") over vague
-praise. Where you can, cite what you observed (a slow route, a confusing label,
-a missing tool). **Add anything we didn't think to ask.**
-
-### 6A. Real usage & friction (highest value)
-- Which surfaces does the owner open most, and which look never-used?
-- Name the **3 worst flows** — tasks that take too many clicks/steps or too much
-  waiting. Describe the ideal shorter path for each.
-- What does the owner still do **outside** Imperator (other apps, manual steps,
-  spreadsheets, notes) that Imperator could absorb?
-- Any surface that is outright **broken, slow (>1s), or confusing**? Give repro
-  steps and, if visible, the console/network error.
-- What single change would most make the owner **live in the app** daily?
-
-### 6B. Agent & tool ergonomics (from operating the app yourself)
-- Which tools are **missing, awkward, or ambiguously named**? Where did you have
-  to fall back to raw shell because no tool fit?
-- Which approval prompts feel **excessive**, and which feel **too permissive**?
-- Are tool results too **verbose or too terse** to decide well? Examples.
-- Any tool that returned a **confusing or unactionable error**?
-
-### 6C. Data realities (sizing drives design)
-- Rough counts: emails, jobs, entities, calendar events, media items, vault
-  notes. Anything else with real volume?
-- Any surface likely to **lag or break** at the owner's real data size?
-- Does **search** find what the owner expects? Where does it miss?
-
-### 6D. Desktop-native opportunities (current design target is desktop)
-- Which OS integrations would earn their keep: native notifications, a **global
-  quick-capture hotkey**, menubar/tray presence, file drag-and-drop, local file
-  access, "share to Imperator"? Rank them.
-- Is a **local model** available (Ollama / LM Studio / etc.)? Which? This decides
-  whether private/offline agent tasks are viable.
-- Should anything run **in the background** as a service (sync, briefing prep)?
-
-### 6E. Proactivity calibration (feeds the daily briefing / automation / adaptation work)
-- **Daily briefing:** what should it contain, in what order, and when should it
-  appear? What would make it worth reading vs. noise?
-- **Automations:** what repetitive decisions does the owner make that a rule
-  could handle (candidates to promote from suggest → auto-execute)?
-- What would feel like **nagging** and must be avoided?
-- **Usage adaptation:** is the owner OK with the app gently reordering nav by
-  usage (shipped off-by-default, pin-wins, reversible), or do they want it fully
-  static? 
-
-### 6F. Integrations wishlist
-- Given the accounts/tools actually present (§4), which **new integrations**
-  would deliver the most value next? Name specific services/APIs the owner uses.
-
-### 6G. Trust & privacy
-- Anything about the guardrails (scopes, global stop, approval integrity, rate
-  ceilings, outbound secret-scan) that feels **wrong, missing, or over-strict**
-  for the owner's real context?
-- Is there data the owner **does not** want the app to touch or store?
-
-### 6H. Your ranked recommendations (open)
-- Give your **top 5 concrete improvements**, ranked, each with a one-line "why".
-- Then: what did you notice that none of the questions above covered?
+- **D1 NVDA in Chrome *and* Firefox** (they differ): the shell, `/review`,
+  `/capabilities/new`, a board, a table, a **gallery**, an **agenda**, and chat.
+  Report per surface: does browse/focus mode behave, are headings navigable by
+  rotor, do live regions announce meaningfully rather than spam?
+- **D2** The agenda view is designed as the *accessible-first* date surface, with
+  real per-day headings. Confirm heading navigation actually jumps day to day.
+- **D3** Any place NVDA gets trapped, goes silent, or reads something misleading.
+  This is the highest-value bug class you can find.
+- **D4** If VoiceOver is available, spot-check; if not, say so.
 
 ---
 
-## 7. What's already shipped vs pending (so you know the frame)
+## E. Your judgement — be specific and opinionated
 
-**Shipped & tested (cloud):**
-- Session capability scopes + server-enforced **global stop** (refused at the
-  `registry.dispatch` chokepoint; stop is unconditional).
-- **Approval integrity** in observe mode (this brief's §3 gates enforcement).
-- Earlier: capability modules, entity store + link graph, Jobs/Progress agent
-  tools, Spotify in-dashboard re-auth, modules-as-manifests.
+You see the running app and the owner's real habits. Cite what you observed.
 
-**Pending (planned in `docs/plans/imperator-adaptive-hardening-response.md`):**
-rate-limit + anomaly + outbound secret-scan → daily briefing + review-queue
-suggestions → automation rules (one event-bus engine) → usage adaptation (off by
-default).
-
-**Externally blocked (needs this machine):** gateway chat E2E (needs a model
-key — §2.5, §4.3), and turning Media/Jobs-UI into *removable* dashboard plugins
-(needs a JS-bundle build pipeline that doesn't exist in-repo).
+1. **The three worst flows** right now, and the shorter path for each.
+2. What the owner still does **outside** Imperator that it could absorb.
+3. Which surfaces are **dead** (never opened) and should be proposed for retirement.
+4. **Tool ergonomics**: which agent tools are missing, awkwardly named, or return
+   unactionable errors? Where did you fall back to raw shell because no tool fit?
+5. **Data realities**: rough counts per module, and anything that will lag at the
+   owner's real volume.
+6. **Does it look good?** The app is meant to feel alive and expensive — layered
+   obsidian, gold used sparingly for the one thing that matters, caused motion.
+   Be honest if it looks flat, cluttered, or cheap, and say where.
+7. **Anything I didn't ask** that you think matters.
 
 ---
 
-## 8. How to return the results
+## F. How to report back
 
-Write `docs/handoff/imperator-recon-report.md` with your answers to **§1–§6**
-(don't skip §6 — the improvement questions are the most valuable part), attach
-screenshots (§2), and either commit it on a branch and push, or paste the report
-back into chat. Lead with the **three things that most change the plan**: (a) the
-§3 enforce recommendation, (b) whether a model key is configured, and (c) the
-worst broken/annoying surface from §5.3 / §6A. Then give your §6H ranked
-recommendations up top so they're impossible to miss.
+Write `docs/handoff/imperator-report.md`, commit on a branch, push:
+
+```bash
+git checkout -b imperator/report-2
+git add docs/handoff/
+git commit -m "On-machine report: deploy, verification, decisions"
+git push -u origin imperator/report-2
+```
+
+**Lead the report with these four**, because they decide what I build next:
+
+1. **Deploy** — did :9119 come current, is drift gone?
+2. **Enforce** — approval-integrity counts and your recommendation (C1).
+3. **Protocols** — Hermes version + the real gateway catalogue (C2).
+4. **The worst thing** you found — broken, ugly, or slow.
+
+Then everything else in order. Don't skip section E; it's the part that most
+changes what gets built.
