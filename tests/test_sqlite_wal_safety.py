@@ -95,3 +95,13 @@ def test_every_direct_wal_site_invokes_runtime_guard():
         assert "force_delete_journal_if_wal_unsafe" in text, relative
         guarded.add(relative)
     assert guarded == expected
+
+
+def test_sqlite_guard_is_shipped_as_top_level_module():
+    """Sealed/editable installs must resolve the guard outside the source cwd."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "hermes_sqlite" in metadata["tool"]["setuptools"]["py-modules"]
