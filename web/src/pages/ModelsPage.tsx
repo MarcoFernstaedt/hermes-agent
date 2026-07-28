@@ -983,9 +983,9 @@ function ModelSettingsPanel({
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
-              {mainProv || "(unset)"}
-              {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainProv || mainModel
+                ? [mainProv, mainModel].filter(Boolean).join(" · ")
+                : "Not set — pick a model to get started"}
             </div>
           </div>
           <Button
@@ -1130,20 +1130,27 @@ export default function ModelsPage() {
       });
   }, []);
 
+  // Bare fetch: `loading` starts true, so the mount/focus effects never
+  // set state synchronously; the header refresh uses refreshModels.
   const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
     Promise.all([
       api.getModelsAnalytics(days),
       api.getAuxiliaryModels().catch(() => null),
     ])
       .then(([models, auxData]) => {
+        setError(null);
         setData(models);
         setAux(auxData);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [days]);
+
+  const refreshModels = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    load();
+  }, [load]);
 
   const refreshAux = useCallback(() => {
     api
@@ -1182,7 +1189,7 @@ export default function ModelsPage() {
           ghost
           size="icon"
           className="text-muted-foreground hover:text-foreground"
-          onClick={load}
+          onClick={refreshModels}
           disabled={loading}
           aria-label={t.common.refresh}
         >
@@ -1195,7 +1202,7 @@ export default function ModelsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
+  }, [days, loading, refreshModels, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
     load();

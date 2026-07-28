@@ -7,6 +7,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
+import { imperatorDocsHref } from "@/lib/imperator-branding";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -59,10 +60,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  });
 
-  const refresh = useCallback(() => {
-    setLoading(true);
+  // The fetch itself never sets loading synchronously — `loading` starts
+  // true, and manual refreshes (event handlers) set it before calling —
+  // so the mount effect below stays free of cascading setState.
+  const load = useCallback(() => {
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
@@ -70,9 +75,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       .finally(() => setLoading(false));
   }, []);
 
+  const refresh = useCallback(() => {
+    setLoading(true);
+    load();
+  }, [load]);
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    load();
+  }, [load]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
@@ -216,13 +226,17 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
                     <a
-                      href={p.docs_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      href={imperatorDocsHref(p.docs_url)}
+                      // Upstream docs links rewrite onto the in-app /docs
+                      // route and stay in this tab; anything else is a
+                      // provider site and opens in a new one.
+                      {...(imperatorDocsHref(p.docs_url).startsWith("/")
+                        ? {}
+                        : { target: "_blank", rel: "noopener noreferrer" })}
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
                     >
-                      <Button ghost size="icon">
+                      <Button ghost size="icon" aria-label={`Open ${p.name} docs`}>
                         <ExternalLink />
                       </Button>
                     </a>

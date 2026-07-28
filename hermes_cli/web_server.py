@@ -5,8 +5,8 @@ Provides a FastAPI backend serving the Vite/React frontend and REST API
 endpoints for managing configuration, environment variables, and sessions.
 
 Usage:
-    python -m hermes_cli.main web          # Start on http://127.0.0.1:9119
-    python -m hermes_cli.main web --port 8080
+    python -m hermes_cli.main dashboard          # Start on http://127.0.0.1:9119
+    python -m hermes_cli.main dashboard --port 8080
 """
 
 from contextlib import asynccontextmanager, contextmanager
@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -44,7 +45,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -101,8 +102,9 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, SecretStr
+    from pydantic import BaseModel, SecretStr, constr
     from starlette.concurrency import run_in_threadpool
+    from starlette.middleware.gzip import GZipMiddleware
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -117,8 +119,9 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel, SecretStr
+        from pydantic import BaseModel, SecretStr, constr
         from starlette.concurrency import run_in_threadpool
+        from starlette.middleware.gzip import GZipMiddleware
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -179,6 +182,12 @@ def _resolve_restart_drain_timeout() -> float:
 
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
+    from hermes_cli.jobs.router import initialize_jobs
+    from hermes_cli.life.router import default_database_path
+    from hermes_cli.life.repository import LifeRepository
+
+    initialize_jobs()
+    LifeRepository(default_database_path()).migrate()
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -263,12 +272,24 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
         return app.state.pty_active_session_files
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+# API docs live under /api/* so the dashboard SPA owns /docs (in-app
+# documentation); Swagger/ReDoc stay reachable for API exploration at
+# /api/docs behind the same auth middleware as the rest of the API.
+app = FastAPI(
+    title="Hermes Agent",
+    version=__version__,
+    lifespan=_lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+from hermes_cli.dashboard.media import router as _media_router  # noqa: E402
 
 app.include_router(_memory_oauth_router)
+app.include_router(_media_router)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -304,6 +325,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Transfer-size + cache policy for the SPA.
+#
+# * Vite emits content-hashed filenames under /assets, so those responses
+#   are immutable: one year + `immutable` means repeat visits never even
+#   revalidate. index.html stays no-store (it carries the session token
+#   and points at the current hashes), so deploys take effect on reload.
+# * GZip shrinks the main bundle ~70% on the wire. Byte-range media
+#   streams are excluded — compressing a 206 response would corrupt the
+#   Content-Range offsets the <audio> element seeks with.
+# ---------------------------------------------------------------------------
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+_GZIP_EXEMPT_PREFIXES = ("/api/media/", "/api/files/download")
+
+
+class _SelectiveGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send):  # type: ignore[override]
+        if scope["type"] == "http" and scope.get("path", "").startswith(
+            _GZIP_EXEMPT_PREFIXES
+        ):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def _static_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE)
+    elif path.startswith(("/icons/", "/fonts/", "/fonts-terminal/", "/ds-assets/")) or path in (
+        "/favicon.ico",
+        "/manifest.webmanifest",
+        "/apple-touch-icon.png",
+    ):
+        # Not content-hashed — cache for a day, revalidate cheaply after.
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
@@ -349,8 +413,20 @@ def _has_valid_session_token(request: Request) -> bool:
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
+def _query_token_path_allowed(path: str) -> bool:
+    """Keep query-token authentication confined to browser-native assets.
+
+    ``audio`` elements cannot attach the desktop session header. Remote
+    dashboards continue to use their auth cookie; this narrow path exists for
+    the ephemeral loopback token only.
+    """
+    return path in _QUERY_TOKEN_API_PATHS or bool(
+        re.fullmatch(r"/api/media/audiobooks/[a-f0-9]{24}/stream", path)
+    )
+
+
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if path not in _QUERY_TOKEN_API_PATHS:
+    if not _query_token_path_allowed(path):
         return False
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
@@ -386,6 +462,15 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+# Native Jobs routes reuse the dashboard's existing token/cookie authorization
+# assertion. Feature logic stays in the modular jobs package.
+from hermes_cli.jobs.router import create_jobs_router as _create_jobs_router  # noqa: E402
+from hermes_cli.life.router import create_life_router as _create_life_router  # noqa: E402
+
+app.include_router(_create_jobs_router(_require_token, initialize=False))
+app.include_router(_create_life_router(_require_token, initialize=False))
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
@@ -419,38 +504,127 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+_DASHBOARD_HOST_LABEL_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+)
 
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
+
+def _dashboard_allowed_hosts_from_env() -> tuple[str, ...]:
+    """Return the one explicit reverse-proxy hostname allowed by the operator.
+
+    The dashboard may bind to a stable interface address while a private
+    reverse proxy presents a DNS hostname to browsers.  The hostname is an
+    exact-match security input: URLs, ports, paths, wildcards, and whitespace
+    are rejected instead of being normalized into broader authority.
     """
-    if not host_header:
-        return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOST", "")
+    if not raw:
+        return ()
+    if raw != raw.strip():
+        raise ValueError("value must not contain surrounding whitespace")
+    host = raw.lower().rstrip(".")
+    if not host:
+        raise ValueError("value is empty")
+    if (
+        any(ch.isspace() for ch in host)
+        or "://" in host
+        or ":" in host
+        or "/" in host
+        or "\\" in host
+        or "*" in host
+    ):
+        raise ValueError("value must be one exact hostname without scheme, port, path, or wildcard")
+    if len(host) > 253 or any(
+        not label or not _DASHBOARD_HOST_LABEL_RE.fullmatch(label)
+        for label in host.split(".")
+    ):
+        raise ValueError("value is not a valid DNS hostname")
+    return (host,)
+
+
+def _is_valid_authority_port(port: str) -> bool:
+    """Return whether ``port`` is an ASCII decimal TCP port."""
+    return (
+        port.isascii()
+        and port.isdigit()
+        and len(port) <= 5
+        and 1 <= int(port) <= 65535
+    )
+
+
+def _host_from_authority(authority: str) -> Optional[str]:
+    """Return a normalized host from a valid HTTP authority, else ``None``.
+
+    A port is optional but, when present, must be decimal and within the TCP
+    port range. Surrounding whitespace and malformed bracket/port suffixes are
+    rejected rather than normalized into an accepted hostname.
+    """
+    if not authority or authority != authority.strip():
+        return None
+    value = authority
+    bracketed = value.startswith("[")
+    if bracketed:
+        close = value.find("]")
+        if close <= 1:
+            return None
+        host_only = value[1:close]
+        if "%" in host_only:
+            return None
+        try:
+            ipaddress.IPv6Address(host_only)
+        except ValueError:
+            return None
+        suffix = value[close + 1 :]
+        if suffix:
+            if not suffix.startswith(":"):
+                return None
+            port = suffix[1:]
+            if not _is_valid_authority_port(port):
+                return None
     else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
+        if value.count(":") > 1:
+            return None
+        if ":" in value:
+            host_only, port = value.rsplit(":", 1)
+            if not _is_valid_authority_port(port):
+                return None
+        else:
+            host_only = value
     host_only = host_only.lower()
+    if not bracketed and (
+        not host_only.isascii()
+        or len(host_only) > 253
+        or any(
+            not label or not _DASHBOARD_HOST_LABEL_RE.fullmatch(label)
+            for label in host_only.split(".")
+        )
+    ):
+        return None
+    if not bracketed and "." in host_only and all(
+        ch == "." or ch.isdigit() for ch in host_only
+    ):
+        try:
+            if str(ipaddress.IPv4Address(host_only)) != host_only:
+                return None
+        except ValueError:
+            return None
+    return host_only
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: tuple[str, ...] = (),
+) -> bool:
+    """True if a valid Host authority targets the bind or allowed proxy."""
+    host_only = _host_from_authority(host_header)
+    if host_only is None:
+        return False
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
+    # (requires --insecure per web_server.start_server). A syntactically valid
+    # Host is accepted; authentication and operator network controls remain
+    # the security boundary in this mode.
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
@@ -459,8 +633,8 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    # Explicit non-loopback bind: require exact bind or configured proxy match.
+    return host_only == bound_lc or host_only in allowed_hosts
 
 
 @app.middleware("http")
@@ -480,7 +654,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", ())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -16460,24 +16635,35 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    allowed_hosts = tuple(getattr(app.state, "allowed_hosts", ()))
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
+    if origin != origin.strip() or any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F for ch in origin
+    ):
+        return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    parsed = urllib.parse.urlparse(origin)
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:
+        return f"origin_mismatch origin={origin} bound={bound_host}"
     if parsed.scheme not in {"http", "https"}:
         # Non-web origin (packaged Electron: file://, null, app://). The
         # upstream credential check is the real auth boundary; trust it.
         # See _ws_host_origin_is_allowed for the full rationale.
         return None
 
-    if not parsed.netloc:
+    if (
+        not parsed.netloc
+        or origin != f"{parsed.scheme}://{parsed.netloc}"
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -16858,19 +17044,68 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     return f"ws://{netloc}/api/pub?{qs}"
 
 
+# Bound each subscriber send during fanout. A half-open peer (dead mobile
+# radio, no TCP RST) accepts writes into kernel buffers until they fill,
+# after which ``send_text`` blocks forever — and ``pub_ws`` awaits the
+# broadcast inline in its receive loop, so one such subscriber would stall
+# event delivery for the whole channel and back-pressure the PTY-side
+# publisher into dropping frames.
+_EVENT_SEND_TIMEOUT_SECONDS = 5.0
+
+
+async def _evict_event_subscriber(app: Any, channel: str, sub: Any) -> None:
+    """Drop a dead subscriber from the registry and close it best-effort."""
+    event_channels, event_lock = _get_event_state(app)
+    async with event_lock:
+        subs = event_channels.get(channel)
+        if subs is not None:
+            subs.discard(sub)
+            if not subs:
+                event_channels.pop(channel, None)
+    try:
+        await asyncio.wait_for(sub.close(code=1011), timeout=1.0)
+    except Exception:
+        # Closing a dead socket is best-effort; the registry removal above
+        # is what stops future broadcasts from touching it.
+        pass
+
+
+async def _send_event_or_evict(
+    app: Any, channel: str, sub: Any, payload: str
+) -> None:
+    try:
+        await asyncio.wait_for(
+            sub.send_text(payload), timeout=_EVENT_SEND_TIMEOUT_SECONDS
+        )
+    except Exception:
+        # Failed or stalled subscriber: evict immediately instead of waiting
+        # for the /api/events finally clause — a half-open socket never
+        # raises from its own receive loop, so that cleanup may never run.
+        _log.warning(
+            "broadcast send failed for subscriber on %s; evicting",
+            channel,
+            exc_info=True,
+        )
+        await _evict_event_subscriber(app, channel, sub)
+
+
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan out one publisher frame to every subscriber on `channel`.
+
+    Sends run concurrently and individually time-bounded so a single slow
+    or half-open subscriber delays the fanout by at most
+    ``_EVENT_SEND_TIMEOUT_SECONDS`` (once — it is evicted on failure)
+    instead of serially blocking every other subscriber on the channel.
+    """
     event_channels, event_lock = _get_event_state(app)
     async with event_lock:
         subs = list(event_channels.get(channel, ()))
+    if not subs:
+        return
 
-    for sub in subs:
-        try:
-            await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+    await asyncio.gather(
+        *(_send_event_or_evict(app, channel, sub, payload) for sub in subs)
+    )
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -17489,6 +17724,81 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
+class WriteApprovalRequest(BaseModel):
+    subsystem: Literal["memory", "skills"]
+    pending_id: constr(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    decision: Literal["approve", "reject"]
+
+
+def _resolve_dashboard_write_approval(
+    request: WriteApprovalRequest,
+    profile: Optional[str],
+) -> dict:
+    """Resolve inside the selected profile on a worker thread."""
+    from hermes_cli.write_approval_commands import resolve_pending_write
+    from tools import write_approval as wa
+
+    with _profile_scope(profile):
+        memory_store = None
+        if request.subsystem == wa.MEMORY and request.decision == "approve":
+            from tools.memory_tool import load_on_disk_store
+
+            memory_store = load_on_disk_store()
+        return resolve_pending_write(
+            request.subsystem,
+            request.pending_id,
+            request.decision,
+            memory_store=memory_store,
+        )
+
+
+_WRITE_APPROVAL_SAFE_ERRORS = frozenset(
+    {
+        "apply_failed",
+        "decision_conflict",
+        "in_progress",
+        "invalid_request",
+        "not_found",
+        "resolution_persist_failed",
+    }
+)
+
+
+@app.post("/api/write-approval")
+async def resolve_dashboard_write_approval(
+    request: WriteApprovalRequest,
+    profile: Optional[str] = None,
+) -> dict:
+    """Resolve a staged write without returning staged data or exceptions."""
+    try:
+        result = await asyncio.to_thread(
+            _resolve_dashboard_write_approval,
+            request,
+            profile,
+        )
+    except Exception:
+        # Resolution exceptions can contain staged write data. Keep both the
+        # client response and server logs payload-free.
+        _log.error("Dashboard write approval failed")
+        result = {"success": False, "error": "apply_failed"}
+
+    if result.get("success") is True:
+        return {
+            "success": True,
+            "subsystem": request.subsystem,
+            "pending_id": request.pending_id,
+            "decision": request.decision,
+        }
+    error = result.get("error")
+    return {
+        "success": False,
+        "subsystem": request.subsystem,
+        "pending_id": request.pending_id,
+        "decision": request.decision,
+        "error": error if error in _WRITE_APPROVAL_SAFE_ERRORS else "apply_failed",
+    }
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     peer = ws.client.host if ws.client else "?"
@@ -17735,6 +18045,28 @@ async def pub_ws(ws: WebSocket) -> None:
         pass
 
 
+_EVENT_HEARTBEAT_SECONDS = 15.0
+_EVENT_HEARTBEAT_FRAME = json.dumps({"method": "heartbeat"}, separators=(",", ":"))
+
+
+async def _receive_event_subscriber_or_heartbeat(
+    ws: WebSocket, timeout: float = _EVENT_HEARTBEAT_SECONDS
+) -> None:
+    """Keep idle subscribers provably alive without requiring browser pings."""
+    try:
+        await asyncio.wait_for(ws.receive_text(), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Bound the heartbeat send too: a half-open peer accepts writes into
+        # dead kernel buffers until they fill, and an unbounded send here
+        # would pin the subscription loop forever — the finally clause in
+        # events_ws (the registry eviction) would never run. A TimeoutError
+        # from this send propagates and tears the subscription down.
+        await asyncio.wait_for(
+            ws.send_text(_EVENT_HEARTBEAT_FRAME),
+            timeout=_EVENT_SEND_TIMEOUT_SECONDS,
+        )
+
+
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -17762,11 +18094,12 @@ async def events_ws(ws: WebSocket) -> None:
 
     try:
         while True:
-            # Subscribers don't speak — the receive() just blocks until
-            # disconnect so the connection stays open as long as the
-            # browser holds it.
-            await ws.receive_text()
-    except WebSocketDisconnect:
+            # Idle subscribers receive an application heartbeat. The browser
+            # uses it to distinguish a healthy quiet chat from a half-open WS.
+            # TimeoutError = the heartbeat send itself stalled on a half-open
+            # socket; treat it like a disconnect so the finally clause evicts.
+            await _receive_event_subscriber_or_heartbeat(ws)
+    except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     finally:
         async with event_lock:
@@ -17973,7 +18306,11 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
                 css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
-        return Response(content=css, media_type="text/css")
+        return Response(
+            content=css,
+            media_type="text/css",
+            headers={"Cache-Control": _IMMUTABLE_CACHE},
+        )
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
@@ -19165,6 +19502,15 @@ def start_server(
         start_nous_auth_keepalive()
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
+
+    # Freeze the optional reverse-proxy Host exception at startup. Invalid
+    # security configuration aborts before provider checks or socket binding.
+    try:
+        app.state.allowed_hosts = _dashboard_allowed_hosts_from_env()
+    except ValueError as exc:
+        raise SystemExit(
+            f"Invalid HERMES_DASHBOARD_ALLOWED_HOST: {exc}"
+        ) from exc
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5

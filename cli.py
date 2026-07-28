@@ -3722,19 +3722,24 @@ def save_config_value(key_path: str, value: any) -> bool:
     try:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
+
+        # Route through the authoritative typed writer. It owns the complete
+        # cross-process transaction, fail-closed parsing, managed-policy checks,
+        # approval-leaf handling, security LKG refresh, and cache invalidation.
+        from hermes_cli.config import set_config_value_typed
+
+        set_config_value_typed(key_path, value, config_path=config_path)
+
         # Enforce owner-only permissions on config files (contain API keys)
         try:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        
+
         return True
+    except SystemExit as e:
+        logger.error("Config policy rejected %s (exit %s)", key_path, e.code)
+        return False
     except Exception as e:
         logger.error("Failed to save config: %s", e)
         return False

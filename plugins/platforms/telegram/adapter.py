@@ -16,6 +16,7 @@ import logging
 import os
 import html as _html
 import re
+import secrets
 import threading
 import time
 from contextvars import ContextVar
@@ -800,6 +801,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._choice_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Persistent-write approval tokens are opaque, one-use, and bound to
+        # the exact chat/thread, subsystem, and pending IDs rendered.
+        self._pending_write_approval_state: Dict[str, dict] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -4999,6 +5003,85 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
+    async def send_pending_write_approval(
+        self,
+        chat_id: str,
+        subsystem: str,
+        records: List[Dict[str, Any]],
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send exact-snapshot memory/skill approval buttons.
+
+        Callback data contains only a short opaque token. The token's local
+        state binds it to the originating chat/thread and to the exact pending
+        IDs visible when this prompt was rendered, so a stale button can never
+        approve writes staged later.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if subsystem not in {"memory", "skills"}:
+            return SendResult(success=False, error="Invalid subsystem")
+        pending_ids = tuple(
+            str(record.get("id", ""))
+            for record in records
+            if str(record.get("id", ""))
+        )
+        if not pending_ids:
+            return SendResult(success=False, error="No pending writes")
+        # Telegram limits one message to 4096 characters. Do not truncate a
+        # button prompt: approving IDs that were not visible would be unsafe.
+        # Returning failure lets the gateway use its normal chunked text flow.
+        if len(content) > 3800:
+            return SendResult(success=False, error="Pending list too long for safe buttons")
+
+        try:
+            now = time.monotonic()
+            for stale_token, state in list(self._pending_write_approval_state.items()):
+                if now - float(state.get("created_at", 0.0)) > 900:
+                    self._pending_write_approval_state.pop(stale_token, None)
+            while len(self._pending_write_approval_state) >= 100:
+                oldest = min(
+                    self._pending_write_approval_state,
+                    key=lambda key: self._pending_write_approval_state[key].get("created_at", 0.0),
+                )
+                self._pending_write_approval_state.pop(oldest, None)
+
+            token = secrets.token_urlsafe(9)
+            while token in self._pending_write_approval_state:
+                token = secrets.token_urlsafe(9)
+            thread_id = self._metadata_thread_id(metadata)
+            normalized_chat_id = normalize_telegram_chat_id(chat_id)
+            self._pending_write_approval_state[token] = {
+                "chat_id": str(normalized_chat_id),
+                "thread_id": str(thread_id) if thread_id is not None else None,
+                "subsystem": subsystem,
+                "pending_ids": pending_ids,
+                "created_at": now,
+            }
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Approve", callback_data=f"pw:a:{token}"),
+                    InlineKeyboardButton("Deny", callback_data=f"pw:r:{token}"),
+                ],
+                [InlineKeyboardButton("Request changes", callback_data=f"pw:c:{token}")],
+            ])
+            kwargs: Dict[str, Any] = {
+                "chat_id": normalized_chat_id,
+                "text": content,
+                "parse_mode": None,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            kwargs.update(self._thread_kwargs_for_send(chat_id, thread_id, metadata))
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            self._pending_write_approval_state.pop(locals().get("token", ""), None)
+            safe_error = _redact_telegram_error_text(exc)
+            logger.warning("[%s] pending-write prompt failed: %s", self.name, safe_error)
+            return SendResult(success=False, error=safe_error)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -5916,6 +5999,97 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Persistent memory/skill write approvals (opaque one-use token) ---
+        if data.startswith("pw:"):
+            parts = data.split(":", 2)
+            choice = parts[1] if len(parts) == 3 else ""
+            token = parts[2] if len(parts) == 3 else ""
+            if choice not in {"a", "r", "c"} or not token:
+                await query.answer(text="Invalid pending-approval action.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to resolve pending changes.")
+                return
+
+            state = self._pending_write_approval_state.get(token)
+            if not state:
+                await query.answer(text="This pending-change prompt is expired or already resolved.")
+                return
+            callback_thread = str(query_thread_id) if query_thread_id is not None else None
+            if (
+                state.get("chat_id") != str(query_chat_id)
+                or state.get("thread_id") != callback_thread
+            ):
+                await query.answer(text="This button belongs to a different chat or thread.")
+                return
+            if time.monotonic() - float(state.get("created_at", 0.0)) > 900:
+                self._pending_write_approval_state.pop(token, None)
+                await query.answer(text="This pending-change prompt has expired.")
+                return
+
+            # Consume before side effects: retries cannot replay an approval.
+            self._pending_write_approval_state.pop(token, None)
+            subsystem = str(state["subsystem"])
+            pending_ids = tuple(state["pending_ids"])
+            if choice == "c":
+                await query.answer(text="Review requested; no changes were applied.")
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            f"No changes applied to {len(pending_ids)} pending {subsystem} change(s). "
+                            f"Run /{subsystem} pending to review them, reject by exact ID, "
+                            "then submit the corrected change."
+                        ),
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            try:
+                from hermes_cli.write_approval_commands import resolve_pending_write
+
+                memory_store = None
+                if choice == "a" and subsystem == "memory":
+                    from tools.memory_tool import load_on_disk_store
+                    memory_store = await asyncio.to_thread(load_on_disk_store)
+
+                decision = "approve" if choice == "a" else "reject"
+                results = []
+                for pending_id in pending_ids:
+                    results.append(await asyncio.to_thread(
+                        resolve_pending_write,
+                        subsystem,
+                        pending_id,
+                        decision,
+                        memory_store=memory_store,
+                    ))
+                succeeded = sum(result.get("success") is True for result in results)
+                failed = len(results) - succeeded
+                label = "Approved" if decision == "approve" else "Denied"
+                await query.answer(text=f"{label} {succeeded} pending change(s).")
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} {succeeded} {subsystem} change(s); {failed} unresolved.",
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("[%s] pending-write approval callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Could not resolve pending changes.")
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

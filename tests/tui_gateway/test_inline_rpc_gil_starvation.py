@@ -42,7 +42,13 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+        # Tests below stub handlers directly on the process-global method
+        # table (e.g. ``_methods["prompt.submit"] = lambda …``); snapshot it
+        # so later suites in the same process see the real handlers again.
+        original_methods = dict(mod._methods)
         yield mod
+        mod._methods.clear()
+        mod._methods.update(original_methods)
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()

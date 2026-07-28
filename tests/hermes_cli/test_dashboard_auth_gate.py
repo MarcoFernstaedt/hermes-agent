@@ -15,6 +15,29 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 
 
+_APP_STATE_KEYS = ("bound_host", "bound_port", "auth_required", "allowed_hosts")
+
+
+@pytest.fixture(autouse=True)
+def _restore_dashboard_app_state():
+    """Prevent startup tests from contaminating later auth modules."""
+    previous_state = {
+        key: (
+            hasattr(web_server.app.state, key),
+            getattr(web_server.app.state, key, None),
+        )
+        for key in _APP_STATE_KEYS
+    }
+    try:
+        yield
+    finally:
+        for key, (was_present, value) in previous_state.items():
+            if was_present:
+                setattr(web_server.app.state, key, value)
+            elif hasattr(web_server.app.state, key):
+                delattr(web_server.app.state, key)
+
+
 @pytest.fixture
 def client_loopback():
     # Pin the bound-host state for host_header_middleware so requests with
@@ -75,6 +98,112 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
     """DNS-rebinding protection: a foreign Host header is rejected."""
     r = client_loopback.get("/api/status", headers={"Host": "evil.test"})
     assert r.status_code == 400
+
+
+def test_explicit_external_host_allows_tailnet_proxy_without_wildcard():
+    """A proxy hostname explicitly configured at startup is accepted exactly."""
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_allowed = getattr(web_server.app.state, "allowed_hosts", None)
+    web_server.app.state.bound_host = "100.119.218.113"
+    web_server.app.state.allowed_hosts = ("srv1522777.tail72f980.ts.net",)
+    try:
+        client = TestClient(
+            web_server.app,
+            base_url="https://srv1522777.tail72f980.ts.net:10000",
+        )
+        assert client.get("/login").status_code != 400
+        assert client.get(
+            "/login", headers={"Host": "evil.example"}
+        ).status_code == 400
+    finally:
+        web_server.app.state.bound_host = prev_host
+        if prev_allowed is None:
+            if hasattr(web_server.app.state, "allowed_hosts"):
+                del web_server.app.state.allowed_hosts
+        else:
+            web_server.app.state.allowed_hosts = prev_allowed
+
+
+@pytest.mark.parametrize(
+    "host_header",
+    [
+        "srv1522777.tail72f980.ts.net:evil",
+        "srv1522777.tail72f980.ts.net:",
+        "srv1522777.tail72f980.ts.net:１２３",
+        "srv1522777.tail72f980.ts.net:١٢٣",
+        "srv1522777.tail72f980.ts.net:0",
+        "srv1522777.tail72f980.ts.net:65536",
+        "[srv1522777.tail72f980.ts.net]",
+        " srv1522777.tail72f980.ts.net",
+        "srv1522777.tail72f980.ts.net ",
+    ],
+)
+def test_explicit_external_host_rejects_malformed_authority(host_header):
+    assert web_server._is_accepted_host(
+        host_header,
+        "100.119.218.113",
+        ("srv1522777.tail72f980.ts.net",),
+    ) is False
+
+
+def test_explicit_external_host_accepts_numeric_port():
+    assert web_server._is_accepted_host(
+        "srv1522777.tail72f980.ts.net:10000",
+        "100.119.218.113",
+        ("srv1522777.tail72f980.ts.net",),
+    ) is True
+
+
+def test_bracketed_ipv6_authority_remains_supported():
+    assert web_server._is_accepted_host("[::1]:9119", "::1") is True
+
+
+@pytest.mark.parametrize(
+    "host_header",
+    [
+        "[:]",
+        "[srv1522777.tail72f980.ts.net]",
+        "example.com:１２３",
+        "example.com:١٢٣",
+        "|",
+        "%",
+        "%GG",
+        'exa"mple.com',
+        "exa<mple.com",
+        "exa>mple.com",
+        "example.com\x00",
+        "[fe80::1%eth0]",
+        "[fe80::1%25eth0]",
+        "999.999.999.999",
+        "256.1.1.1",
+        "1.2.3",
+        "01.02.03.04",
+    ],
+)
+def test_wildcard_bind_rejects_malformed_authority(host_header):
+    assert web_server._is_accepted_host(host_header, "0.0.0.0") is False
+
+
+@pytest.mark.parametrize(
+    "invalid_host",
+    [
+        "https://example.com",
+        "*.example.com",
+        "example.com:10000",
+        "example.com/path",
+        " example.com",
+    ],
+)
+def test_invalid_explicit_external_host_fails_closed(monkeypatch, invalid_host):
+    """Non-exact allowlist values must abort server startup."""
+    monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOST", invalid_host)
+    with pytest.raises(SystemExit, match="HERMES_DASHBOARD_ALLOWED_HOST"):
+        web_server.start_server(
+            host="100.119.218.113",
+            port=9119,
+            open_browser=False,
+            allow_public=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +291,43 @@ def _stub_uvicorn_run(monkeypatch):
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
+
+
+def test_start_server_loads_explicit_external_host(monkeypatch):
+    """The trusted proxy hostname is frozen into app state at startup."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    previous_state = {
+        key: (
+            hasattr(web_server.app.state, key),
+            getattr(web_server.app.state, key, None),
+        )
+        for key in ("bound_host", "bound_port", "auth_required", "allowed_hosts")
+    }
+    register_provider(StubAuthProvider())
+    _stub_uvicorn_run(monkeypatch)
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_ALLOWED_HOST", "srv1522777.tail72f980.ts.net"
+    )
+    try:
+        web_server.start_server(
+            host="100.119.218.113",
+            port=9119,
+            open_browser=False,
+            allow_public=False,
+        )
+        assert web_server.app.state.allowed_hosts == (
+            "srv1522777.tail72f980.ts.net",
+        )
+    finally:
+        clear_providers()
+        for key, (was_present, value) in previous_state.items():
+            if was_present:
+                setattr(web_server.app.state, key, value)
+            elif hasattr(web_server.app.state, key):
+                delattr(web_server.app.state, key)
 
 
 def test_start_server_loopback_sets_auth_required_false(monkeypatch):

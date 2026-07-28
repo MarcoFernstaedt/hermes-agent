@@ -71,6 +71,20 @@ def _reset_wal_fallback_warned_paths():
     hermes_state._wal_fallback_warned_paths.clear()
 
 
+@pytest.fixture(autouse=True)
+def _simulate_patched_sqlite_for_legacy_wal_fallback_tests(monkeypatch):
+    """Keep this module focused on filesystem WAL fallback behavior.
+
+    Unsafe-runtime behavior has its own regression suite in
+    ``test_sqlite_wal_safety.py``.
+    """
+    monkeypatch.setattr(
+        hermes_state,
+        "force_delete_journal_if_wal_unsafe",
+        lambda conn, *, db_label: False,
+    )
+
+
 class TestApplyWalWithFallback:
     def test_succeeds_on_local_fs(self, tmp_path):
         """Happy path: WAL works on a normal filesystem."""

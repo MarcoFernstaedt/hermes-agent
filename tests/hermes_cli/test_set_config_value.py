@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import set_config_value, config_command
+from hermes_cli.config import config_command, set_config_value, unset_config_value
 
 
 @pytest.fixture(autouse=True)
@@ -280,6 +280,105 @@ class TestConfigGetUnset:
 
         assert exc.value.code == 1
         assert "Config key not set: not.a.real.key" in capsys.readouterr().err
+
+    def test_config_set_malformed_yaml_fails_closed(self, _isolated_hermes_home):
+        config_path = _isolated_hermes_home / "config.yaml"
+        malformed = "model: [unterminated\n"
+        config_path.write_text(malformed)
+
+        with pytest.raises(Exception):
+            set_config_value("terminal.backend", "docker")
+
+        assert config_path.read_text() == malformed
+
+    def test_config_unset_malformed_yaml_preserves_yaml_and_env(
+        self, _isolated_hermes_home
+    ):
+        config_path = _isolated_hermes_home / "config.yaml"
+        env_path = _isolated_hermes_home / ".env"
+        malformed = "terminal: [unterminated\n"
+        config_path.write_text(malformed)
+        env_path.write_text("TERMINAL_ENV=docker\n")
+
+        with pytest.raises(Exception):
+            unset_config_value("terminal.backend")
+
+        assert config_path.read_text() == malformed
+        assert env_path.read_text() == "TERMINAL_ENV=docker\n"
+
+    def test_config_unset_locks_before_reading_user_config(
+        self, _isolated_hermes_home, monkeypatch
+    ):
+        from contextlib import contextmanager
+        import hermes_cli.config as config_module
+
+        set_config_value("terminal.backend", "docker")
+        events = []
+        real_require_readable = config_module.require_readable_config_before_write
+
+        @contextmanager
+        def tracking_lock(config_path=None):
+            events.append("lock-enter")
+            try:
+                yield
+            finally:
+                events.append("lock-exit")
+
+        def tracking_readable(config_path):
+            events.append("read")
+            return real_require_readable(config_path)
+
+        monkeypatch.setattr(config_module, "_config_transaction_lock", tracking_lock)
+        monkeypatch.setattr(
+            config_module,
+            "require_readable_config_before_write",
+            tracking_readable,
+        )
+
+        unset_config_value("terminal.backend")
+
+        assert events[0] == "lock-enter"
+        assert events.index("read") < events.index("lock-exit")
+
+    def test_config_unset_uses_authoritative_save_path(
+        self, _isolated_hermes_home, monkeypatch
+    ):
+        import hermes_cli.config as config_module
+
+        set_config_value("terminal.backend", "docker")
+        calls = []
+        real_save_config = config_module.save_config
+
+        def tracking_save(config, **kwargs):
+            calls.append((config, kwargs))
+            return real_save_config(config, **kwargs)
+
+        monkeypatch.setattr(config_module, "save_config", tracking_save)
+
+        unset_config_value("terminal.backend")
+
+        assert len(calls) == 1
+
+    def test_config_unset_save_failure_preserves_synchronized_env(
+        self, _isolated_hermes_home, monkeypatch
+    ):
+        import hermes_cli.config as config_module
+
+        config_path = _isolated_hermes_home / "config.yaml"
+        env_path = _isolated_hermes_home / ".env"
+        config_path.write_text("terminal:\n  backend: docker\n")
+        env_path.write_text("TERMINAL_ENV=docker\n")
+
+        def exploding_save(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(config_module, "save_config", exploding_save)
+
+        with pytest.raises(OSError, match="disk full"):
+            unset_config_value("terminal.backend")
+
+        assert config_path.read_text() == "terminal:\n  backend: docker\n"
+        assert env_path.read_text() == "TERMINAL_ENV=docker\n"
 
 
 # ---------------------------------------------------------------------------

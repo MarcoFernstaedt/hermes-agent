@@ -20,6 +20,23 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { buildJobsQuery } from "@/lib/jobs";
+import type {
+  JobStatus,
+  JobStatusObservation,
+  JobStatusUpdate,
+  JobsFilters,
+  JobsListResponse,
+  JobsSummary,
+} from "@/lib/jobs";
+import type {
+  LifeHabit,
+  LifeHabitCreate,
+  LifeHabitUpdate,
+  LifeHistoryDay,
+  LifeReflectionUpdate,
+  LifeToday,
+} from "@/lib/life";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -80,6 +97,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/media",
 ];
 
 function withManagementProfile(url: string): string {
@@ -89,6 +107,22 @@ function withManagementProfile(url: string): string {
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(
+    status: number,
+    message: string,
+    body: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
 }
 
 export async function fetchJSON<T>(
@@ -186,7 +220,13 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+    throw new ApiError(res.status, `${res.status}: ${text}`, body);
   }
   return res.json();
 }
@@ -279,6 +319,24 @@ export async function authedFetch(
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */
+/** Build a browser-loadable URL for an authenticated media element.
+ *
+ * Remote dashboards authenticate audio requests with the existing session
+ * cookie. Local desktop mode has no cookie and media elements cannot set the
+ * dashboard header, so the backend accepts its ephemeral process token only
+ * on the narrow audiobook stream route.
+ */
+export function buildAuthedAssetUrl(path: string): string {
+  const url = `${BASE}${path}`;
+  if (typeof window === "undefined" || window.__HERMES_AUTH_REQUIRED__) {
+    return url;
+  }
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
 export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
@@ -304,9 +362,346 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+export type WriteApprovalSubsystem = "memory" | "skills";
+export type WriteApprovalDecision = "approve" | "reject";
+
+export interface WriteApprovalResponse {
+  success: boolean;
+  pending_id: string;
+  decision: WriteApprovalDecision;
+  subsystem: WriteApprovalSubsystem;
+  error?: string;
+}
+
+export type MediaProviderStatus =
+  | "ready"
+  | "needs_auth"
+  | "needs_device"
+  | "degraded";
+
+export type SpotifyRepeatState = "off" | "context" | "track";
+
+export interface SpotifyPlaybackSummary {
+  is_playing: boolean;
+  progress_ms: number | null;
+  shuffle_state: boolean;
+  repeat_state: SpotifyRepeatState;
+  item: {
+    name: string | null;
+    uri: string | null;
+    duration_ms: number | null;
+    artists: string[];
+    album?: string | null;
+    image_url?: string | null;
+  } | null;
+  device: {
+    id: string | null;
+    name: string | null;
+    volume_percent: number | null;
+  } | null;
+}
+
+export interface SpotifyMediaDevice {
+  id: string;
+  name: string | null;
+  type: string | null;
+  is_active: boolean;
+  is_restricted: boolean;
+  volume_percent: number | null;
+}
+
+export type SpotifyItemType = "track" | "album" | "artist" | "playlist";
+
+export interface SpotifyMediaItem {
+  type?: SpotifyItemType;
+  name: string | null;
+  uri: string | null;
+  duration_ms?: number | null;
+  artists?: string[];
+  album?: string | null;
+  image_url?: string | null;
+  /** Secondary line for non-track results (album/artist/playlist). */
+  subtitle?: string;
+}
+
+export interface SpotifyMediaCapabilities {
+  playback: boolean;
+  search: boolean;
+  queue: boolean;
+  devices: boolean;
+  transfer: boolean;
+  seek: boolean;
+  volume: boolean;
+  shuffle: boolean;
+  repeat: boolean;
+  context: boolean;
+  recently_played: boolean;
+  playlists: boolean;
+}
+
+export interface SpotifyMediaState {
+  capabilities: Partial<SpotifyMediaCapabilities>;
+  devices: SpotifyMediaDevice[];
+  provider: "spotify";
+  queue: SpotifyMediaItem[];
+  status: MediaProviderStatus;
+  message: string;
+  playback: SpotifyPlaybackSummary | null;
+}
+
+export interface SpotifySearchResults {
+  provider: "spotify";
+  query: string;
+  items: SpotifyMediaItem[];
+}
+
+export type SpotifyMediaCommand =
+  | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
+  | { action: "seek"; position_ms: number; device_id?: string }
+  | { action: "volume"; volume_percent: number; device_id?: string }
+  | { action: "transfer"; device_id: string; play?: boolean }
+  | { action: "queue" | "play_uri"; uri: string; device_id?: string }
+  | { action: "play_context"; context_uri: string; device_id?: string }
+  | { action: "shuffle"; shuffle_state: boolean; device_id?: string }
+  | { action: "repeat"; repeat_state: SpotifyRepeatState; device_id?: string };
+
+export type GitReviewScope = "uncommitted" | "branch" | "lastTurn";
+
+export interface GitStatusFile {
+  path: string;
+  added: number;
+  removed: number;
+  status: string;
+  staged: boolean;
+  unstaged?: boolean;
+  untracked?: boolean;
+  conflicted?: boolean;
+}
+
+export interface GitStatus {
+  branch: string | null;
+  defaultBranch: string | null;
+  detached: boolean;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  changed: number;
+  added: number;
+  removed: number;
+  files: GitStatusFile[];
+}
+
+export interface GitReviewFile {
+  path: string;
+  added: number;
+  removed: number;
+  status: string;
+  staged: boolean;
+}
+
+export interface GitReviewList {
+  files: GitReviewFile[];
+  base: string | null;
+}
+
+export interface GitBranch {
+  name: string;
+  checkedOut: boolean;
+  isDefault: boolean;
+  worktreePath: string | null;
+}
+
+export interface GitWorktree {
+  path: string;
+  branch: string | null;
+  isMain: boolean;
+  detached: boolean;
+  locked: boolean;
+}
+
+export interface GitShipInfo {
+  ghReady: boolean;
+  pr: { url: string; state?: string; number?: number } | null;
+}
+
+export interface ComputerUseStatus {
+  platform: string;
+  platform_supported: boolean;
+  installed: boolean;
+  version: string | null;
+  ready: boolean | null;
+  can_grant: boolean;
+  checks: { label: string; status: string; message: string }[];
+  error: string | null;
+  accessibility: boolean | null;
+  screen_recording: boolean | null;
+}
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+}
+
+export interface LearningNode {
+  id: string;
+  label: string;
+  kind: "skill" | "memory";
+  category: string;
+  useCount: number;
+  state: string;
+  createdBy: string | null;
+  pinned: boolean;
+  timestamp: number | null;
+  memorySource?: string;
+}
+
+export interface LearningGraph {
+  nodes: LearningNode[];
+  edges: { source: string; target: string }[];
+  clusters: { category: string; count: number }[];
+  memory: Record<string, unknown>[];
+  stats: Record<string, number>;
+}
+
+export interface LearningNodeDetail {
+  ok: boolean;
+  kind: "skill" | "memory";
+  id: string;
+  label: string;
+  content: string;
+}
+
+/** Shared body shape for the per-file git review POSTs (stage/unstage/revert). */
+function gitFileOp(endpoint: string, path: string, file: string) {
+  return fetchJSON<{ ok?: boolean }>(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, file }),
+  });
+}
+
+export interface AudiobookChapter {
+  id: string;
+  title: string;
+  order: number;
+  stream_url: string;
+}
+
+export interface AudiobookIndex {
+  book: string;
+  chapters: AudiobookChapter[];
+  progress: AudiobookProgress | null;
+}
+
+export interface AudiobookProgress {
+  chapter_id: string;
+  position_seconds: number;
+  duration_seconds: number;
+  playback_rate: number;
+}
+
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getSpotifyMediaState: () =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
+  controlSpotifyMedia: (command: SpotifyMediaCommand) =>
+    fetchJSON<SpotifyMediaState>("/api/media/spotify/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(command),
+    }),
+  searchSpotifyMedia: (
+    query: string,
+    limit = 10,
+    types: SpotifyItemType[] = ["track"],
+  ) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/search?q=${encodeURIComponent(query)}` +
+        `&limit=${Math.min(Math.max(limit, 1), 20)}` +
+        `&types=${encodeURIComponent(types.join(","))}`,
+    ),
+  getSpotifyRecentlyPlayed: (limit = 20) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/recently-played?limit=${Math.min(Math.max(limit, 1), 50)}`,
+    ),
+  getSpotifyPlaylists: (limit = 20) =>
+    fetchJSON<SpotifySearchResults>(
+      `/api/media/spotify/playlists?limit=${Math.min(Math.max(limit, 1), 50)}`,
+    ),
+  getAudiobookIndex: () =>
+    fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
+  saveAudiobookProgress: (progress: AudiobookProgress) =>
+    fetchJSON<AudiobookProgress>("/api/media/audiobooks/progress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(progress),
+    }),
+  getJobs: (filters: JobsFilters) =>
+    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
+  getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+  updateJobStatus: (
+    jobId: number,
+    status: JobStatus,
+    observation: JobStatusObservation,
+  ) =>
+    fetchJSON<JobStatusUpdate>(`/api/jobs/${jobId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, ...observation }),
+    }),
+  fetchJobAsset: async (url: string) => {
+    if (!url.startsWith("/api/jobs/") || url.includes("token=")) {
+      throw new Error("Invalid job asset URL");
+    }
+    const response = await authedFetch(url);
+    if (!response.ok) {
+      throw new Error(`Asset request failed: ${response.status}`);
+    }
+    return response.blob();
+  },
+  getLifeToday: (day?: string) =>
+    fetchJSON<LifeToday>(
+      `/api/life/today${day ? `?day=${encodeURIComponent(day)}` : ""}`,
+    ),
+  getLifeHistory: (days = 14, endDay?: string) => {
+    const query = new URLSearchParams({ days: String(days) });
+    if (endDay) query.set("end_day", endDay);
+    return fetchJSON<{ items: LifeHistoryDay[] }>(
+      `/api/life/history?${query.toString()}`,
+    );
+  },
+  createLifeHabit: (habit: LifeHabitCreate) =>
+    fetchJSON<LifeHabit>("/api/life/habits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(habit),
+    }),
+  updateLifeHabit: (habitId: number, habit: LifeHabitUpdate) =>
+    fetchJSON<LifeHabit>(`/api/life/habits/${habitId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(habit),
+    }),
+  setLifeEntry: (habitId: number, day: string, value: number, note = "") =>
+    fetchJSON<LifeToday>(`/api/life/entries/${habitId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ day, value, note }),
+    }),
+  setLifeReflection: (day: string, reflection: LifeReflectionUpdate) =>
+    fetchJSON<LifeToday>(
+      `/api/life/reflections/${encodeURIComponent(day)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reflection),
+      },
+    ),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -339,6 +734,20 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
+  resolveWriteApproval: (
+    subsystem: WriteApprovalSubsystem,
+    pendingId: string,
+    decision: WriteApprovalDecision,
+    profile?: string,
+  ) =>
+    fetchJSON<WriteApprovalResponse>(
+      appendProfileParam("/api/write-approval", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subsystem, pending_id: pendingId, decision }),
+      },
+    ),
   getSessions: (
     limit = 20,
     offset = 0,
@@ -351,9 +760,18 @@ export const api = {
         profile,
       ),
     ),
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+  getSessionMessages: (
+    id: string,
+    profile = getManagementProfile(),
+    page?: { limit: number; offset: number },
+  ) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages${
+          page ? `?limit=${page.limit}&offset=${page.offset}` : ""
+        }`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
@@ -545,6 +963,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, value }),
     }),
+  /**
+   * Live-probe a provider credential before it is saved. `ok` means the
+   * provider accepted it; `ok:false, reachable:true` means the key is bad;
+   * `reachable:false` means the probe couldn't run (offline, or no probe
+   * exists for this provider — do not hard-block).
+   */
+  validateProviderKey: (key: string, value: string) =>
+    fetchJSON<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>(
+      "/api/providers/validate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      },
+    ),
   deleteEnvVar: (key: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
       method: "DELETE",
@@ -556,6 +989,142 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
+    }),
+
+  // Voice — speech-to-text (dictation) and text-to-speech (playback).
+  // Backed by the agent's configured transcription/TTS provider chain.
+  transcribeAudio: (dataUrl: string, mimeType?: string) =>
+    fetchJSON<{ ok: boolean; transcript: string; provider?: string }>(
+      "/api/audio/transcribe",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data_url: dataUrl, mime_type: mimeType }),
+      },
+    ),
+  speakText: (text: string) =>
+    fetchJSON<{ ok: boolean; data_url: string; mime_type: string; provider?: string }>(
+      "/api/audio/speak",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+    ),
+  getElevenLabsVoices: () =>
+    fetchJSON<{ voices: { voice_id: string; label: string }[] }>(
+      "/api/audio/elevenlabs/voices",
+    ),
+
+  // Git review / worktree / PR suite. Every call is scoped to a repo `path`.
+  getGitDefaultCwd: () =>
+    fetchJSON<{ cwd: string; branch: string | null }>("/api/fs/default-cwd"),
+  getGitRoot: (path: string) =>
+    fetchJSON<{ root: string | null }>(`/api/fs/git-root?path=${encodeURIComponent(path)}`),
+  getGitStatus: (path: string) =>
+    fetchJSON<GitStatus | null>(`/api/git/status?path=${encodeURIComponent(path)}`),
+  getGitBranches: (path: string) =>
+    fetchJSON<{ branches: GitBranch[] }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
+  getGitWorktrees: (path: string) =>
+    fetchJSON<{ worktrees: GitWorktree[] }>(`/api/git/worktrees?path=${encodeURIComponent(path)}`),
+  getGitReviewList: (path: string, scope: GitReviewScope = "uncommitted") =>
+    fetchJSON<GitReviewList>(
+      `/api/git/review/list?path=${encodeURIComponent(path)}&scope=${scope}`,
+    ),
+  getGitReviewDiff: (path: string, file: string, scope: GitReviewScope, staged: boolean) =>
+    fetchJSON<{ diff: string }>(
+      `/api/git/review/diff?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}` +
+        `&scope=${scope}&staged=${staged}`,
+    ),
+  getGitCommitContext: (path: string) =>
+    fetchJSON<{ diff: string; recent: string }>(
+      `/api/git/review/commit-context?path=${encodeURIComponent(path)}`,
+    ),
+  getGitShipInfo: (path: string) =>
+    fetchJSON<GitShipInfo>(`/api/git/review/ship-info?path=${encodeURIComponent(path)}`),
+  gitStageFile: (path: string, file: string) => gitFileOp("/api/git/review/stage", path, file),
+  gitUnstageFile: (path: string, file: string) => gitFileOp("/api/git/review/unstage", path, file),
+  gitRevertFile: (path: string, file: string) => gitFileOp("/api/git/review/revert", path, file),
+  gitCommit: (path: string, message: string, push: boolean) =>
+    fetchJSON<{ ok?: boolean; sha?: string }>("/api/git/review/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, message, push }),
+    }),
+  gitPush: (path: string) =>
+    fetchJSON<{ ok?: boolean }>("/api/git/review/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  gitCreatePr: (path: string) =>
+    fetchJSON<{ url?: string }>("/api/git/review/create-pr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  gitSwitchBranch: (path: string, branch: string) =>
+    fetchJSON<{ branch: string }>("/api/git/branch/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, branch }),
+    }),
+  gitAddWorktree: (path: string, opts: { name?: string; branch?: string; base?: string; existingBranch?: string }) =>
+    fetchJSON<{ path?: string }>("/api/git/worktree/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, ...opts }),
+    }),
+  gitRemoveWorktree: (path: string, worktreePath: string, force = false) =>
+    fetchJSON<{ ok?: boolean }>("/api/git/worktree/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, worktreePath, force }),
+    }),
+
+  // Computer Use readiness (macOS grants elsewhere driver health).
+  getComputerUseStatus: () =>
+    fetchJSON<ComputerUseStatus>("/api/tools/computer-use/status"),
+  grantComputerUsePermissions: () =>
+    fetchJSON<{ ok?: boolean; action?: string }>(
+      "/api/tools/computer-use/permissions/grant",
+      { method: "POST" },
+    ),
+
+  // Filesystem browser (raw server paths — the coding-rail explorer).
+  fsList: (path: string) =>
+    fetchJSON<{ entries: FsEntry[]; error?: string }>(
+      `/api/fs/list?path=${encodeURIComponent(path)}`,
+    ),
+  fsReadText: (path: string) =>
+    fetchJSON<{ text: string; binary: boolean; truncated: boolean; language: string }>(
+      `/api/fs/read-text?path=${encodeURIComponent(path)}`,
+    ),
+  fsWriteText: (path: string, content: string) =>
+    fetchJSON<{ ok?: boolean }>("/api/fs/write-text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    }),
+
+  // Learning graph — learned (non-base) skills + memory chunks, profile-scoped.
+  getLearningGraph: (profile = getManagementProfile()) =>
+    fetchJSON<LearningGraph>(appendProfileParam("/api/learning/graph", profile)),
+  getLearningNode: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<LearningNodeDetail>(
+      appendProfileParam(`/api/learning/node?id=${encodeURIComponent(id)}`, profile),
+    ),
+  updateLearningNode: (id: string, content: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>("/api/learning/node", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, content, profile: profile || undefined }),
+    }),
+  deleteLearningNode: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>("/api/learning/node", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, profile: profile || undefined }),
     }),
 
   // Cron jobs

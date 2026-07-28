@@ -24,16 +24,24 @@ const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
 
 function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
-  const upper = line.toUpperCase();
-  if (
-    upper.includes("ERROR") ||
-    upper.includes("CRITICAL") ||
-    upper.includes("FATAL")
-  )
-    return "error";
-  if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
-  if (upper.includes("DEBUG")) return "debug";
-  return "info";
+  // Match the first standalone level token so counters like
+  // "parse_errors=0" in healthy INFO lines don't paint the row red.
+  const match = line
+    .toUpperCase()
+    .match(/\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b/);
+  switch (match?.[1]) {
+    case "ERROR":
+    case "CRITICAL":
+    case "FATAL":
+      return "error";
+    case "WARNING":
+    case "WARN":
+      return "warning";
+    case "DEBUG":
+      return "debug";
+    default:
+      return "info";
+  }
 }
 
 const LINE_COLORS: Record<string, string> = {
@@ -68,12 +76,14 @@ export default function LogsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  // Bare fetch for effects — auto-refresh must not flash the spinner and
+  // effects must not set state synchronously. The header refresh button
+  // uses refreshLogs, which shows the spinner.
   const fetchLogs = useCallback(() => {
-    setLoading(true);
-    setError(null);
     api
       .getLogs({ file, lines: lineCount, level, component })
       .then((resp) => {
+        setError(null);
         setLines(resp.lines);
         setTimeout(() => {
           if (scrollRef.current) {
@@ -84,6 +94,12 @@ export default function LogsPage() {
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
+
+  const refreshLogs = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetchLogs();
+  }, [fetchLogs]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -97,7 +113,7 @@ export default function LogsPage() {
           ghost
           size="icon"
           className="text-muted-foreground hover:text-foreground"
-          onClick={fetchLogs}
+          onClick={refreshLogs}
           disabled={loading}
           aria-label={t.common.refresh}
         >
@@ -140,7 +156,7 @@ export default function LogsPage() {
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
-    fetchLogs,
+    refreshLogs,
   ]);
 
   useEffect(() => {
@@ -219,7 +235,11 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
+            // Keyboard users must be able to focus and scroll the log output.
+            tabIndex={0}
+            role="log"
+            aria-label={`${file}.log output`}
+            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">

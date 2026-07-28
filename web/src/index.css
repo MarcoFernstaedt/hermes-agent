@@ -43,26 +43,26 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) palette applied
-   statically as the default dashboard theme. */
+/* Imperator — the dashboard's single color scheme: Imperator gold
+   (aurum #e8c87a) chrome on a deep obsidian-violet canvas (#0f0b1e).
+   These static :root values make the very first paint on-brand;
+   ThemeProvider re-asserts the same values (see src/themes/presets.ts —
+   keep the two in sync, along with the server-rendered /login page in
+   hermes_cli/dashboard_auth/login_page.py). */
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
-     ThemeProvider rewrites them as inline styles when a user switches themes. */
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
   --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --midground: color-mix(in srgb, #e8c87a 100%, transparent);
+  --midground-base: #e8c87a;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #0f0b1e 100%, transparent);
+  --background-base: #0f0b1e;
   --background-alpha: 1;
 
-  /* Typography tokens — rewritten by ThemeProvider. Defaults match the
-     system stack so themes that don't override look native. */
+  /* Typography tokens. System stack — fast, no external font fetch. */
   --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
@@ -80,12 +80,10 @@
 
   /* Data-series accents — consumed by Analytics + Models pages for the
      input-vs-output token visualisations (chart bars, table values,
-     legend swatches). Defaults are tuned for the Hermes-teal LENS_0
-     look: cream input + emerald-400 output read as warm/cool against
-     the dark canvas. Themes override via ThemeProvider, which emits
-     these as `--series-input-token` / `--series-output-token`. */
-  --series-input-token: #ffe6cb;
-  --series-output-token: #34d399;
+     legend swatches). Imperator gold input vs. violet output read as
+     warm/cool against the dark canvas. */
+  --series-input-token: #e8c87a;
+  --series-output-token: #a78bfa;
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits
@@ -98,6 +96,14 @@ html {
   height: 100dvh;
   max-height: 100dvh;
   overflow: hidden;
+  /* Stop mobile Safari/Chrome from inflating text after orientation
+     changes — one of the classic "the dashboard looks zoomed in on my
+     phone" causes. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* No gray tap flash on touch — interactive elements carry their own
+     active-state feedback instead. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -138,6 +144,18 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
     max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
+    /* Keep scrolls inside the app: no rubber-band chaining into the
+       browser chrome or accidental pull-to-refresh mid-list. */
+    overscroll-behavior-y: contain;
+  }
+
+  /* iOS Safari auto-zooms the whole page when a focused form control's
+     font-size is under 16px — the other classic "zoomed in weird" cause.
+     Keep control text at ≥16px on phone widths so focus never zooms. */
+  input,
+  select,
+  textarea {
+    font-size: max(1em, 16px);
   }
 }
 
@@ -231,6 +249,31 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+/* Imperator canvas — the same subtle top glow + dot-grid idiom the /login
+   page uses, tuned faint enough to read as texture, not decoration. Applied
+   to the app shell root so login → dashboard feels like one continuous
+   surface. */
+.imperator-canvas {
+  background-image:
+    radial-gradient(
+      ellipse at top,
+      color-mix(in srgb, var(--midground-base) 5%, transparent) 0%,
+      transparent 55%
+    ),
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--midground-base) 2.5%, transparent) 0% 25%,
+      transparent 0% 50%
+    );
+  background-size: auto, 3px 3px;
+}
+
+/* Anchor jumps and programmatic scrolls glide instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;
@@ -243,5 +286,54 @@ code { font-size: 0.875rem; }
   pointer-events: none;
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
     2px 2px;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Bottom-anchored chrome: mobile tab bar + persistent media mini-player
+ *
+ *  Spotify-style stacking — the mini-player docks directly ABOVE the tab
+ *  bar rather than covering it, and routed content / the chat composer
+ *  clear both with no dead gap. Heights are measured at runtime (the tab
+ *  bar and dock write their own pixel heights into these variables), so
+ *  the spacing is always exact regardless of safe-area insets or wrapping.
+ * ------------------------------------------------------------------ */
+:root {
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Set by MobileBottomNav (0 when hidden — e.g. desktop or /chat). */
+  --app-bottom-nav-h: 0px;
+  /* Set by the media mini-player while it is mounted (0 otherwise). */
+  --app-media-dock-h: 0px;
+}
+
+/* The mini-player rides on top of the tab bar (or the very bottom when no
+   bar is present, e.g. the chat route or desktop). */
+.player-dock {
+  bottom: var(--app-bottom-nav-h);
+  padding-bottom: var(--app-safe-bottom);
+}
+/* When it sits above the tab bar, the bar already owns the safe-area gap. */
+html[data-mobile-nav="visible"] .player-dock {
+  padding-bottom: 0;
+}
+
+/* Routed (non-chat) content scrolls clear of the tab bar + mini-player. */
+.media-dock-inset {
+  padding-bottom: calc(var(--app-bottom-nav-h) + var(--app-media-dock-h));
+}
+@media (min-width: 1024px) {
+  /* Desktop has no tab bar; keep a little breathing room plus dock height. */
+  .media-dock-inset {
+    padding-bottom: calc(2rem + var(--app-media-dock-h));
+  }
+}
+
+/* Chat composer floats flush above the mini-player — no extra spacing.
+   While the keyboard is up the dock is hidden behind it, so the composer
+   drops back to its normal inset and sits right on the keyboard. */
+.chat-dock-inset {
+  padding-bottom: max(0.5rem, var(--app-safe-bottom));
+}
+html[data-media-dock="active"]:not([data-keyboard="open"]) .chat-dock-inset {
+  padding-bottom: var(--app-media-dock-h);
 }
 

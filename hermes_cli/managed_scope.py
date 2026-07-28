@@ -112,17 +112,49 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     return parsed
 
 
-def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+def load_managed_config_with_status() -> tuple[dict, str]:
+    """Return managed config plus ``absent``/``valid``/``failed`` provenance."""
     managed_dir = get_managed_dir()
     if managed_dir is None:
-        return {}
-    parsed = _cached_read(
-        managed_dir / "config.yaml",
-        _CONFIG_CACHE,
-        lambda f: yaml.safe_load(f) or {},
-    )
-    return parsed if isinstance(parsed, dict) else {}
+        return {}, "absent"
+    path = managed_dir / "config.yaml"
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return {}, "absent"
+    except OSError as exc:
+        logger.warning("managed scope: cannot stat %s: %s", path, exc)
+        return {}, "failed"
+
+    key = (st.st_mtime_ns, st.st_size)
+    path_key = str(path)
+    with _CACHE_LOCK:
+        hit = _CONFIG_CACHE.get(path_key)
+        if hit is not None and hit[:2] == key:
+            parsed = copy.deepcopy(hit[2])
+            return (parsed, "valid") if isinstance(parsed, dict) else ({}, "failed")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            parsed = yaml.safe_load(handle) or {}
+        if not isinstance(parsed, dict):
+            raise TypeError("managed config root must be a mapping")
+    except Exception as exc:  # noqa: BLE001 — status lets security callers close
+        logger.warning(
+            "managed scope: failed to parse %s: %s — IGNORING this managed file. "
+            "Admin policy from this file is NOT being applied. Fix and restart.",
+            path,
+            exc,
+        )
+        return {}, "failed"
+    with _CACHE_LOCK:
+        _CONFIG_CACHE[path_key] = (key[0], key[1], copy.deepcopy(parsed))
+    return parsed, "valid"
+
+
+def load_managed_config() -> dict:
+    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+    parsed, _status = load_managed_config_with_status()
+    return parsed
 
 
 def load_managed_env() -> Dict[str, str]:
@@ -199,9 +231,9 @@ def _flatten_keys(d: dict, prefix: str = "") -> set:
     return keys
 
 
-def managed_config_keys() -> set:
-    """Dotted leaf keys pinned by the managed config (e.g. {'model.default'})."""
-    return _flatten_keys(load_managed_config())
+def managed_config_keys(config: Optional[dict] = None) -> set:
+    """Dotted leaf keys pinned by a supplied or current managed config."""
+    return _flatten_keys(load_managed_config() if config is None else config)
 
 
 def is_key_managed(dotted_key: str) -> bool:

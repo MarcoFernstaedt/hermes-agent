@@ -47,7 +47,7 @@ def projects_db_path() -> Path:
     Profile-aware: ``get_hermes_home()`` already points at the active profile's
     home. Tests pass an explicit ``db_path`` to :func:`connect`.
     """
-    return get_hermes_home() / "projects.db"
+    return Path(get_hermes_home()) / "projects.db"
 
 
 # ---------------------------------------------------------------------------

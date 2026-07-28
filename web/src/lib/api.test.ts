@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, buildAuthedAssetUrl } from "./api";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
@@ -45,6 +45,97 @@ describe("api.getModelOptions", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
+describe("buildAuthedAssetUrl", () => {
+  it("uses the ephemeral loopback token for native audio elements", () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback token" });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe(
+      "/api/media/audiobooks/chapter/stream?token=loopback%20token",
+    );
+  });
+
+  it("relies on cookie auth in gated mode", () => {
+    vi.stubGlobal("window", {
+      __HERMES_AUTH_REQUIRED__: true,
+      __HERMES_SESSION_TOKEN__: "must-not-appear",
+    });
+
+    expect(
+      buildAuthedAssetUrl("/api/media/audiobooks/chapter/stream"),
+    ).toBe("/api/media/audiobooks/chapter/stream");
+  });
+});
+
+describe("media API", () => {
+  it("keeps Spotify mutations typed and authenticated", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({ provider: "spotify", status: "ready" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.controlSpotifyMedia({
+      action: "volume",
+      device_id: "device-1",
+      volume_percent: 55,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/spotify/control",
+      expect.objectContaining({
+        body: JSON.stringify({
+          action: "volume",
+          device_id: "device-1",
+          volume_percent: 55,
+        }),
+        credentials: "include",
+        method: "POST",
+      }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("bounds and encodes Spotify search", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ provider: "spotify", query: "focus & calm", items: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.searchSpotifyMedia("focus & calm", 20, ["track", "album"]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/spotify/search?q=focus%20%26%20calm&limit=20&types=track%2Calbum",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("scopes audiobook progress to the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      chapter_id: "0123456789abcdef01234567",
+      position_seconds: 10,
+      duration_seconds: 100,
+      playback_rate: 1.25,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { setManagementProfile } = await import("./api");
+    setManagementProfile("reader profile");
+
+    await api.saveAudiobookProgress({
+      chapter_id: "0123456789abcdef01234567",
+      position_seconds: 10,
+      duration_seconds: 100,
+      playback_rate: 1.25,
+    });
+    setManagementProfile("");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media/audiobooks/progress?profile=reader%20profile",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });
 });
@@ -102,5 +193,125 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+});
+
+describe("api.resolveWriteApproval", () => {
+  it("posts structured JSON with explicit profile and loopback session auth", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({
+      success: true,
+      subsystem: "memory",
+      pending_id: "mem12345",
+      decision: "approve",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.resolveWriteApproval(
+      "memory",
+      "mem12345",
+      "approve",
+      "client profile",
+    );
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/write-approval?profile=client%20profile",
+      expect.objectContaining({
+        body: JSON.stringify({
+          subsystem: "memory",
+          pending_id: "mem12345",
+          decision: "approve",
+        }),
+        credentials: "include",
+        method: "POST",
+      }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("uses cookie auth in gated mode", async () => {
+    vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
+    const fetchMock = jsonFetchMock({
+      success: true,
+      subsystem: "skills",
+      pending_id: "skill123",
+      decision: "reject",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.resolveWriteApproval("skills", "skill123", "reject");
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe("include");
+    expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
+  });
+
+  it("rejects when the protected endpoint fails", async () => {
+    vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(
+        async () => new Response("safe failure", { status: 409 }),
+      ),
+    );
+
+    await expect(
+      api.resolveWriteApproval("memory", "mem12345", "approve"),
+    ).rejects.toThrow("409: safe failure");
+  });
+});
+
+describe("jobs API", () => {
+  it("lists jobs and sends exact status payloads with existing auth", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = jsonFetchMock({ items: [], total: 0, filters: {} });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getJobs({
+      status: "applied",
+      lane: "quality_assurance",
+      freshness: "active",
+      query: "analyst",
+    });
+    await api.updateJobStatus(42, "pending", {
+      expected_status: "applied",
+      expected_updated_at: "2026-07-17T12:00:00Z",
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/jobs?status=applied&lane=quality_assurance&freshness=active&q=analyst",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/42/status");
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          status: "pending",
+          expected_status: "applied",
+          expected_updated_at: "2026-07-17T12:00:00Z",
+        }),
+      }),
+    );
+    const headers = fetchMock.mock.calls[1][1]?.headers as Headers;
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
+  });
+
+  it("fetches packet assets with auth and no URL credential", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("asset"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.fetchJobAsset("/api/jobs/1/assets/2?disposition=attachment");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/jobs/1/assets/2?disposition=attachment",
+    );
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("token=");
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get(SESSION_HEADER)).toBe("loopback-token");
   });
 });

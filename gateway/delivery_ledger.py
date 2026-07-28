@@ -49,6 +49,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,8 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
+    if not force_delete_journal_if_wal_unsafe(conn, db_label=str(path)):
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,

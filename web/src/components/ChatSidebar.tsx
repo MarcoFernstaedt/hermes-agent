@@ -24,14 +24,20 @@
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
+import { Switch } from "@nous-research/ui/ui/components/switch";
+
+import { setAppSetting, useAppSettings } from "@/lib/app-settings";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, buildWsUrl } from "@/lib/api";
+import { GatewayClient } from "@/lib/gatewayClient";
+import { api } from "@/lib/api";
+import {
+  restartDashboardEvents,
+  subscribeDashboardEvents,
+} from "@/lib/event-channel-hub";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -51,24 +57,6 @@ interface RpcEnvelope {
   params?: { type?: string; payload?: unknown };
 }
 
-const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
-
-const STATE_TONE: Record<
-  ConnectionState,
-  "secondary" | "warning" | "success" | "destructive"
-> = {
-  idle: "secondary",
-  connecting: "warning",
-  open: "success",
-  closed: "secondary",
-  error: "destructive",
-};
 
 interface ChatSidebarProps {
   channel: string;
@@ -109,8 +97,8 @@ export function ChatSidebar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const gw = useMemo(() => new GatewayClient(), [version]);
 
-  const [state, setState] = useState<ConnectionState>("idle");
   const [info, setInfo] = useState<SessionInfo>({});
+  const settings = useAppSettings();
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The badge shows config.yaml's main model (`model.default`) via
@@ -177,7 +165,6 @@ export function ChatSidebar({
       setInfo({});
       setError(null);
     });
-    const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
       if (ev.payload) {
@@ -214,7 +201,6 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true;
-      offState();
       offSessionInfo();
       offError();
       gw.close();
@@ -223,53 +209,28 @@ export function ChatSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw]);
 
-  // Event subscriber WebSocket — receives the rebroadcast of every
-  // dispatcher emit from the PTY child's gateway.  See /api/pub +
-  // /api/events in hermes_cli/web_server.py for the broadcast hop.
+  // Event subscription — receives the rebroadcast of every dispatcher
+  // emit from the PTY child's gateway.  See /api/pub + /api/events in
+  // hermes_cli/web_server.py for the broadcast hop.
   //
-  // Failures (auth/loopback rejection, server too old to expose the
-  // endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort
-  // UX and the user always has a reconnect affordance.
+  // Rides the shared per-channel hub (one resilient socket multiplexed
+  // with ChatPage's feed projection): transient drops retry with backoff
+  // and clear the banner on recovery, so the red "events feed
+  // disconnected" state is reserved for auth-terminal failures. The
+  // manual reconnect button restarts the shared socket via
+  // restartDashboardEvents.
   useEffect(() => {
     if (!channel) {
       return;
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
-    let unmounting = false;
-    let ws: WebSocket | null = null;
-    void (async () => {
-      const url = await buildWsUrl("/api/events", { channel });
-      if (unmounting) {
-        return;
-      }
-      ws = new WebSocket(url);
+    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
-
-      ws.addEventListener("error", () => surface(DISCONNECTED));
-
-      ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
-        }
-      });
-
-      ws.addEventListener("message", (ev) => {
+    const unsubscribe = subscribeDashboardEvents(channel, {
+      onMessage: (ev) => {
         let frame: RpcEnvelope;
 
         try {
-          frame = JSON.parse(ev.data);
+          frame = JSON.parse(String(ev.data));
         } catch {
           return;
         }
@@ -288,13 +249,20 @@ export function ChatSidebar({
         } else if (type === "dashboard.new_session_requested") {
           onDashboardNewSessionRequest?.();
         }
-      });
-    })();
+      },
+      onConnected: () => {
+        // Only clear our own banner — a credential warning or RPC-sidecar
+        // error from the other socket must survive an events-feed recovery.
+        setError((current) =>
+          current && current.startsWith("events feed") ? null : current,
+        );
+      },
+      onDisconnected: () => setError(DISCONNECTED),
+      onTerminalFailure: ({ code }) =>
+        setError(`events feed rejected (${code ?? "auth"}) — reload the page`),
+    });
 
-    return () => {
-      unmounting = true;
-      ws?.close();
-    };
+    return unsubscribe;
   }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
@@ -307,8 +275,12 @@ export function ChatSidebar({
     setError(null);
     setModelNotice(null);
     setPendingReloadModel(null);
+    // After a terminal failure the shared events socket stops retrying on
+    // purpose; a user-initiated reconnect forces a fresh socket cycle for
+    // every subscriber on the channel (this panel + the chat feed).
+    if (channel) restartDashboardEvents(channel);
     setVersion((v) => v + 1);
-  }, []);
+  }, [channel]);
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
@@ -348,9 +320,26 @@ export function ChatSidebar({
           </Button>
         </div>
 
-        <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
-        </Badge>
+        {/* The sidecar connection badge that used to sit here duplicated
+            the composer's always-on status dot (working/idle/reconnecting)
+            with a cryptic second vocabulary ("live"/"closed"). One status
+            surface only; sidecar failures still surface via the banner. */}
+      </Card>
+
+      <Card className="flex flex-col gap-2 px-3 py-2">
+        <div className="text-display text-xs tracking-wider text-text-tertiary">
+          chat settings
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm text-text-secondary">Show tool activity</div>
+          <Switch
+            checked={settings.showToolCalls}
+            onCheckedChange={(checked) =>
+              setAppSetting("showToolCalls", checked === true)
+            }
+            aria-label="Show tool activity in the chat feed"
+          />
+        </div>
       </Card>
 
       {supportsReasoning && (

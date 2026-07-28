@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
 
 
 _DB_LOCK = threading.Lock()
@@ -63,7 +64,8 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    if not force_delete_journal_if_wal_unsafe(conn, db_label=str(path)):
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)

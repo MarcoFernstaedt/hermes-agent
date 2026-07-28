@@ -1,11 +1,13 @@
-# Hermes Agent — Web UI
+# Imperator — Web UI
 
-Browser-based dashboard for managing Hermes Agent configuration, API keys, and monitoring active sessions.
+Browser-based dashboard for managing the agent's configuration, API keys, and active sessions.
 
 ## Stack
 
 - **Vite** + **React 19** + **TypeScript**
-- **Tailwind CSS v4** with custom dark theme
+- **Tailwind CSS v4** with the single **Imperator** scheme (imperial gold on
+  deep obsidian violet — see `docs/design/imperator-dashboard-ux.md`; theme
+  switching was deliberately removed)
 - **shadcn/ui**-style components (hand-rolled, no CLI dependency)
 
 ## Development
@@ -39,22 +41,27 @@ This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a 
 
 ```
 src/
-├── components/ui/   # Reusable UI primitives (Card, Badge, Button, Input, etc.)
+├── components/      # Shared components (chat feed, palette, sidebar, dialogs…)
 ├── lib/
-│   ├── api.ts       # API client — typed fetch wrappers for all backend endpoints
-│   └── utils.ts     # cn() helper for Tailwind class merging
-├── pages/
-│   ├── StatusPage   # Agent status, active/recent sessions
-│   ├── ConfigPage   # Dynamic config editor (reads schema from backend)
-│   └── EnvPage      # API key management with save/clear
-├── App.tsx          # Main layout and navigation
+│   ├── api.ts               # API client — typed fetch wrappers for all backend endpoints
+│   ├── event-channel-hub.ts # Shared resilient /api/events socket per channel
+│   ├── chat-feed-model.ts   # Event → bubble-transcript reducer
+│   └── utils.ts             # cn() helper for Tailwind class merging
+├── pages/           # One route per file, all lazy-loaded except ChatPage
+│                    # (Sessions, Files, Analytics, Models, Logs, Cron, Skills,
+│                    #  Plugins, MCP, Channels, Webhooks, Pairing, Profiles,
+│                    #  Config, Env/Keys, System, Docs, Chat)
+├── App.tsx          # Shell: grouped sidebar, mobile tab bar, ⌘K palette, routes
 ├── main.tsx         # React entry point
-└── index.css        # Tailwind imports and theme variables
+└── index.css        # Tailwind imports + the static Imperator scheme tokens
 ```
+
+The UX and design rules (palette, navigation model, responsive and
+branding rules) live in `docs/design/imperator-dashboard-ux.md`.
 
 ## Typography & contrast rules
 
-Read before adding or editing UI styles. These rules keep the dashboard legible across all built-in themes and stop drift back into the patterns the design system was just refactored out of.
+Read before adding or editing UI styles. These rules keep the dashboard legible in the Imperator scheme and stop drift back into the patterns the design system was just refactored out of.
 
 ### Text size floor
 

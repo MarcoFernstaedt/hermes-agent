@@ -10,9 +10,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
-  Database,
   MessageSquare,
   Search,
   Trash2,
@@ -46,6 +44,7 @@ import type {
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { LoadMoreSentinel } from "@/components/LoadMoreSentinel";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
@@ -53,7 +52,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Card, CardContent, CardHeader } from "@nous-research/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -674,59 +673,14 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
-function SessionsPagination({
-  className,
-  compact = false,
-  onPageChange,
-  page,
-  total,
-}: SessionsPaginationProps) {
-  const { t } = useI18n();
-  const pageCount = Math.ceil(total / PAGE_SIZE);
-
-  return (
-    <div
-      className={`flex items-center ${compact ? "gap-1" : "justify-between pt-2"}${className ? ` ${className}` : ""}`}
-    >
-      {!compact && (
-        <span className="text-xs text-muted-foreground">
-          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-          {t.common.of} {total}
-        </span>
-      )}
-
-      <div className="flex items-center gap-1">
-        <Button
-          outlined
-          size="icon"
-          disabled={page === 0}
-          onClick={() => onPageChange(page - 1)}
-          aria-label={t.sessions.previousPage}
-        >
-          <ChevronLeft />
-        </Button>
-        <span className="px-2 text-xs text-muted-foreground">
-          {t.common.page} {page + 1} {t.common.of} {pageCount}
-        </span>
-        <Button
-          outlined
-          size="icon"
-          disabled={(page + 1) * PAGE_SIZE >= total}
-          onClick={() => onPageChange(page + 1)}
-          aria-label={t.sessions.nextPage}
-        >
-          <ChevronRight />
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 export default function SessionsPage() {
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<
@@ -818,20 +772,32 @@ export default function SessionsPage() {
   }, [setEnd]);
 
   const loadSessions = useCallback((p: number, silent = false) => {
-    // ``silent`` skips the loading spinner so background refreshes
+    // ``silent`` skips the loading spinners so background refreshes
     // (triggered when the overview poll detects a new session from
     // another process) don't flicker the whole page or drop the user's
-    // scroll position.
-    if (!silent) setLoading(true);
+    // scroll position. Silent refreshes re-fetch the WHOLE loaded window
+    // (pages 0..p) in one request so the accumulated infinite-scroll
+    // list stays consistent; page fetches append.
+    if (!silent) {
+      if (p === 0) setLoading(true);
+      else setLoadingMore(true);
+    }
+    const limit = silent ? (p + 1) * PAGE_SIZE : PAGE_SIZE;
+    const offset = silent ? 0 : p * PAGE_SIZE;
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(limit, offset)
       .then((resp) => {
-        setSessions(resp.sessions);
+        setSessions((prev) =>
+          silent || p === 0 ? resp.sessions : [...prev, ...resp.sessions],
+        );
         setTotal(resp.total);
       })
       .catch(() => {})
       .finally(() => {
-        if (!silent) setLoading(false);
+        if (!silent) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       });
   }, []);
 
@@ -944,13 +910,6 @@ export default function SessionsPage() {
   // instead of in a ``useEffect`` keeps us out of the
   // react-hooks/set-state-in-effect lint trap and the cascading
   // re-render it warns about.
-  const goToPage = useCallback(
-    (p: number) => {
-      setPage(p);
-      clearSelection();
-    },
-    [clearSelection],
-  );
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
@@ -1190,7 +1149,7 @@ export default function SessionsPage() {
         const res = await fetch(api.exportSessionUrl(id), {
           credentials: "include",
           headers: {
-            "X-Hermes-Session-Token":
+            "X-Imperator-Session-Token":
               (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
                 .__HERMES_SESSION_TOKEN__ ?? "",
           },
@@ -1263,7 +1222,6 @@ export default function SessionsPage() {
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
@@ -1403,35 +1361,37 @@ export default function SessionsPage() {
       </Dialog>
 
       {stats && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
-          <div className="flex flex-col">
+        // Phones get a single horizontally-scrollable stat strip (no tall
+        // wrapped stack eating the viewport); desktop keeps the wrapping row.
+        <div className="scrollbar-none flex items-center gap-x-6 gap-y-2 overflow-x-auto rounded-lg border border-border bg-background-base/40 px-4 py-3 sm:flex-wrap sm:overflow-visible">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
             <span className="text-xs text-muted-foreground">Total</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">Active</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
             <span className="text-xs text-muted-foreground">Archived</span>
           </div>
-          <div className="flex flex-col">
+          <div className="flex shrink-0 flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
             <span className="text-xs text-muted-foreground">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <div className="flex min-w-0 flex-none items-center gap-1.5 sm:flex-1 sm:flex-wrap">
               {Object.entries(stats.by_source).map(([src, count]) => (
-                <Badge key={src} tone="outline" className="text-xs">
+                <Badge key={src} tone="outline" className="shrink-0 text-xs">
                   {src}: {count}
                 </Badge>
               ))}
@@ -1604,15 +1564,6 @@ export default function SessionsPage() {
             )}
           </div>
 
-          {showPagination && (
-            <SessionsPagination
-              compact
-              className="shrink-0 sm:ml-auto"
-              page={page}
-              total={total}
-              onPageChange={goToPage}
-            />
-          )}
         </div>
       ) : null}
 
@@ -1719,11 +1670,12 @@ export default function SessionsPage() {
               ))}
             </div>
 
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
+            {!searchResults && total > PAGE_SIZE && (
+              <LoadMoreSentinel
+                hasMore={sessions.length < total}
+                loading={loadingMore}
+                onLoadMore={() => setPage((p) => p + 1)}
+                endLabel="No more sessions"
               />
             )}
           </>
@@ -1737,49 +1689,77 @@ export default function SessionsPage() {
           {recentSessions.length > 0 && (
             <Card className="min-w-0 max-w-full overflow-hidden">
               <CardHeader className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <h2 className="font-expanded min-w-0 truncate text-base font-bold tracking-[0.08em] uppercase">
+                      {t.status.recentSessions}
+                    </h2>
+                  </div>
+                  <Button
+                    ghost
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => switchView("list")}
+                  >
+                    <span className="font-mondwest normal-case text-xs">
+                      {t.sessions.history} →
+                    </span>
+                  </Button>
                 </div>
               </CardHeader>
 
-              <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
-                        {s.title ?? t.common.untitled}
-                      </span>
-
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        <span className="font-mono-ui">
-                          {(s.model ?? t.common.unknown).split("/").pop()}
-                        </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
+              <CardContent className="grid min-w-0 gap-2">
+                {recentSessions.map((s) => {
+                  const title =
+                    s.title && s.title !== "Untitled"
+                      ? s.title
+                      : s.preview
+                        ? s.preview.slice(0, 60)
+                        : t.common.untitled;
+                  const model = (s.model ?? "").split("/").pop();
+                  const open = () =>
+                    resumeInChatEnabled
+                      ? navigate(`/chat?resume=${encodeURIComponent(s.id)}`)
+                      : switchView("list");
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={open}
+                      className="group flex min-w-0 max-w-full cursor-pointer items-center gap-3 border border-border p-3 text-left transition-colors hover:border-primary/40 hover:bg-secondary/30"
                     >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
-                    </Badge>
-                  </div>
-                ))}
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span
+                          className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title && s.title !== "Untitled" ? "font-medium" : "text-muted-foreground"}`}
+                        >
+                          {title}
+                        </span>
+
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {model && (
+                            <>
+                              <span className="font-mono-ui">{model}</span>
+                              {" · "}
+                            </>
+                          )}
+                          {s.message_count} {t.common.msgs} ·{" "}
+                          {timeAgo(s.last_active)}
+                          {s.source ? ` · ${s.source}` : ""}
+                        </span>
+                      </div>
+
+                      {resumeInChatEnabled && (
+                        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition-colors group-hover:text-primary">
+                          <Play className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">
+                            {t.sessions.resumeInChat}
+                          </span>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </CardContent>
             </Card>
           )}
@@ -1803,12 +1783,4 @@ interface SessionRowProps {
   searchQuery?: string;
   session: SessionInfo;
   snippet?: string;
-}
-
-interface SessionsPaginationProps {
-  className?: string;
-  compact?: boolean;
-  onPageChange: (page: number) => void;
-  page: number;
-  total: number;
 }

@@ -28,6 +28,7 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -421,8 +422,14 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
 
-    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
+    On SQLite >= 3.53.0, never downgrades to DELETE if the on-disk DB header
+    reports WAL. Affected older runtimes must leave WAL before use.
     """
+    # SQLite < 3.53.0 has a WAL-reset corruption bug. Fail closed unless this
+    # connection can be proven in rollback-journal mode.
+    if force_delete_journal_if_wal_unsafe(conn, db_label=db_label):
+        return "delete"
+
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     try:
@@ -1024,7 +1031,15 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Resolve lazily rather than using the module-level DEFAULT_DB_PATH
+        # snapshot: that constant freezes get_hermes_home() at import time,
+        # so a SessionDB opened after HERMES_HOME changes (profile scoping,
+        # test isolation) would silently bind the wrong home's state.db.
+        self.db_path = (
+            Path(db_path)
+            if db_path is not None
+            else Path(get_hermes_home()) / "state.db"
+        )
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -1415,6 +1430,7 @@ class SessionDB:
         Previous TRUNCATE strategy caused B-tree corruption on large
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
+
         """
         try:
             with self._lock:

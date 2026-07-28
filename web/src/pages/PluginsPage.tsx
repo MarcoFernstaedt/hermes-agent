@@ -14,7 +14,8 @@ import type {
 } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { SelectOption } from "@nous-research/ui/ui/components/select";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock, CopyButton } from "@nous-research/ui/ui/components/command-block";
@@ -27,6 +28,7 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
+import { imperatorBrand } from "@/lib/imperator-branding";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
@@ -177,7 +179,7 @@ function MemoryProviderSetupHint({
   if (!hasDetails || !setup) {
     return (
       <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.
+        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Imperator can activate it.
       </p>
     );
   }
@@ -191,7 +193,7 @@ function MemoryProviderSetupHint({
     >
       <p className={isBlocked ? "text-destructive" : "text-muted-foreground"}>
         {needsDependencySetup
-          ? "Finish these setup steps before Hermes can activate this provider."
+          ? "Finish these setup steps before Imperator can activate this provider."
           : "Provider dependency setup completed."}
       </p>
 
@@ -260,7 +262,7 @@ function MemoryProviderSetupHint({
       {setup.required_env.length && needsDependencySetup ? (
         <div className="grid gap-2">
           <p className="text-muted-foreground">
-            Required environment values. Fill the matching fields below, or set them in the Hermes environment.
+            Required environment values. Fill the matching fields below, or set them in the Imperator environment.
           </p>
           <div className="flex flex-wrap gap-2">
             {setup.required_env.map((envKey) => (
@@ -550,7 +552,8 @@ export default function PluginsPage() {
                       )}
                     </div>
 
-                    <Select
+                    <LabeledSelect
+                      label={t.pluginsPage.memoryProviderLabel}
                       id="mem-provider"
                       className="w-full"
                       value={memorySel}
@@ -565,12 +568,12 @@ export default function PluginsPage() {
                           {o.name}
                         </SelectOption>
                       ))}
-                    </Select>
+                    </LabeledSelect>
                   </div>
 
                   {!selectedMemoryName && (
                     <p className="text-xs text-muted-foreground">
-                      Hermes will use the built-in MEMORY.md and USER.md files.
+                      Imperator will use the built-in MEMORY.md and USER.md files.
                     </p>
                   )}
 
@@ -582,7 +585,7 @@ export default function PluginsPage() {
 
                   {selectedMemoryName && selectedMemoryInfo?.description && (
                     <p className="text-xs text-muted-foreground">
-                      {selectedMemoryInfo.description}
+                      {imperatorBrand(selectedMemoryInfo.description)}
                     </p>
                   )}
 
@@ -639,7 +642,8 @@ export default function PluginsPage() {
                             </div>
 
                             {field.kind === "select" ? (
-                              <Select
+                              <LabeledSelect
+                                label={field.label}
                                 id={`memory-${field.key}`}
                                 className="w-full"
                                 value={String(value ?? "")}
@@ -652,13 +656,14 @@ export default function PluginsPage() {
                                     {option.label}
                                   </SelectOption>
                                 ))}
-                              </Select>
+                              </LabeledSelect>
                             ) : field.kind === "boolean" ? (
                               <Switch
                                 checked={Boolean(value)}
                                 onCheckedChange={(next) =>
                                   setMemoryValues((current) => ({ ...current, [field.key]: next }))
                                 }
+                                aria-label={field.label}
                               />
                             ) : (
                               <div className="flex items-center gap-2">
@@ -701,7 +706,7 @@ export default function PluginsPage() {
                             )}
 
                             {field.description && (
-                              <p className="text-xs text-muted-foreground">{field.description}</p>
+                              <p className="text-xs text-muted-foreground">{imperatorBrand(field.description)}</p>
                             )}
                           </div>
                         );
@@ -723,7 +728,8 @@ export default function PluginsPage() {
                 <div className="grid content-start gap-3 min-w-0">
                   <Label htmlFor="ctx-engine">{t.pluginsPage.contextEngineLabel}</Label>
 
-                  <Select
+                  <LabeledSelect
+                    label={t.pluginsPage.contextEngineLabel}
                     id="ctx-engine"
                     className="w-full"
                     value={contextSel}
@@ -738,7 +744,7 @@ export default function PluginsPage() {
                           {o.name}
                         </SelectOption>
                       ))}
-                  </Select>
+                  </LabeledSelect>
 
                   <Button
                     className="w-fit uppercase"
@@ -785,7 +791,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installForce} onCheckedChange={setInstallForce} />
+                <Switch
+                  checked={installForce}
+                  onCheckedChange={setInstallForce}
+                  aria-label={t.pluginsPage.forceReinstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.forceReinstall}
@@ -794,7 +804,11 @@ export default function PluginsPage() {
 
               <div className="flex items-center gap-3">
 
-                <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
+                <Switch
+                  checked={installEnable}
+                  onCheckedChange={setInstallEnable}
+                  aria-label={t.pluginsPage.enableAfterInstall}
+                />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.enableAfterInstall}
@@ -873,7 +887,7 @@ export default function PluginsPage() {
                 <li className="text-xs text-text-secondary" key={m.name}>
 
 
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
+                  {m.label ?? m.name} — {m.description ? imperatorBrand(m.description) : m.tab?.path}
 
 
                   {!m.tab?.hidden ? (
@@ -1066,7 +1080,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {row.description ? (
           <p className="min-w-0 w-full text-xs tracking-[0.06em] text-text-secondary break-words">
-            {row.description}
+            {imperatorBrand(row.description)}
           </p>
         ) : null}
 

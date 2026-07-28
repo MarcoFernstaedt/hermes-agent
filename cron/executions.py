@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
 from hermes_time import now as _hermes_now
 
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
@@ -30,7 +31,8 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    if not force_delete_journal_if_wal_unsafe(conn, db_label=str(EXECUTIONS_FILE)):
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS executions (

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { SelectOption } from "@nous-research/ui/ui/components/select";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
@@ -216,7 +217,8 @@ function CronAdvancedFields({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">
             <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
-            <Select
+            <LabeledSelect
+              label="Provider"
               id={`${idPrefix}-provider`}
               value={form.provider}
               onValueChange={(v) => {
@@ -228,11 +230,12 @@ function CronAdvancedFields({
                 form.provider,
                 providers.map((p) => ({ value: p.slug, label: p.name })),
               )}
-            </Select>
+            </LabeledSelect>
           </div>
           <div className="grid gap-1">
             <Label htmlFor={`${idPrefix}-model`}>Model</Label>
-            <Select
+            <LabeledSelect
+              label="Model"
               id={`${idPrefix}-model`}
               value={form.model}
               onValueChange={(v) => update("model", v)}
@@ -242,7 +245,7 @@ function CronAdvancedFields({
                 form.model,
                 models.map((model) => ({ value: model, label: model })),
               )}
-            </Select>
+            </LabeledSelect>
           </div>
         </div>
 
@@ -383,13 +386,14 @@ function CronJobFormFields({
 
       <div className="grid gap-2">
         <Label htmlFor={`${idPrefix}-deliver`}>{t.cron.deliverTo}</Label>
-        <Select
+        <LabeledSelect
+          label={t.cron.deliverTo}
           id={`${idPrefix}-deliver`}
           value={form.deliver}
           onValueChange={(v) => update("deliver", v)}
         >
           {deliveryOptions}
-        </Select>
+        </LabeledSelect>
         {onlyLocalAvailable && (
           <p className="text-xs text-muted-foreground">
             {t.cron.delivery.noneConfigured ??
@@ -843,7 +847,8 @@ export default function CronPage() {
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="cron-profile">Profile</Label>
-                <Select
+                <LabeledSelect
+                  label="Profile"
                   id="cron-profile"
                   value={createProfile}
                   onValueChange={(v) => setCreateProfile(v)}
@@ -853,7 +858,7 @@ export default function CronPage() {
                       {profileLabel(profile.name)}
                     </SelectOption>
                   ))}
-                </Select>
+                </LabeledSelect>
               </div>
 
               <CronJobFormFields
@@ -961,7 +966,8 @@ export default function CronPage() {
 
           <div className="grid gap-1 min-w-[220px]">
             <Label htmlFor="cron-profile-filter">Profile</Label>
-            <Select
+            <LabeledSelect
+              label="Filter by profile"
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
@@ -972,14 +978,26 @@ export default function CronPage() {
                   {profileLabel(profile.name)}
                 </SelectOption>
               ))}
-            </Select>
+            </LabeledSelect>
           </div>
         </div>
 
         {jobs.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {t.cron.noJobs}
+            <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
+              <span>{t.cron.noJobs}</span>
+              <Button
+                size="sm"
+                className="uppercase"
+                onClick={() => {
+                  setCreateProfile(
+                    selectedProfile === "all" ? "default" : selectedProfile,
+                  );
+                  setCreateModalOpen(true);
+                }}
+              >
+                {t.cron.newJob}
+              </Button>
             </CardContent>
           </Card>
         )}

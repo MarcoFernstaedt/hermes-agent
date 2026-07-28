@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ class DiscordRecoveryStore:
             return default
 
     def _initialize(self, conn: sqlite3.Connection) -> None:
-        conn.execute("PRAGMA journal_mode=WAL")
+        if not force_delete_journal_if_wal_unsafe(conn, db_label=str(self.path())):
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS discord_messages (
                 message_id TEXT PRIMARY KEY,

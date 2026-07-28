@@ -241,6 +241,31 @@ class TestBundleHashFilenameSensitivity:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_and_disk_hash_match_with_sibling_and_nested_paths(self, tmp_path):
+        """Disk and bundle hashing must use the same path ordering.
+
+        ``Path`` ordering walks path components while bundle keys are sorted as
+        strings. A skill containing both sibling files and nested directories
+        must not be reported as perpetually outdated after installation.
+        """
+        files = {
+            "PORT_NOTES.md": "notes",
+            "SKILL.md": "skill",
+            "prompts/system.md": "prompt",
+            "references/styles.md": "styles",
+            "references/styles/blueprint.md": "blueprint",
+            "references/palettes/neon.md": "neon",
+        }
+        skill_dir = tmp_path / "skill"
+        for relative_path, text in files.items():
+            target = skill_dir / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+
+        bundle = self._make_bundle(files)
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
 
 # =============================================================================
 # PairingStore.list_pending: must hold the lock

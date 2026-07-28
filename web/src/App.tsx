@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -22,6 +24,8 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Brain,
+  BriefcaseBusiness,
   Clock,
   Code,
   Cpu,
@@ -30,11 +34,13 @@ import {
   Eye,
   FolderOpen,
   FileText,
+  GitBranch,
   Globe,
   Heart,
   KeyRound,
   Menu,
   MessageSquare,
+  Music,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -42,12 +48,15 @@ import {
   Puzzle,
   Radio,
   RotateCw,
+  Search,
   Settings,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Terminal,
+  Trophy,
   Users,
   Webhook,
   Wrench,
@@ -60,6 +69,10 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import {
+  CommandPalette,
+  type CommandPaletteItem,
+} from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
@@ -72,32 +85,42 @@ import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
-import ConfigPage from "@/pages/ConfigPage";
-import DocsPage from "@/pages/DocsPage";
-import EnvPage from "@/pages/EnvPage";
-import FilesPage from "@/pages/FilesPage";
-import SessionsPage from "@/pages/SessionsPage";
-import LogsPage from "@/pages/LogsPage";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import ModelsPage from "@/pages/ModelsPage";
-import CronPage from "@/pages/CronPage";
-import ProfilesPage from "@/pages/ProfilesPage";
-import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
-import SkillsPage from "@/pages/SkillsPage";
-import PluginsPage from "@/pages/PluginsPage";
-import McpPage from "@/pages/McpPage";
-import PairingPage from "@/pages/PairingPage";
-import ChannelsPage from "@/pages/ChannelsPage";
-import WebhooksPage from "@/pages/WebhooksPage";
-import SystemPage from "@/pages/SystemPage";
+// Every management page is code-split into its own chunk: the shell (and
+// the phone's first paint) only pays for what it renders. ChatPage stays a
+// static import on purpose — the persistent chat host mounts it on app
+// load regardless of route, so splitting it would only add a fetch delay
+// to the PTY spawn.
+const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
+const DocsPage = lazy(() => import("@/pages/DocsPage"));
+const EnvPage = lazy(() => import("@/pages/EnvPage"));
+const FilesPage = lazy(() => import("@/pages/FilesPage"));
+const GitPage = lazy(() => import("@/pages/GitPage"));
+const LearningPage = lazy(() => import("@/pages/LearningPage"));
+const JobsPage = lazy(() => import("@/pages/JobsPage"));
+const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
+const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
+const LogsPage = lazy(() => import("@/pages/LogsPage"));
+const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
+const CronPage = lazy(() => import("@/pages/CronPage"));
+const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
+const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
+const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
+const McpPage = lazy(() => import("@/pages/McpPage"));
+const PairingPage = lazy(() => import("@/pages/PairingPage"));
+const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
+const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
+const SystemPage = lazy(() => import("@/pages/SystemPage"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 import ChatPage from "@/pages/ChatPage";
+const MediaPage = lazy(() => import("@/features/media/MediaPage"));
+import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
-import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
-import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -133,7 +156,12 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/media": MediaPage,
+  "/jobs": JobsPage,
+  "/progress": ProgressPage,
   "/files": FilesPage,
+  "/git": GitPage,
+  "/learning": LearningPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -145,6 +173,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/channels": ChannelsPage,
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
+  "/settings": SettingsPage,
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
   "/config": ConfigPage,
@@ -167,22 +196,21 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/media", label: "Media", icon: Music },
+  { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
+  { path: "/progress", label: "Progress", icon: Activity },
   { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/git", label: "Git", icon: GitBranch },
   {
     path: "/analytics",
     labelKey: "analytics",
     label: "Analytics",
     icon: BarChart3,
   },
-  {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
-  },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/learning", label: "Learning", icon: Brain },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
@@ -191,12 +219,74 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  { path: "/settings", label: "Settings", icon: SlidersHorizontal },
+];
+
+/**
+ * Routes that are reachable only through the Settings hub, never as their
+ * own sidebar or mobile-nav entry. Their pages/routes still exist (see
+ * BUILTIN_ROUTES and the /achievements plugin) and SettingsPage links to
+ * each — this set just keeps them out of the primary navigation so Settings
+ * is the single home for models, system, docs, and achievements.
+ */
+const SETTINGS_ONLY_PATHS = new Set(["/models", "/system", "/docs", "/achievements"]);
+
+/**
+ * The settings-only destinations, re-exposed in the command palette so
+ * power users can still jump straight to them (Cmd/Ctrl+K) even though they
+ * no longer occupy a sidebar slot. Kept in sync with SETTINGS_ONLY_PATHS.
+ */
+const SETTINGS_ONLY_NAV: NavItem[] = [
+  { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
   { path: "/system", label: "System", icon: Wrench },
+  { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
+  { path: "/achievements", label: "Achievements", icon: Trophy },
+];
+
+/**
+ * Sidebar groupings for the built-in nav. Purely presentational — routing,
+ * plugin insertion, and the analytics gate all still run off the flat
+ * nav list; sections just cluster the rendered links so the sidebar reads
+ * as a small set of scannable groups instead of an 18-item wall. Items the
+ * sections don't claim (e.g. future additions) fall into the last group,
+ * so nothing can silently disappear from navigation.
+ */
+const NAV_SECTIONS: Array<{
+  id: string;
+  /** Optional i18n key under t.app.navSections; label is the fallback. */
+  labelKey?: "operate" | "automate" | "connect" | "settings";
+  label: string;
+  paths: string[];
+}> = [
   {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
+    id: "operate",
+    labelKey: "operate",
+    label: "Operate",
+    paths: ["/sessions", "/media", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
+  },
+  {
+    id: "automate",
+    labelKey: "automate",
+    label: "Automate",
+    paths: ["/cron", "/skills", "/learning", "/plugins", "/mcp", "/webhooks"],
+  },
+  {
+    id: "connect",
+    labelKey: "connect",
+    label: "Connect",
+    paths: ["/channels", "/pairing", "/profiles"],
+  },
+  {
+    // "Settings", not "System" — the sidebar's system-actions block below
+    // the nav already carries a "System" heading.
+    id: "settings",
+    labelKey: "settings",
+    label: "Settings",
+    // Models, System, Documentation and Achievements deliberately do NOT
+    // appear here — they live one level down, inside the Settings hub
+    // (see SETTINGS_ONLY_PATHS and SettingsPage), keeping the sidebar to a
+    // single "Settings" entry point for all admin/meta surfaces.
+    paths: ["/settings", "/config", "/env"],
   },
 ];
 
@@ -272,11 +362,23 @@ function partitionSidebarNav(
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
   const merged = buildNavItems(builtIn, manifests);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
+  // Plugin pages a NAV_SECTIONS entry claims render inside that section like
+  // a built-in; only truly unclaimed plugin pages fall into the separate
+  // plugin cluster.
+  const sectionClaimed = new Set(NAV_SECTIONS.flatMap((s) => s.paths));
   const coreItems: NavItem[] = [];
   const pluginItems: NavItem[] = [];
   for (const item of merged) {
-    if (builtinPaths.has(item.path)) coreItems.push(item);
-    else pluginItems.push(item);
+    // Settings-only surfaces (models/system/docs/achievements) are reached
+    // through the Settings hub, so they never render in the sidebar — even
+    // the /achievements plugin, which would otherwise land in the plugin
+    // cluster.
+    if (SETTINGS_ONLY_PATHS.has(item.path)) continue;
+    if (builtinPaths.has(item.path) || sectionClaimed.has(item.path)) {
+      coreItems.push(item);
+    } else {
+      pluginItems.push(item);
+    }
   }
   return { coreItems, pluginItems };
 }
@@ -349,10 +451,126 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
-  const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Native-style touch gestures: swipe in from the left edge to open the
+  // navigation drawer; swipe left while it's open to close it. Vertical
+  // movement cancels the gesture so list scrolling never fights it, and
+  // touches inside a terminal pane are ignored entirely.
+  const mobileOpenRef = useRef(mobileOpen);
+  useEffect(() => {
+    mobileOpenRef.current = mobileOpen;
+  }, [mobileOpen]);
+  useEffect(() => {
+    let startX = 0;
+    let startY = 0;
+    let tracking: "open" | "close" | null = null;
+
+    const onTouchStart = (event: TouchEvent) => {
+      tracking = null;
+      if (window.innerWidth >= 1024) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".xterm, .hermes-chat-xterm-host")) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      if (mobileOpenRef.current) tracking = "close";
+      else if (touch.clientX <= 24) tracking = "open";
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (Math.abs(dy) > 60) {
+        tracking = null;
+        return;
+      }
+      if (tracking === "open" && dx > 56) {
+        setMobileOpen(true);
+        tracking = null;
+      } else if (tracking === "close" && dx < -56) {
+        setMobileOpen(false);
+        tracking = null;
+      }
+    };
+
+    const onTouchEnd = () => {
+      tracking = null;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, []);
+
+  // Keyboard-aware app height. iOS Safari overlays the software keyboard
+  // instead of resizing the layout viewport, hiding anything anchored to
+  // the bottom (the chat composer, the tab bar). Track the visual
+  // viewport and pin the shell to its height while a keyboard is up so
+  // bottom chrome stays visible above it. Android/Chrome resizes the
+  // viewport itself (interactive-widget=resizes-content), so the
+  // threshold keeps this a no-op there.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const root = document.documentElement;
+    const update = () => {
+      const keyboardHeight = window.innerHeight - viewport.height;
+      if (keyboardHeight > 80) {
+        root.style.setProperty("--app-vvh", `${viewport.height}px`);
+        // The media mini-player is fixed to the layout viewport, so it's
+        // hidden behind the software keyboard — the composer must stop
+        // reserving space for it while the keyboard is up.
+        root.dataset.keyboard = "open";
+      } else {
+        root.style.removeProperty("--app-vvh");
+        delete root.dataset.keyboard;
+      }
+    };
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    update();
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+      root.style.removeProperty("--app-vvh");
+      delete root.dataset.keyboard;
+    };
+  }, []);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the app —
+  // except inside a terminal pane, where Ctrl+K is a real shell binding
+  // (kill-line) that must reach the PTY, not the palette.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "k"
+      ) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.(".xterm, .hermes-chat-xterm-host")) return;
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -454,7 +672,47 @@ export default function App() {
     [manifests],
   );
 
-  const layoutVariant = theme.layoutVariant ?? "standard";
+  // Every navigation destination becomes a palette item; the section name
+  // doubles as a hint and extra fuzzy-matchable text.
+  const paletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const sectionOf = (path: string): string | undefined => {
+      for (const section of NAV_SECTIONS) {
+        if (section.paths.includes(path)) {
+          return section.labelKey
+            ? (t.app.navSections?.[section.labelKey] ?? section.label)
+            : section.label;
+        }
+      }
+      return undefined;
+    };
+    const navLabel = (item: NavItem) =>
+      item.labelKey
+        ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+        : item.label;
+    const toItem = (item: NavItem, hint?: string): CommandPaletteItem => ({
+      id: item.path,
+      label: navLabel(item),
+      hint,
+      keywords: hint,
+      icon: item.icon,
+      run: () => {
+        navigate(item.path);
+        closeMobile();
+      },
+    });
+    const settingsHint = t.app.navSections?.settings ?? "Settings";
+    return [
+      ...sidebarNav.coreItems.map((item) =>
+        toItem(item, item.path === "/chat" ? undefined : sectionOf(item.path)),
+      ),
+      ...sidebarNav.pluginItems.map((item) =>
+        toItem(item, t.app.pluginNavSection),
+      ),
+      // Settings-only pages keep a palette entry even though they're no
+      // longer in the sidebar.
+      ...SETTINGS_ONLY_NAV.map((item) => toItem(item, settingsHint)),
+    ];
+  }, [sidebarNav, t, navigate, closeMobile]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -481,11 +739,22 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <MediaProvider>
     <div
-      data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      data-layout-variant="standard"
+      className="imperator-canvas flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      style={{
+        height: "var(--app-vvh, 100dvh)",
+        maxHeight: "var(--app-vvh, 100dvh)",
+      }}
     >
       <SelectionSwitcher />
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        items={paletteItems}
+      />
 
       <div
         aria-hidden
@@ -499,29 +768,41 @@ export default function App() {
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
-          "bg-background-base",
+          // Translucent blurred chrome — the native mobile-app bar look.
+          // Solid fallback where backdrop-filter is unsupported.
+          "bg-background-base supports-[backdrop-filter]:bg-background-base/75 supports-[backdrop-filter]:backdrop-blur-xl",
         )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
       >
+        {/* One drawer affordance per screen: the bottom tab bar's Menu is
+            it everywhere except /chat, where the bar is hidden and this
+            hamburger takes over. */}
+        {isChatRoute && (
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
+        )}
+
+        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
+          {t.app.brand}
+        </Typography>
+
         <Button
           ghost
           size="icon"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
-          aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+          onClick={() => setPaletteOpen(true)}
+          aria-label="Search pages"
+          className="ml-auto text-text-secondary hover:text-midground"
         >
-          <Menu />
+          <Search />
         </Button>
-
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          {t.app.brand}
-        </Typography>
       </header>
 
       {mobileOpen && (
@@ -554,11 +835,6 @@ export default function App() {
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",
             )}
-            style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
-            }}
           >
             <div
               className={cn(
@@ -575,10 +851,8 @@ export default function App() {
               >
                 <PluginSlot name="header-left" />
 
-                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
-                  Hermes
-                  <br />
-                  Agent
+                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.09em] text-midground uppercase">
+                  {t.app.brand}
                 </Typography>
               </div>
 
@@ -611,22 +885,48 @@ export default function App() {
 
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
+            <button
+              type="button"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Search pages (Ctrl+K)"
+              className={cn(
+                "mx-3 my-2 flex shrink-0 items-center gap-2 rounded border border-current/15 px-2.5 py-1.5",
+                "text-xs text-text-tertiary transition-colors cursor-pointer",
+                "hover:border-current/30 hover:text-midground",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                isDesktopCollapsed && "lg:mx-auto lg:border-transparent lg:px-1.5",
+              )}
+            >
+              <Search className="h-3.5 w-3.5 shrink-0" />
+              <span
+                className={cn(
+                  "flex-1 text-left",
+                  isDesktopCollapsed && "lg:hidden",
+                )}
+              >
+                {t.app.searchLabel ?? "Search"}
+              </span>
+              <kbd
+                className={cn(
+                  "rounded border border-current/20 px-1 text-xs",
+                  isDesktopCollapsed && "lg:hidden",
+                )}
+              >
+                ⌘K
+              </kbd>
+            </button>
+
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
-              </ul>
+              <GroupedCoreNav
+                closeMobile={closeMobile}
+                collapsed={isDesktopCollapsed}
+                items={sidebarNav.coreItems}
+                t={t}
+                tooltipWarmRef={tooltipWarmRef}
+              />
 
               {sidebarNav.pluginItems.length > 0 && (
                 <div
@@ -688,14 +988,6 @@ export default function App() {
 
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
-
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
                   label={t.language.switchTo}
                   tooltipWarmRef={tooltipWarmRef}
                 >
@@ -719,9 +1011,12 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
+                // Chat is edge-to-edge on phones (flat, Claude-style, so the
+                // keyboard slides against a seamless sheet) and insets to a
+                // card at ≥sm where the side panel appears.
+                isChatRoute ? "px-0 sm:px-6" : "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  ? "pb-0 pt-0 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
@@ -730,24 +1025,41 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                  // Non-chat pages reserve space for the tab bar + mini-player
+                  // (heights measured at runtime). Chat handles its own
+                  // bottom inset on the composer so it can float flush above
+                  // the mini-player with no dead gap.
+                  !isChatRoute && "media-dock-inset",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Routes>
-                    {routes.map(({ key, path, element }) => (
-                      <Route key={key} path={path} element={element} />
-                    ))}
-                    <Route
-                      path="*"
-                      element={
-                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                      }
-                    />
-                  </Routes>
+                  {/* Lazy page chunks resolve in tens of ms from the local
+                      server; a centered spinner covers the gap without a
+                      layout flash. */}
+                  <Suspense
+                    fallback={
+                      <div
+                        className="flex min-h-40 flex-1 items-center justify-center"
+                        aria-busy="true"
+                      >
+                        <Spinner />
+                      </div>
+                    }
+                  >
+                    <Routes>
+                      {routes.map(({ key, path, element }) => (
+                        <Route key={key} path={path} element={element} />
+                      ))}
+                      <Route
+                        path="*"
+                        element={
+                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                        }
+                      />
+                    </Routes>
+                  </Suspense>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
@@ -784,9 +1096,137 @@ export default function App() {
         </div>
       </div>
 
+      {!isChatRoute && !mobileOpen && (
+        <MobileBottomNav
+          items={builtinNav}
+          onOpenMenu={() => setMobileOpen(true)}
+          t={t}
+        />
+      )}
+
       <PluginSlot name="overlay" />
     </div>
+    </MediaProvider>
     </ProfileProvider>
+  );
+}
+
+/** Primary destinations surfaced in the mobile bottom tab bar. Everything
+ *  else stays one tap away behind the Menu drawer. */
+const MOBILE_PRIMARY_PATHS = ["/chat", "/sessions", "/channels", "/settings"];
+
+/**
+ * Fixed bottom tab bar on phone/tablet widths — the modern mobile-nav
+ * pattern: 3–4 primary destinations always one thumb-tap away, plus a
+ * Menu tab that opens the full navigation drawer. Hidden on desktop
+ * (sidebar takes over) and on /chat (the terminal + software keyboard
+ * need the full viewport height there).
+ */
+function MobileBottomNav({
+  items,
+  onOpenMenu,
+  t,
+}: {
+  items: NavItem[];
+  onOpenMenu: () => void;
+  t: Translations;
+}) {
+  const primary = MOBILE_PRIMARY_PATHS.map((p) =>
+    items.find((i) => i.path === p),
+  ).filter((i): i is NavItem => Boolean(i));
+
+  // Publish the tab bar's real height so the media mini-player can dock
+  // directly above it (Spotify-style) and routed content clears both.
+  // `lg:hidden` makes this 0 on desktop, so the dock falls to the bottom.
+  const navRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const node = navRef.current;
+    const root = document.documentElement;
+    if (!node) return;
+    const sync = () => {
+      const h = node.offsetHeight;
+      root.style.setProperty("--app-bottom-nav-h", `${h}px`);
+      if (h > 0) root.dataset.mobileNav = "visible";
+      else delete root.dataset.mobileNav;
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty("--app-bottom-nav-h", "0px");
+      delete root.dataset.mobileNav;
+    };
+  }, []);
+
+  const linkClass = (isActive: boolean) =>
+    cn(
+      "relative flex min-h-[3.25rem] w-full flex-col items-center justify-center gap-0.5 px-1 py-1.5",
+      "font-sans text-display text-xs tracking-[0.06em]",
+      "transition-[color,opacity] cursor-pointer",
+      // Instant tactile feedback on tap, like a native tab bar.
+      "active:opacity-60",
+      "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+      isActive ? "text-midground" : "text-text-secondary",
+    );
+
+  return (
+    <nav
+      ref={navRef}
+      aria-label={t.app.navigation}
+      className={cn(
+        "lg:hidden fixed bottom-0 left-0 right-0 z-40",
+        "border-t border-current/20",
+        // Translucent blurred tab bar (iOS-style); solid fallback.
+        "bg-background-base supports-[backdrop-filter]:bg-background-base/75 supports-[backdrop-filter]:backdrop-blur-xl",
+        "pb-[env(safe-area-inset-bottom,0px)]",
+      )}
+    >
+      <ul className="flex items-stretch">
+        {primary.map((item) => {
+          const { icon: Icon, label, labelKey, path } = item;
+          const navLabel = labelKey
+            ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+            : label;
+          return (
+            <li key={path} className="min-w-0 flex-1">
+              <NavLink
+                to={path}
+                end={path === "/sessions"}
+                className={({ isActive }) => linkClass(isActive)}
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <span
+                        aria-hidden
+                        className="absolute left-1/2 top-0 h-0.5 w-8 -translate-x-1/2 bg-midground"
+                      />
+                    )}
+                    <Icon className="h-4.5 w-4.5 shrink-0" />
+                    <span className="max-w-full truncate">{navLabel}</span>
+                  </>
+                )}
+              </NavLink>
+            </li>
+          );
+        })}
+
+        <li className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={onOpenMenu}
+            aria-label={t.app.openNavigation}
+            className={linkClass(false)}
+          >
+            <Menu className="h-4.5 w-4.5 shrink-0" />
+            <span className="max-w-full truncate">
+              {t.app.navSections?.menu ?? "Menu"}
+            </span>
+          </button>
+        </li>
+      </ul>
+    </nav>
   );
 }
 
@@ -803,6 +1243,84 @@ export default function App() {
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
   return <div key={profile || "__own__"} className="contents">{children}</div>;
+}
+
+/**
+ * Renders the built-in nav items clustered under the NAV_SECTIONS
+ * headings. Chat (when present) stays pinned above the first section;
+ * items no section claims fall into the final group so new routes are
+ * always reachable even before they're categorized.
+ */
+function GroupedCoreNav({
+  closeMobile,
+  collapsed,
+  items,
+  t,
+  tooltipWarmRef,
+}: GroupedCoreNavProps) {
+  const byPath = new Map(items.map((i) => [i.path, i]));
+  const claimed = new Set<string>(["/chat"]);
+  for (const section of NAV_SECTIONS) {
+    for (const p of section.paths) claimed.add(p);
+  }
+  const unclaimed = items.filter((i) => !claimed.has(i.path));
+
+  const chatItem = byPath.get("/chat");
+
+  const renderItem = (item: NavItem) => (
+    <SidebarNavLink
+      closeMobile={closeMobile}
+      collapsed={collapsed}
+      item={item}
+      key={item.path}
+      t={t}
+      tooltipWarmRef={tooltipWarmRef}
+    />
+  );
+
+  return (
+    <>
+      {chatItem && <ul className="flex flex-col">{renderItem(chatItem)}</ul>}
+
+      {NAV_SECTIONS.map((section, index) => {
+        const sectionItems = section.paths
+          .map((p) => byPath.get(p))
+          .filter((i): i is NavItem => Boolean(i));
+        if (index === NAV_SECTIONS.length - 1) {
+          sectionItems.push(...unclaimed);
+        }
+        if (sectionItems.length === 0) return null;
+
+        const heading = section.labelKey
+          ? (t.app.navSections?.[section.labelKey] ?? section.label)
+          : section.label;
+
+        return (
+          <div
+            className={cn(
+              "flex flex-col pb-1",
+              // Collapsed rail hides headings — keep a hairline so the
+              // groups still read as groups.
+              collapsed && "lg:border-t lg:border-current/10",
+            )}
+            key={section.id}
+          >
+            <span
+              className={cn(
+                "px-5 pt-3 pb-1",
+                "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+                collapsed && "lg:hidden",
+              )}
+            >
+              {heading}
+            </span>
+
+            <ul className="flex flex-col">{sectionItems.map(renderItem)}</ul>
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function SidebarNavLink({
@@ -852,9 +1370,6 @@ function SidebarNavLink({
               : "text-text-secondary hover:text-midground",
           )
         }
-        style={{
-          clipPath: "var(--component-tab-clip-path)",
-        }}
       >
         {({ isActive }) => (
           <>
@@ -910,11 +1425,12 @@ function SidebarSystemActions({
 
   useEffect(() => {
     if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
       return;
     }
     let cancelled = false;
-    setUpdateConfirmChecking(true);
+    queueMicrotask(() => {
+      if (!cancelled) setUpdateConfirmChecking(true);
+    });
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -957,8 +1473,8 @@ function SidebarSystemActions({
     items.push({
       action: "update",
       icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
+      label: "Upgrade Imperator",
+      runningLabel: "Upgrading Imperator",
       spin: false,
     });
   }
@@ -970,6 +1486,7 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
+      setUpdateConfirmInfo(null);
       setUpdateConfirmOpen(true);
       return;
     }
@@ -987,6 +1504,7 @@ function SidebarSystemActions({
 
   const confirmUpdate = () => {
     setUpdateConfirmOpen(false);
+    setUpdateConfirmInfo(null);
     void runAction("update");
     navigate("/sessions");
     onNavigate();
@@ -1038,7 +1556,7 @@ function SidebarSystemActions({
       confirmLabel={t.status.restartGateway}
       description={
         t.status.restartGatewayConfirmMessage ??
-        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+        "This restarts the Imperator gateway process. Connected channels and active sessions will reconnect afterward."
       }
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
@@ -1056,7 +1574,10 @@ function SidebarSystemActions({
         updateConfirmChecking ? t.common.loading : updateConfirmDescription
       }
       loading={pendingAction === "update" || updateConfirmChecking}
-      onCancel={() => setUpdateConfirmOpen(false)}
+      onCancel={() => {
+        setUpdateConfirmOpen(false);
+        setUpdateConfirmInfo(null);
+      }}
       onConfirm={confirmUpdate}
       open={updateConfirmOpen}
       title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
@@ -1313,6 +1834,14 @@ interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
   label: string;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface GroupedCoreNavProps {
+  closeMobile: () => void;
+  collapsed: boolean;
+  items: NavItem[];
+  t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }
 

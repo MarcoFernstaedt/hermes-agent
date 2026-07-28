@@ -15,6 +15,12 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/docs": "documentation",
 };
 
+/** Routes without i18n nav keys whose slug doesn't Title Case cleanly. */
+const PLAIN_TITLES: Record<string, string> = {
+  "/mcp": "MCP",
+  "/profiles/new": "New profile",
+};
+
 export function resolvePageTitle(
   pathname: string,
   t: Translations,
@@ -31,6 +37,10 @@ export function resolvePageTitle(
   const key = BUILTIN[normalized];
   if (key) {
     return t.app.nav[key];
+  }
+  const plain = PLAIN_TITLES[normalized];
+  if (plain) {
+    return plain;
   }
   // Derive title from pathname: "/profiles" → "Profiles"
   const segment = normalized.slice(1);

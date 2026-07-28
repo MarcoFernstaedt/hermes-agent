@@ -1,6 +1,7 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { PageHeaderContext } from "./page-header-context";
+import { BackToTop } from "@/components/BackToTop";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -18,10 +19,17 @@ export function PageHeaderProvider({
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
 
-  // Clear any per-page title / toolbar slots when the path changes. Child routes
-  // re-fill these on mount via usePageHeader.
+  // Clear any per-page title / toolbar slots when the path CHANGES. Child
+  // routes re-fill these on mount via usePageHeader. Skipping the initial
+  // pass matters: on a hard load the page's layout effect sets its header
+  // slots during the same commit as this provider's first effect run, and
+  // an unconditional clear here wiped them (header Create buttons / page
+  // titles missing until the next client-side navigation).
+  const prevPathnameRef = useRef(pathname);
   /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
+    if (prevPathnameRef.current === pathname) return;
+    prevPathnameRef.current = pathname;
     setTitleOverride(null);
     setAfterTitle(null);
     setEnd(null);
@@ -131,6 +139,7 @@ export function PageHeaderProvider({
           )}
         >
           {children}
+          {!isChatRoute && <BackToTop />}
         </main>
       </div>
     </PageHeaderContext.Provider>

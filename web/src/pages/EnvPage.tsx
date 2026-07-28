@@ -14,9 +14,14 @@ import {
   Zap,
   ChevronDown,
   ChevronRight,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  ShieldCheck,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { imperatorBrand } from "@/lib/imperator-branding";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -127,6 +132,32 @@ function EnvVarRow({
 }) {
   const { t } = useI18n();
   const isEditing = edits[varKey] !== undefined;
+  // Live key-validation state for the edit flow (probe before save).
+  const [check, setCheck] = useState<{
+    state: "idle" | "testing" | "ok" | "bad" | "unknown";
+    message: string;
+  }>({ state: "idle", message: "" });
+
+  const runTest = async () => {
+    const value = (edits[varKey] ?? "").trim();
+    if (!value) return;
+    setCheck({ state: "testing", message: "" });
+    try {
+      const res = await api.validateProviderKey(varKey, value);
+      if (res.ok && res.reachable) {
+        setCheck({ state: "ok", message: "Key verified." });
+      } else if (!res.ok && res.reachable) {
+        setCheck({ state: "bad", message: res.message || "That key was rejected." });
+      } else {
+        setCheck({
+          state: "unknown",
+          message: res.message || "Couldn't verify — save if you're sure.",
+        });
+      }
+    } catch {
+      setCheck({ state: "unknown", message: "Couldn't verify — save if you're sure." });
+    }
+  };
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
     ? revealed[varKey]
@@ -141,7 +172,7 @@ function EnvVarRow({
             {varKey}
           </span>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
+            {imperatorBrand(info.description)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -177,7 +208,7 @@ function EnvVarRow({
             {varKey}
           </Label>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
+            {imperatorBrand(info.description)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -226,7 +257,7 @@ function EnvVarRow({
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground">{info.description}</p>
+      <p className="text-xs text-muted-foreground">{imperatorBrand(info.description)}</p>
 
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -291,40 +322,76 @@ function EnvVarRow({
       )}
 
       {isEditing && (
-        <div className="flex items-center gap-2">
-          <Input
-            autoFocus
-            type="text"
-            value={edits[varKey]}
-            onChange={(e) =>
-              setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))
-            }
-            placeholder={
-              info.is_set
-                ? t.env.replaceCurrentValue.replace(
-                    "{preview}",
-                    info.redacted_value ?? "---",
-                  )
-                : t.env.enterValue
-            }
-            className="flex-1 font-mono-ui text-xs"
-          />
-          <Button
-            size="sm"
-            onClick={() => onSave(varKey)}
-            prefix={<Save />}
-            disabled={saving === varKey || !edits[varKey]}
-          >
-            {saving === varKey ? "..." : t.common.save}
-          </Button>
-          <Button
-            size="sm"
-            outlined
-            prefix={<X />}
-            onClick={() => onCancelEdit(varKey)}
-          >
-            {t.common.cancel}
-          </Button>
+        <div className="grid gap-1.5">
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              type="text"
+              value={edits[varKey]}
+              onChange={(e) => {
+                const next = e.target.value;
+                setEdits((prev) => ({ ...prev, [varKey]: next }));
+                // A new value invalidates any earlier probe result.
+                setCheck((c) => (c.state === "idle" ? c : { state: "idle", message: "" }));
+              }}
+              placeholder={
+                info.is_set
+                  ? t.env.replaceCurrentValue.replace(
+                      "{preview}",
+                      info.redacted_value ?? "---",
+                    )
+                  : t.env.enterValue
+              }
+              className="flex-1 font-mono-ui text-xs"
+            />
+            <Button
+              size="sm"
+              outlined
+              onClick={runTest}
+              prefix={check.state === "testing" ? <Spinner /> : <ShieldCheck />}
+              disabled={check.state === "testing" || !edits[varKey]}
+              aria-label={`Test ${varKey}`}
+            >
+              {check.state === "testing" ? "Testing…" : "Test"}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => onSave(varKey)}
+              prefix={<Save />}
+              disabled={saving === varKey || !edits[varKey]}
+            >
+              {saving === varKey ? "..." : t.common.save}
+            </Button>
+            <Button
+              size="sm"
+              outlined
+              prefix={<X />}
+              onClick={() => onCancelEdit(varKey)}
+            >
+              {t.common.cancel}
+            </Button>
+          </div>
+          {check.state !== "idle" && check.state !== "testing" && (
+            <p
+              role="status"
+              className={`flex items-center gap-1.5 text-xs ${
+                check.state === "ok"
+                  ? "text-success"
+                  : check.state === "bad"
+                    ? "text-destructive"
+                    : "text-warning"
+              }`}
+            >
+              {check.state === "ok" ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              ) : check.state === "bad" ? (
+                <XCircle className="h-3.5 w-3.5 shrink-0" />
+              ) : (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              )}
+              {check.message}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -382,13 +449,16 @@ function ProviderGroupCard({
 
   return (
     <div className="border border-border">
-      {/* Header — always visible */}
-      <ListItem
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        className="justify-between gap-3 px-4 py-3 hover:bg-primary/5"
-      >
-        <div className="flex items-center gap-3 min-w-0">
+      {/* Header — the expand toggle is its own button; the "Get key" link and
+          count sit beside it as siblings (a link nested inside the toggle
+          button is invalid nested-interactive markup). */}
+      <div className="flex items-center justify-between gap-2 pr-4 hover:bg-primary/5">
+        <ListItem
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name === "Other" ? t.common.other : group.name} keys`}
+          className="min-w-0 flex-1 justify-start gap-3 px-4 py-3"
+        >
           {expanded ? (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           ) : (
@@ -402,15 +472,14 @@ function ProviderGroupCard({
               {configuredCount} {t.common.set.toLowerCase()}
             </Badge>
           )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
+        </ListItem>
+        <div className="flex shrink-0 items-center gap-2">
           {keyUrl && (
             <a
               href={keyUrl}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              onClick={(e) => e.stopPropagation()}
             >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
@@ -421,7 +490,7 @@ function ProviderGroupCard({
               .replace("{s}", group.entries.length !== 1 ? "s" : "")}
           </span>
         </div>
-      </ListItem>
+      </div>
 
       {expanded && (
         <div className="border-t border-border px-4 py-3 grid gap-2">

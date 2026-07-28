@@ -27,11 +27,22 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, Callable
 
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +243,18 @@ def _reject_denylisted_env_var(key: str) -> None:
         )
 
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
+# Only configurations successfully parsed from an existing user config qualify
+# as last-known-good policy for fail-closed security gates. Generic defaults
+# cached while the file is absent must never gain that provenance.
+_SECURITY_LKG_CONFIG_BY_PATH: Dict[str, Any] = {}
+_SECURITY_LKG_PROVENANCE_BY_PATH: Dict[str, frozenset[str]] = {}
+_SECURITY_USER_LKG_BY_PATH: Dict[str, Dict[str, Any]] = {}
+_SECURITY_MANAGED_LKG_BY_PATH: Dict[str, Dict[str, Any]] = {}
+_SECURITY_MANAGED_KEYS_BY_PATH: Dict[str, Set[str]] = {}
+# Existing config files that could not be parsed/read before any last-known-good
+# value existed. Normal callers retain the historic defaults fallback, while
+# security gates can detect that fallback and fail closed.
+_CONFIG_LOAD_FAILURE_WITHOUT_LKG: set[str] = set()
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
 # hasn't changed since the last load, skipping yaml.safe_load +
@@ -257,6 +280,56 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+_CONFIG_FILE_LOCK_STATE = threading.local()
+
+
+@contextmanager
+def _config_transaction_lock(config_path: Optional[Path] = None):
+    """Serialize config read-modify-write transactions across processes."""
+    with _CONFIG_LOCK:
+        depth = getattr(_CONFIG_FILE_LOCK_STATE, "depth", 0)
+        if depth:
+            _CONFIG_FILE_LOCK_STATE.depth = depth + 1
+            try:
+                yield
+            finally:
+                _CONFIG_FILE_LOCK_STATE.depth -= 1
+            return
+
+        ensure_hermes_home()
+        target_path = config_path or get_config_path()
+        lock_path = target_path.with_name("config.lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            _secure_file(lock_path)
+            if os.name != "nt" and hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                    os.fsync(fd)
+                os.lseek(fd, 0, os.SEEK_SET)
+                getattr(msvcrt, "locking")(
+                    fd, getattr(msvcrt, "LK_LOCK"), 1
+                )
+            else:
+                raise RuntimeError("no supported config file-locking backend")
+            _CONFIG_FILE_LOCK_STATE.depth = 1
+            try:
+                yield
+            finally:
+                _CONFIG_FILE_LOCK_STATE.depth = 0
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    getattr(msvcrt, "locking")(
+                        fd, getattr(msvcrt, "LK_UNLCK"), 1
+                    )
+        finally:
+            os.close(fd)
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -6661,6 +6734,33 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _restore_protected_dotted_keys(
+    candidate: dict, raw_user: dict, dotted_keys: Set[str]
+) -> Tuple[dict, Set[str]]:
+    """Restore raw user values for leaves that may carry managed overlays."""
+    candidate, stripped = _strip_dotted_keys(candidate, dotted_keys)
+    missing = object()
+    for dotted in dotted_keys:
+        parts = dotted.split(".")
+        source: Any = raw_user
+        for part in parts:
+            if not isinstance(source, dict) or part not in source:
+                source = missing
+                break
+            source = source[part]
+        if source is missing:
+            continue
+        target = candidate
+        for part in parts[:-1]:
+            child = target.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                target[part] = child
+            target = child
+        target[parts[-1]] = copy.deepcopy(source)
+    return candidate, stripped
+
+
 def _expand_env_vars(obj):
     """Recursively expand ``${VAR}`` references in config values.
 
@@ -6968,7 +7068,10 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     elif "max_turns" not in agent_config:
         agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
 
-    config["agent"] = agent_config
+    if "agent" in config or agent_config:
+        config["agent"] = agent_config
+    else:
+        config.pop("agent", None)
     config.pop("max_turns", None)
     return config
 
@@ -7110,27 +7213,64 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
 
-    The single chokepoint every config-update path should use instead of
-    calling :func:`utils.atomic_yaml_write` directly. It runs
-    :func:`require_readable_config_before_write` first, so a full-file
-    replacement can never silently clobber an existing ``config.yaml`` that
-    degraded to an empty dict on read (permission error, broken mount,
-    transient I/O). New-file creation still works when the path is absent.
-
-    Root cause this guards: ``read_raw_config()`` returns ``{}`` for BOTH an
-    absent file and an unreadable-but-present file. Callers that read then
-    overwrite can't tell the two apart, so an unreadable config would be
-    replaced with only defaults or the single edited section. Routing every
-    write through this helper enforces the invariant in one place rather than
-    relying on each of ~15 independent write sites to remember the guard.
-
-    ``kwargs`` are forwarded verbatim to ``atomic_yaml_write``
-    (``sort_keys``, ``default_flow_style``, ``extra_content``, ...).
+    Legacy full-file writers are serialized across processes and cannot alter
+    approval-policy leaves; those changes must use ``save_config`` via a
+    targeted setter. Successful active-profile writes refresh the user-policy
+    LKG and invalidate merged caches before returning.
     """
     from utils import atomic_yaml_write
 
-    require_readable_config_before_write(config_path)
-    atomic_yaml_write(config_path, data, **kwargs)
+    allow_security_policy_change = bool(
+        kwargs.pop("_allow_security_policy_change", False)
+    )
+    with _config_transaction_lock(config_path):
+        require_readable_config_before_write(config_path)
+        candidate = copy.deepcopy(data)
+        if isinstance(candidate, dict):
+            current: Dict[str, Any] = {}
+            if config_path.exists():
+                try:
+                    with open(config_path, encoding="utf-8") as f:
+                        loaded = fast_safe_load(f) or {}
+                    if not isinstance(loaded, dict):
+                        raise ValueError("config root is not a mapping")
+                    current = loaded
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Refusing to overwrite config.yaml because current "
+                        "approval policy cannot be evaluated"
+                    ) from exc
+            if not allow_security_policy_change:
+                candidate, _ = _restore_protected_dotted_keys(
+                    candidate,
+                    current,
+                    {"memory.write_approval", "skills.write_approval"},
+                )
+
+        atomic_yaml_write(config_path, candidate, **kwargs)
+        _secure_file(config_path)
+
+        if isinstance(candidate, dict):
+            path_key = str(config_path)
+            persisted_user = _deep_merge(
+                copy.deepcopy(DEFAULT_CONFIG), copy.deepcopy(candidate)
+            )
+            persisted_user = _normalize_root_model_keys(
+                _normalize_max_turns_config(persisted_user)
+            )
+            from typing import cast as _atomic_cast
+
+            persisted_user_expanded = _atomic_cast(
+                Dict[str, Any], _expand_env_vars(persisted_user)
+            )
+            _SECURITY_USER_LKG_BY_PATH[path_key] = copy.deepcopy(
+                persisted_user_expanded
+            )
+            _SECURITY_LKG_CONFIG_BY_PATH.pop(path_key, None)
+            _SECURITY_LKG_PROVENANCE_BY_PATH.pop(path_key, None)
+            _LOAD_CONFIG_CACHE.pop(path_key, None)
+            _CONFIG_LOAD_FAILURE_WITHOUT_LKG.discard(path_key)
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(candidate)
 
 
 def load_config() -> Dict[str, Any]:
@@ -7173,6 +7313,32 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_config_for_security_gate() -> Dict[str, Any]:
+    """Load config, raising when an existing file fell back without an LKG."""
+    try:
+        config = load_config()
+    except Exception as exc:
+        raise RuntimeError("configuration unavailable for security gate") from exc
+    path_key = str(get_config_path())
+    with _CONFIG_LOCK:
+        if path_key in _CONFIG_LOAD_FAILURE_WITHOUT_LKG:
+            raise RuntimeError("configuration invalid for security gate")
+    return config
+
+
+def mutate_config(
+    mutator: Callable[[Dict[str, Any]], Any],
+    *,
+    raw: bool = False,
+) -> Any:
+    """Run one complete config read-modify-save transaction under both locks."""
+    with _config_transaction_lock():
+        config = read_raw_config() if raw else load_config()
+        result = mutator(config)
+        save_config(config)
+        return result
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,
@@ -7186,19 +7352,20 @@ def write_platform_config_field(
     user's raw config file. Dashboard routes use the default loaded-config path
     so they retain their existing profile-scoped ``load_config`` behavior.
     """
-    config = read_raw_config() if raw else load_config()
-    platforms = config.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        config["platforms"] = platforms
+    def apply(config: Dict[str, Any]) -> None:
+        platforms = config.setdefault("platforms", {})
+        if not isinstance(platforms, dict):
+            platforms = {}
+            config["platforms"] = platforms
 
-    platform_config = platforms.setdefault(platform_key, {})
-    if not isinstance(platform_config, dict):
-        platform_config = {}
-        platforms[platform_key] = platform_config
+        platform_config = platforms.setdefault(platform_key, {})
+        if not isinstance(platform_config, dict):
+            platform_config = {}
+            platforms[platform_key] = platform_config
 
-    platform_config[field_key] = value
-    save_config(config)
+        platform_config[field_key] = value
+
+    mutate_config(apply, raw=raw)
 
 
 TERMINAL_CONFIG_ENV_MAP = {
@@ -7314,6 +7481,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
         except OSError:
             managed_sig = (0, 0)
+        managed_config, managed_status = managed_scope.load_managed_config_with_status()
+        if managed_status == "absent":
+            # Absence is an authoritative source transition, not a transient
+            # failure. A later malformed file must not resurrect policy that an
+            # administrator deliberately removed.
+            _SECURITY_MANAGED_LKG_BY_PATH.pop(path_key, None)
 
         # Combined cache signature: user file + managed file. None only when the
         # user config is absent AND no managed file exists (nothing to cache on).
@@ -7330,7 +7503,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             cache_sig = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if (
+            cached is not None
+            and cache_sig is not None
+            and cached[:4] == cache_sig
+            and managed_status != "failed"
+        ):
             # File signatures match, but the cached expansion is only valid if
             # every ${VAR} it was expanded against still has the same value.
             # Without this, a load_config() that ran before load_hermes_dotenv()
@@ -7341,6 +7519,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        failed_without_lkg = False
+        user_valid = False
+        user_effective = False
+        managed_effective = False
+        user_load_error: Optional[Exception] = None
 
         if user_sig is not None:
             try:
@@ -7355,58 +7538,84 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
-            except Exception as e:
-                # Last-known-good fallback (port of openai/codex#31188's
-                # invariant: a parse failure in a policy/config file must not
-                # silently replace the effective policy with an empty/default
-                # one). Falling through to DEFAULT_CONFIG here drops EVERY user
-                # override — including security-critical ``approvals.deny``
-                # rules, which are supposed to block commands even under yolo.
-                # A long-running gateway whose user mid-edits config.yaml into
-                # broken YAML would silently lose those rules on the next load.
-                # Within a running process we still have the last successfully
-                # loaded config — keep serving it until the file is fixed.
-                # Fresh processes with no last-known-good keep the existing
-                # DEFAULT_CONFIG fallback.
-                lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
-                _warn_config_parse_failure(
-                    config_path,
-                    e,
-                    fallback="last-known-good" if lkg is not None else "defaults",
-                )
-                if lkg is not None:
-                    # save_config() stores the pre-expansion normalized dict
-                    # (env-ref templates preserved); the load path stores the
-                    # expanded one. Expand defensively — idempotent when the
-                    # stored value is already expanded.
-                    from typing import cast as _cast
-                    lkg_copy: Dict[str, Any] = _cast(
-                        Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
-                    )
-                    if cache_sig is not None:
-                        # Cache under the corrupt file's signature (empty env
-                        # snapshot: always valid) so repeated loads don't
-                        # re-parse the broken file; fixing the file changes the
-                        # signature and triggers a normal reload.
-                        _empty_env: Dict[str, Optional[str]] = {}
-                        _LOAD_CONFIG_CACHE[path_key] = (
-                            cache_sig[0], cache_sig[1],
-                            cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
-                        )
-                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+                user_valid = True
+            except Exception as exc:
+                user_load_error = exc
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-        expanded = _expand_env_vars(normalized)
+        from typing import cast as _config_cast
+
+        if user_load_error is None:
+            normalized = _normalize_root_model_keys(
+                _normalize_max_turns_config(config)
+            )
+            expanded = _config_cast(
+                Dict[str, Any], _expand_env_vars(normalized)
+            )
+            if user_valid:
+                user_snapshot = copy.deepcopy(expanded)
+                _SECURITY_USER_LKG_BY_PATH[path_key] = user_snapshot
+                user_effective = True
+        else:
+            user_lkg = _SECURITY_USER_LKG_BY_PATH.get(path_key)
+            _warn_config_parse_failure(
+                config_path,
+                user_load_error,
+                fallback="last-known-good" if user_lkg is not None else "defaults",
+            )
+            normalized = _normalize_root_model_keys(
+                _normalize_max_turns_config(copy.deepcopy(DEFAULT_CONFIG))
+            )
+            if user_lkg is None:
+                expanded = _config_cast(
+                    Dict[str, Any], _expand_env_vars(normalized)
+                )
+                failed_without_lkg = True
+            else:
+                expanded = copy.deepcopy(user_lkg)
+                normalized = copy.deepcopy(user_lkg)
+                user_effective = True
         # Managed scope wins at the leaf. Applied AFTER user expansion so a user
         # ${VAR} cannot shadow a managed literal: managed values are expanded only
         # against the process environment, never against user-config-defined refs.
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
-        managed_config = managed_scope.load_managed_config()
-        if managed_config:
-            managed_expanded = _expand_env_vars(managed_config)
+        from typing import cast as _managed_cast
+
+        if managed_status == "valid":
+            managed_expanded = _managed_cast(
+                Dict[str, Any], _expand_env_vars(managed_config)
+            )
             expanded = _deep_merge(expanded, managed_expanded)
+            _SECURITY_MANAGED_LKG_BY_PATH[path_key] = copy.deepcopy(
+                managed_expanded
+            )
+            _SECURITY_MANAGED_KEYS_BY_PATH.setdefault(path_key, set()).update(
+                managed_scope.managed_config_keys(managed_expanded)
+            )
+            managed_effective = True
+        elif managed_status == "failed":
+            managed_lkg = _SECURITY_MANAGED_LKG_BY_PATH.get(path_key)
+            if managed_lkg is None:
+                failed_without_lkg = True
+            else:
+                expanded = _deep_merge(
+                    _managed_cast(Dict[str, Any], expanded),
+                    copy.deepcopy(managed_lkg),
+                )
+                managed_effective = True
+
+        if not failed_without_lkg and (user_effective or managed_effective):
+            provenance = set()
+            if user_effective:
+                provenance.add("user")
+            if managed_effective:
+                provenance.add("managed")
+            _SECURITY_LKG_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+            _SECURITY_LKG_PROVENANCE_BY_PATH[path_key] = frozenset(provenance)
+        if failed_without_lkg:
+            _CONFIG_LOAD_FAILURE_WITHOUT_LKG.add(path_key)
+        else:
+            _CONFIG_LOAD_FAILURE_WITHOUT_LKG.discard(path_key)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
@@ -7421,7 +7630,14 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                cache_sig[0],
+                cache_sig[1],
+                cache_sig[2],
+                cache_sig[3],
+                cached_copy,
+                env_snapshot,
+            )
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
@@ -7533,36 +7749,66 @@ def save_config(
     Full-document replacement callers (dashboard raw YAML editor, callers that
     already deep-merge) must leave this False so intentional deletions survive.
     """
-    with _CONFIG_LOCK:
+    with _config_transaction_lock():
         if is_managed():
             managed_error("save configuration")
             return
-        # Managed scope: strip any leaf the managed layer pins, so a bulk write
-        # (wizard / programmatic save) never persists a user value that would
-        # silently lose to managed on the next load. Single-key `config set`
-        # hard-rejects (see set_config_value); this is the mechanical safety net
-        # for bulk writes so the unmanaged remainder still lands.
         from hermes_cli import managed_scope
-
-        managed_keys = managed_scope.managed_config_keys()
-        if managed_keys:
-            config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
-            if _stripped:
-                print(
-                    f"Note: {len(_stripped)} managed setting(s) were not saved "
-                    f"(managed by your administrator): {', '.join(sorted(_stripped))}",
-                    file=sys.stderr,
-                )
         from utils import atomic_yaml_write
 
         ensure_hermes_home()
         config_path = get_config_path()
+        path_key = str(config_path)
         require_readable_config_before_write(config_path)
+        _raw_for_paths = read_raw_config()
+
+        managed_config, managed_status = (
+            managed_scope.load_managed_config_with_status()
+        )
+        if managed_status == "failed":
+            raise RuntimeError(
+                "Cannot save configuration while managed configuration "
+                "cannot be evaluated safely"
+            )
+        current_managed_keys = (
+            managed_scope.managed_config_keys(managed_config)
+            if managed_status == "valid"
+            else set()
+        )
+        if current_managed_keys:
+            _SECURITY_MANAGED_KEYS_BY_PATH.setdefault(path_key, set()).update(
+                current_managed_keys
+            )
+            from typing import cast as _managed_save_cast
+
+            _SECURITY_MANAGED_LKG_BY_PATH[path_key] = copy.deepcopy(
+                _managed_save_cast(
+                    Dict[str, Any], _expand_env_vars(managed_config)
+                )
+            )
+        elif managed_status == "absent":
+            _SECURITY_MANAGED_LKG_BY_PATH.pop(path_key, None)
+
+        protected_managed_keys = set(
+            _SECURITY_MANAGED_KEYS_BY_PATH.get(path_key, set())
+        )
+        if protected_managed_keys:
+            config, _stripped = _restore_protected_dotted_keys(
+                copy.deepcopy(config),
+                _raw_for_paths,
+                protected_managed_keys,
+            )
+            if _stripped:
+                print(
+                    f"Note: {len(_stripped)} managed setting(s) preserved from "
+                    f"the user source: {', '.join(sorted(_stripped))}",
+                    file=sys.stderr,
+                )
+
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
         # DEFAULT_CONFIG; using the raw dict preserves which paths the
         # user actually set so _strip_default_values can keep them.
-        _raw_for_paths = read_raw_config()
         explicit_raw_paths: Optional[Set[Tuple[str, ...]]] = (
             _explicit_config_paths(_raw_for_paths) if _raw_for_paths else None
         )
@@ -7618,14 +7864,49 @@ def save_config(
         if not fb_is_valid:
             parts.append(_FALLBACK_COMMENT)
 
+        latest_managed, latest_managed_status = (
+            managed_scope.load_managed_config_with_status()
+        )
+        if (
+            latest_managed_status == "failed"
+            or latest_managed_status != managed_status
+            or latest_managed != managed_config
+        ):
+            raise RuntimeError(
+                "Cannot save configuration because managed configuration "
+                "changed or cannot be evaluated safely; retry the save"
+            )
+
         atomic_yaml_write(
             config_path,
             normalized,
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        path_key = str(config_path)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        from typing import cast as _security_cast
+
+        persisted_user = _deep_merge(
+            copy.deepcopy(DEFAULT_CONFIG),
+            copy.deepcopy(_security_cast(Dict[str, Any], normalized)),
+        )
+        persisted_user = _normalize_root_model_keys(
+            _normalize_max_turns_config(persisted_user)
+        )
+        persisted_user_expanded = _security_cast(
+            Dict[str, Any], _expand_env_vars(persisted_user)
+        )
+        # The atomic write is authoritative. Refresh the source-isolated user
+        # snapshot and invalidate merged/cache state before another reader runs.
+        _SECURITY_USER_LKG_BY_PATH[path_key] = copy.deepcopy(
+            persisted_user_expanded
+        )
+        _SECURITY_LKG_CONFIG_BY_PATH.pop(path_key, None)
+        _SECURITY_LKG_PROVENANCE_BY_PATH.pop(path_key, None)
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
+        _CONFIG_LOAD_FAILURE_WITHOUT_LKG.discard(path_key)
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(current_normalized)
 
 
 def _parse_env_value(raw_value: str) -> str:
@@ -8718,6 +8999,20 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def _read_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
+    """Read raw user YAML for a locked mutation, failing closed on corruption."""
+    require_readable_config_before_write(config_path)
+    if not config_path.exists():
+        return {}
+    with open(config_path, encoding="utf-8") as f:
+        loaded = fast_safe_load(f)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError("Refusing to mutate config.yaml: config root is not a mapping")
+    return loaded
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 
@@ -8728,6 +9023,38 @@ def set_config_value(key: str, value: str, force: bool = False):
             writes of keys the running version doesn't recognize yet. The CLI
             exposes this via ``hermes config set --force``.
     """
+    with _config_transaction_lock():
+        return _set_config_value_locked(key, value, force=force)
+
+
+def set_config_value_typed(
+    key: str,
+    value: Any,
+    *,
+    config_path: Optional[Path] = None,
+):
+    """Set an internal typed value without CLI coercion or terminal output."""
+    target_path = config_path or get_config_path()
+    with _config_transaction_lock(target_path):
+        return _set_config_value_locked(
+            key,
+            value,
+            coerce=False,
+            announce=False,
+            config_path_override=target_path,
+        )
+
+
+def _set_config_value_locked(
+    key: str,
+    value: Any,
+    *,
+    coerce: bool = True,
+    announce: bool = True,
+    config_path_override: Optional[Path] = None,
+    force: bool = False,
+):
+    """Implementation for ``set_config_value``; caller holds ``_CONFIG_LOCK``."""
     if is_managed():
         managed_error("set configuration values")
         return
@@ -8769,15 +9096,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
-    config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
+    config_path = config_path_override or get_config_path()
+    user_config = _read_user_config_for_mutation(config_path)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -8788,7 +9108,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if coerce and isinstance(value, str) and not isinstance(_default_value_for_key(key), str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:
@@ -8808,17 +9128,40 @@ def set_config_value(key: str, value: str, force: bool = False):
     if _alias_norm in ("model.api_base", "api_base"):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
-        print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
-    ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+        if announce:
+            print("  (note: 'api_base' is an alias — saved as model.base_url)")
+    # Persist through the authoritative locked path so managed-policy status,
+    # security LKGs, caches, permissions, and durability are updated together.
+    if config_path == get_config_path():
+        save_config(
+            user_config,
+            preserve_keys={tuple(key.split("."))},
+        )
+    else:
+        atomic_config_write(
+            config_path,
+            user_config,
+            _allow_security_policy_change=True,
+        )
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
+
+    # Setting display.skin is an explicit "apply NOW" — bump the skin file's
+    # mtime so the gateway watcher's (name, mtime) signature moves even when the
+    # name is unchanged (re-affirming the active skin after a surface missed the
+    # original activation). Built-ins have no file; a name switch already moves
+    # their signature.
+    if key == "display.skin" and isinstance(value, str) and value:
+        try:
+            skin_file = get_hermes_home() / "skins" / f"{value}.yaml"
+            if skin_file.exists():
+                skin_file.touch()
+        except Exception:
+            pass  # best-effort: the config write above already succeeded
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
@@ -8830,7 +9173,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         _display_value = mask_secret(value)
     else:
         _display_value = value
-    print(f"✓ Set {key} = {_display_value} in {config_path}")
+    if announce:
+        print(f"✓ Set {key} = {_display_value} in {config_path}")
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the
     # user the runtime may never read it and suggest the likely-intended path.
@@ -8866,7 +9210,13 @@ def get_config_value(key: str, *, as_json: bool = False):
 
 
 def unset_config_value(key: str):
-    """Remove a user-set configuration or .env value."""
+    """Remove a user-set configuration or .env value atomically."""
+    with _config_transaction_lock():
+        return _unset_config_value_locked(key)
+
+
+def _unset_config_value_locked(key: str):
+    """Implementation for ``unset_config_value``; caller holds the config lock."""
     if is_managed():
         managed_error("unset configuration values")
         return
@@ -8897,29 +9247,23 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
-
+    user_config = _read_user_config_for_mutation(config_path)
     removed = _unset_nested(user_config, key)
-
-    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
-    env_var = terminal_config_env_var_for_key(key)
-    if env_var and key != "terminal.cwd":
-        removed = remove_env_value(env_var) or removed
 
     if not removed:
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
 
-    ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    # Use the authoritative save path so managed-policy checks, security LKGs,
+    # caches, permissions, and durability are updated as one locked transaction.
+    # Persist config.yaml before touching synchronized .env state: a failed
+    # config write must leave the previously effective terminal setting intact.
+    save_config(user_config)
+
+    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
+    env_var = terminal_config_env_var_for_key(key)
+    if env_var and key != "terminal.cwd":
+        remove_env_value(env_var)
     print(f"✓ Unset {key} from {config_path}")
 
 

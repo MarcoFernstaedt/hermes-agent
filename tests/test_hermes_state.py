@@ -3409,9 +3409,11 @@ class TestSanitizeTitle:
 
 class TestSchemaInit:
     def test_wal_mode(self, db):
+        from hermes_sqlite import sqlite_wal_reset_is_fixed
+
         cursor = db._conn.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0]
-        assert mode == "wal"
+        assert mode == ("wal" if sqlite_wal_reset_is_fixed() else "delete")
 
     def test_foreign_keys_enabled(self, db):
         cursor = db._conn.execute("PRAGMA foreign_keys")
@@ -5225,6 +5227,14 @@ class TestFTS5ToolCallMigration:
 
 class TestApplyWalProbe:
     """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _simulate_patched_sqlite(self, monkeypatch):
+        """Exercise normal WAL probing independently of the runtime guard."""
+        monkeypatch.setattr(
+            "hermes_state.force_delete_journal_if_wal_unsafe",
+            lambda conn, *, db_label: False,
+        )
 
     def test_skips_set_pragma_when_already_wal(self, tmp_path):
         """Already-WAL connection must not trigger the set-pragma."""

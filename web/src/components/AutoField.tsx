@@ -1,11 +1,15 @@
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { SelectOption } from "@nous-research/ui/ui/components/select";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { imperatorBrand } from "@/lib/imperator-branding";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description ? String(schema.description) : "";
+  const description = schema.description
+    ? imperatorBrand(String(schema.description))
+    : "";
 
   if (!keyPath && !description) return null;
 
@@ -108,7 +112,11 @@ export function AutoField({
           <Label className="text-sm">{label}</Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch
+          checked={!!value}
+          onCheckedChange={onChange}
+          aria-label={label}
+        />
       </div>
     );
   }
@@ -119,13 +127,17 @@ export function AutoField({
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
-        <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
+        <LabeledSelect
+          label={label}
+          value={String(value ?? "")}
+          onValueChange={(v) => onChange(v)}
+        >
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
               {opt || "(none)"}
             </SelectOption>
           ))}
-        </Select>
+        </LabeledSelect>
       </div>
     );
   }
@@ -137,6 +149,7 @@ export function AutoField({
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
           type="number"
+          aria-label={label}
           value={value === undefined || value === null ? "" : String(value)}
           onChange={(e) => {
             const raw = e.target.value;
@@ -160,6 +173,7 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <textarea
+          aria-label={label}
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -174,6 +188,7 @@ export function AutoField({
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
+          aria-label={label}
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
             onChange(
@@ -193,7 +208,11 @@ export function AutoField({
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
       <FieldHint schema={schema} schemaKey={schemaKey} />
-      <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <Input
+        aria-label={label}
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }
