@@ -21,11 +21,13 @@ export interface Lifecycle {
 
 export interface CapabilityView {
   id: string;
-  kind: "board" | "table";
+  kind: "board" | "table" | "gallery" | "agenda";
   /** Board: field to group columns by (defaults to the lifecycle field). */
   groupBy?: string;
   /** Table: ordered field names to show as columns (defaults to all fields). */
   columns?: string[];
+  /** Agenda: field holding the date to group by. */
+  dateField?: string;
   /** The view shown first. */
   default?: boolean;
 }

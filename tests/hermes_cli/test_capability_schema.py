@@ -86,6 +86,26 @@ def test_duplicate_field_names():
     assert any("duplicated" in e for e in schema.validate_declaration(d))
 
 
+def test_gallery_view_is_valid():
+    d = base()
+    d["views"] = [{"id": "gallery", "kind": "gallery", "default": True}]
+    assert schema.validate_declaration(d) == []
+
+
+def test_agenda_requires_a_real_date_field():
+    d = base()
+    d["fields"].append({"name": "due", "label": "Due", "type": "date"})
+    # Missing dateField.
+    d["views"] = [{"id": "agenda", "kind": "agenda", "default": True}]
+    assert any("needs a dateField" in e for e in schema.validate_declaration(d))
+    # Points at a field that does not exist.
+    d["views"] = [{"id": "agenda", "kind": "agenda", "dateField": "ghost"}]
+    assert any("not a declared field" in e for e in schema.validate_declaration(d))
+    # Valid.
+    d["views"] = [{"id": "agenda", "kind": "agenda", "dateField": "due", "default": True}]
+    assert schema.validate_declaration(d) == []
+
+
 def test_published_schema_shape():
     js = schema.declaration_json_schema()
     assert js["type"] == "object"

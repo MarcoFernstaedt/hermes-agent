@@ -6,6 +6,9 @@
  */
 export { DataTable, type DataTableProps } from "./DataTable";
 export { BoardView, type BoardViewProps } from "./BoardView";
+export { GalleryView, type GalleryViewProps } from "./GalleryView";
+export { AgendaView, type AgendaViewProps } from "./AgendaView";
+export { groupByDay, dayLabel, isToday, type AgendaGroup } from "./agenda-model";
 export type { BoardColumn } from "./board-model";
 export { ThreePane } from "./ThreePane";
 export { FilterBar } from "./FilterBar";

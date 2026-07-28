@@ -7,8 +7,10 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Plus, X } from "lucide-react";
 
 import {
+  AgendaView,
   BoardView,
   DataTable,
+  GalleryView,
   EmptyState,
   FilterBar,
   FormFromSchema,
@@ -256,6 +258,51 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
                   </div>
                 )}
               </button>
+            )}
+          />
+        </div>
+      ) : view.kind === "gallery" ? (
+        <div className="h-[62vh] min-h-0">
+          <GalleryView
+            className="h-full"
+            label={capability.label}
+            items={filtered}
+            getItemId={(r) => r.id}
+            onSelect={(r) => setEditing(r)}
+            renderCard={(r) => (
+              <>
+                <span className="font-sans text-sm font-medium">
+                  {String(r[capability.titleField] ?? "(untitled)")}
+                </span>
+                {capability.subtitleField && (
+                  <span className="text-xs text-text-tertiary">
+                    {String(r[capability.subtitleField] ?? "")}
+                  </span>
+                )}
+              </>
+            )}
+          />
+        </div>
+      ) : view.kind === "agenda" && view.dateField ? (
+        <div className="h-[62vh] min-h-0">
+          <AgendaView
+            className="h-full"
+            label={capability.label}
+            items={filtered}
+            dateField={view.dateField}
+            getItemId={(r) => r.id}
+            onSelect={(r) => setEditing(r)}
+            renderItem={(r) => (
+              <>
+                <span className="font-sans text-sm">
+                  {String(r[capability.titleField] ?? "(untitled)")}
+                </span>
+                {capability.subtitleField && (
+                  <span className="text-xs text-text-tertiary">
+                    {String(r[capability.subtitleField] ?? "")}
+                  </span>
+                )}
+              </>
             )}
           />
         </div>

@@ -21,7 +21,7 @@ FIELD_TYPES = {
     "text", "number", "currency", "boolean", "date", "select", "tags",
     "markdown", "url",
 }
-VIEW_KINDS = {"board", "table"}
+VIEW_KINDS = {"board", "table", "gallery", "agenda"}
 # Operations the agent may be granted. "delete" is deliberately absent —
 # destructive ops stay fail-safe and are never declared here.
 AGENT_OPS = {"list", "get", "create", "advance"}
@@ -156,6 +156,12 @@ def validate_declaration(decl: Any) -> list[str]:
             errors.append(f"{where}.kind '{kind}' is not one of {sorted(VIEW_KINDS)}")
         if kind == "board" and lifecycle is None:
             errors.append(f"{where} is a board but the capability declares no lifecycle")
+        if kind == "agenda":
+            date_field = v.get("dateField") or v.get("date_field")
+            if not _is_str(date_field):
+                errors.append(f"{where} is an agenda and needs a dateField")
+            elif field_names and date_field not in field_names:
+                errors.append(f"{where}.dateField '{date_field}' is not a declared field")
         cols = v.get("columns")
         if cols is not None:
             if not isinstance(cols, list):
@@ -270,6 +276,7 @@ def declaration_json_schema() -> dict[str, Any]:
                         "id": {"type": "string"},
                         "kind": {"enum": sorted(VIEW_KINDS)},
                         "columns": {"type": "array", "items": {"type": "string"}},
+                        "dateField": {"type": "string"},
                         "groupBy": {"type": "string"},
                         "default": {"type": "boolean"},
                     },
