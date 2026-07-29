@@ -83,11 +83,19 @@ def _build_health() -> dict[str, Any]:
         from hermes_cli import provenance
 
         p = provenance.collect()
+        runtime = p.get("runtime", {})
+        version_drift = bool(runtime.get("version_drift"))
         return {
             "backend": p["backend"]["commit_short"],
             "frontend": p["frontend"]["commit_short"],
             "commit_drift": p["commit_drift"],
-            "status": "warn" if p["commit_drift"] else "ok",
+            "version": runtime.get("version"),
+            "installed_version": runtime.get("installed_version"),
+            # An installed wheel reporting a different version than the code
+            # actually running is the same class of problem as commit drift:
+            # the numbers on screen stop describing what is executing.
+            "version_drift": version_drift,
+            "status": "warn" if (p["commit_drift"] or version_drift) else "ok",
         }
     except Exception as exc:
         return {"status": "unknown", "detail": str(exc)}

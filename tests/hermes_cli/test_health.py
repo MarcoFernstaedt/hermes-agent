@@ -56,3 +56,43 @@ def test_improvement_proposal_acknowledged_on_approve(home):
     store.approve(p["id"])
     outcome = apply_payload("improvement", p["payload"])
     assert "acknowledged" in outcome
+
+
+def test_build_health_reports_version(home):
+    from hermes_cli import health
+    from hermes_cli import __version__
+
+    build = health.collect_health()["sections"]["build"]
+    assert build["version"] == __version__
+    # No installed distribution in a checkout-only run → no drift claimed.
+    assert build["version_drift"] is False
+
+
+def test_build_health_warns_on_version_drift(home, monkeypatch):
+    """An installed wheel reporting a different version than the running code
+    is surfaced as a warning, not silently ignored."""
+    from hermes_cli import health, provenance
+
+    real = provenance.collect()
+    drifted = dict(real)
+    drifted["runtime"] = {**real["runtime"], "installed_version": "9.9.9", "version_drift": True}
+    monkeypatch.setattr(provenance, "collect", lambda: drifted)
+
+    build = health.collect_health()["sections"]["build"]
+    assert build["version_drift"] is True
+    assert build["status"] == "warn"
+    assert build["installed_version"] == "9.9.9"
+
+
+def test_runtime_identity_shape():
+    """Version identity comes from one place and describes what is running."""
+    from hermes_cli import provenance, __version__, __release_date__
+
+    provenance.runtime_identity.cache_clear()
+    r = provenance.runtime_identity()
+    assert r["version"] == __version__
+    assert r["release_date"] == __release_date__
+    assert r["package_path"].endswith("hermes_cli")
+    assert r["source"] in {"installed", "checkout"}
+    # version_drift is only ever claimed when an installed dist exists.
+    assert r["version_drift"] is (bool(r["installed_version"]) and r["installed_version"] != __version__)

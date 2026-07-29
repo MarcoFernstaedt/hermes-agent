@@ -57,10 +57,35 @@ export function ReleaseProvenanceCard() {
           </p>
         </div>
       )}
+      {data.runtime?.version_drift && (
+        <div
+          role="alert"
+          className={cn(
+            "flex items-start gap-2 rounded-md",
+            "border border-warning/40 bg-warning/10 px-3 py-2",
+            "text-warning",
+          )}
+        >
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <p className="font-sans text-xs leading-snug">
+            <span className="font-semibold">Two installs.</span> This dashboard
+            is serving v{data.runtime.version} from a checkout, while the
+            installed package reports v{data.runtime.installed_version}. The{" "}
+            <code className="font-mono-ui">hermes</code> command on your PATH may
+            not be the code running here.
+          </p>
+        </div>
+      )}
       <dl className="grid gap-3 sm:grid-cols-2">
         <CommitBlock label="Backend (running)" info={data.backend} />
         <CommitBlock label="Frontend (served build)" info={data.frontend} />
       </dl>
+      {data.runtime && (
+        <p className="font-mono-ui text-xs tracking-[0.04em] text-text-tertiary">
+          v{data.runtime.version} ({data.runtime.release_date}) ·{" "}
+          {data.runtime.source}
+        </p>
+      )}
       <p className="font-mono-ui text-xs tracking-[0.04em] text-text-tertiary">
         python {data.process.python} · up{" "}
         {formatUptime(data.process.uptime_seconds)}

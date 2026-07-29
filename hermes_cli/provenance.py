@@ -81,6 +81,58 @@ def frontend_build_info() -> dict:
                 "dirty": None, "built_at": None, "available": False}
 
 
+@lru_cache(maxsize=1)
+def runtime_identity() -> dict[str, Any]:
+    """Which Hermes is actually serving this dashboard.
+
+    The recon found the sidebar reporting ``v0.18.2`` while ``hermes --version``
+    on the same machine reported ``v0.19.0``. Both were telling the truth about
+    different things: the dashboard reports the *source tree it imported*, the
+    CLI reports whatever install is first on PATH. When a checkout shadows an
+    installed wheel, those diverge silently and every version number on screen
+    becomes untrustworthy.
+
+    So report both, from one place, with no subprocess: the imported package's
+    version and location, and the installed distribution's version and location
+    as recorded in package metadata. ``version_drift`` is true only when a
+    distribution is installed *and* its version differs from the code that is
+    actually running — the precise "two Hermeses" condition.
+    """
+    from hermes_cli import __release_date__, __version__
+
+    package_path = str(Path(__file__).resolve().parent)
+    installed_version: Optional[str] = None
+    installed_path: Optional[str] = None
+    try:
+        import importlib.metadata as _md
+
+        dist = _md.distribution("hermes-agent")
+        installed_version = dist.version
+        located = dist.locate_file("hermes_cli")
+        installed_path = str(Path(str(located)).resolve())
+    except Exception:
+        # No metadata (running straight from a checkout) — nothing to compare
+        # against, which is itself the common, healthy case.
+        pass
+
+    return {
+        "version": __version__,
+        "release_date": __release_date__,
+        "package_path": package_path,
+        "installed_version": installed_version,
+        "installed_path": installed_path,
+        # True when an installed distribution reports a different version than
+        # the source tree this process imported.
+        "version_drift": bool(installed_version and installed_version != __version__),
+        # Where the running code came from, in one word.
+        "source": (
+            "installed"
+            if installed_path and installed_path == package_path
+            else "checkout"
+        ),
+    }
+
+
 def collect() -> dict[str, Any]:
     """Everything the System surface needs in one payload."""
     backend = backend_commit()
@@ -93,6 +145,7 @@ def collect() -> dict[str, Any]:
     return {
         "backend": backend,
         "frontend": frontend,
+        "runtime": runtime_identity(),
         # True when the served frontend was built from a different commit than
         # the running backend — the exact drift the recon flagged.
         "commit_drift": bool(drift),

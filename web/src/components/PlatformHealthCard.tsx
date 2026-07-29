@@ -65,7 +65,13 @@ function summarize(name: string, s: Record<string, unknown>): string {
     return `${c.pending ?? 0} pending · ${c.failed ?? 0} failed`;
   }
   if (name === "guardrails") return `${s.refused_or_failed ?? 0} refused/failed (7d)`;
-  if (name === "build") return s.commit_drift ? "commit drift — rebuild & restart" : "in sync";
+  if (name === "build") {
+    if (s.commit_drift) return "commit drift — rebuild & restart";
+    if (s.version_drift) {
+      return `running v${s.version} · installed v${s.installed_version}`;
+    }
+    return `v${s.version ?? "?"} · in sync`;
+  }
   return s.status as string;
 }
 

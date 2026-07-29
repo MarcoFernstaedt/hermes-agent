@@ -514,11 +514,28 @@ export interface CommitInfo {
   available?: boolean;
 }
 
+/**
+ * Which Hermes is actually running. `version` is the source tree the server
+ * imported; `installed_version` is what package metadata records, when a wheel
+ * is installed at all. They diverge when a checkout shadows an install — the
+ * reason the sidebar and `hermes --version` could disagree.
+ */
+export interface RuntimeIdentity {
+  version: string;
+  release_date: string;
+  package_path: string;
+  installed_version: string | null;
+  installed_path: string | null;
+  version_drift: boolean;
+  source: "installed" | "checkout";
+}
+
 export interface SystemProvenance {
   backend: CommitInfo;
   frontend: CommitInfo;
   /** True when the served frontend was built from a different commit than the running backend. */
   commit_drift: boolean;
+  runtime: RuntimeIdentity;
   process: {
     started_at: number;
     uptime_seconds: number;
