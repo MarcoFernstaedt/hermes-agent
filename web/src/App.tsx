@@ -85,6 +85,8 @@ import {
 } from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { GlobalStopControl } from "@/components/GlobalStopControl";
+import { Glance } from "@/components/Glance";
+import { useGlance } from "@/hooks/useGlance";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
@@ -506,6 +508,9 @@ export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Shell-level, so the glance survives every route change — that persistence
+  // is the whole premise of the ambient layer.
+  const glance = useGlance();
 
   // Native-style touch gestures: swipe in from the left edge to open the
   // navigation drawer; swipe left while it's open to close it. Vertical
@@ -1199,6 +1204,23 @@ export default function App() {
             </nav>
 
             <div className="shrink-0 border-t border-current/10 pt-2">
+              {/*
+                The glance sits above the stop control because it answers
+                "what is happening" and the stop answers "make it stop" — you
+                read before you act. Both live in the shell so neither is
+                unmounted by navigation.
+              */}
+              <Glance
+                blockingCount={glance.blockingCount}
+                activity={glance.activity}
+                toolName={glance.toolName}
+                problems={glance.problems}
+                collapsed={isDesktopCollapsed}
+                onOpenStream={() => {
+                  closeMobile();
+                  navigate("/review");
+                }}
+              />
               <GlobalStopControl collapsed={isDesktopCollapsed} />
             </div>
 
