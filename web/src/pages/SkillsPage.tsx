@@ -172,6 +172,8 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
+    // Reload only when the selected profile changes; toast/api are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProfile]);
 
   /* ---- Toggle skill ---- */
@@ -786,7 +788,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
       onClick={onClick}
       className={cn(
         "rounded-none whitespace-nowrap px-2.5 py-1.5",
-        "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
+        "font-mondwest text-xs tracking-[0.08em] uppercase",
         active && "bg-foreground/90 text-background hover:text-background",
       )}
     >
@@ -1298,7 +1300,7 @@ function HubResultCard({
             {result.tags.slice(0, 5).map((tag) => (
               <span
                 key={tag}
-                className="text-[0.65rem] font-mono text-text-tertiary border border-border px-1 py-px"
+                className="text-xs font-mono text-text-tertiary border border-border px-1 py-px"
               >
                 {tag}
               </span>
@@ -1359,6 +1361,8 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
+    // Standard load-flag before an async preview fetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
@@ -1484,7 +1488,7 @@ function SkillDetailDialog({
                     {preview.tags.map((tag) => (
                       <span
                         key={tag}
-                        className="text-[0.65rem] font-mono text-text-tertiary border border-border px-1 py-px"
+                        className="text-xs font-mono text-text-tertiary border border-border px-1 py-px"
                       >
                         {tag}
                       </span>

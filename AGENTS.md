@@ -848,6 +848,28 @@ plug into `agent/context_engine.py`; image-gen providers into
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo, not in this tree.
 
+### Dashboard surfaces — build them as modules, not core edits
+
+Adding a UI surface to the dashboard has a required decision, documented in
+`docs/dashboard-modules.md` (read it before touching `web/src/App.tsx`):
+
+1. **Capability module** — a JSON manifest under
+   `hermes_cli/capabilities/definitions/` (or a plugin's `dashboard/capability.json`).
+   The host renders the board/table/form and generates the agent tools from the
+   same file. Default choice for any list/tracker/CRUD surface. No UI code.
+2. **Dashboard plugin** — custom interactive UI authored in TSX and compiled to a
+   removable IIFE by `web/scripts/build-dashboard-plugin.mjs`
+   (`npm run build:plugin -- <plugin-dir>`). Imports come from the virtual
+   `imperator` module (host-provided React/DS/API — never re-bundled). Template:
+   `web/plugin-sdk/example/`.
+3. **Native page** (`web/src/pages/` + `BUILTIN_MODULES`) — legacy. Media and Jobs
+   are here for historical reasons; do not add new ones. If a plugin can't express
+   it, that's a gap in the plugin SDK to fix, not a reason to grow the core.
+
+Same narrow-waist rule as tools: a new surface should touch **its own directory**,
+with nav/routing/tools derived from its declaration. If the change spiders across
+the shell, it's the wrong module kind.
+
 ---
 
 ## Skills

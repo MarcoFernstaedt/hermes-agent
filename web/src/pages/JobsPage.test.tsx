@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { commitJobStatus, type JobRole, type JobsSummary } from "@/lib/jobs";
+import { commitJobStatus, type JobRole, type JobsFilters, type JobsSummary } from "@/lib/jobs";
+import { auditA11y } from "@/lib/a11y-audit";
 import { JobsView } from "./JobsPage";
 
 const summary: JobsSummary = {
@@ -189,6 +190,9 @@ describe("JobsView", () => {
     expect(html).toContain("$25/hour");
     expect(html).toContain("Fit 92");
     expect(html).toContain("Active");
+    // Accessibility regression gate: the real Jobs surface must have no
+    // interactive element without an accessible name and no image without alt.
+    expect(auditA11y(html)).toEqual([]);
     expect(html).toContain("Open apply page");
     expect(html).toContain("Open source");
     expect(html).toContain("Open Application Packet.md");
@@ -248,5 +252,45 @@ describe("JobsView", () => {
     expect(html).toMatch(
       /aria-label="Status for Support Engineer at Example Co"[^>]*disabled=""/,
     );
+  });
+});
+
+describe("density", () => {
+  const noFilters: JobsFilters = { status: "", lane: "", freshness: "", query: "" };
+
+  function ready(filters = noFilters) {
+    return renderToStaticMarkup(
+      <JobsView state="ready" summary={summary} roles={[role]} filters={filters} {...handlers} />,
+    );
+  }
+
+  it("opens on work, not on statistics", () => {
+    // Recon: "Today, nine counters, two quota bars, filters, and full cards
+    // before the user acts." The counters and the filter grid now sit behind
+    // disclosures, so a job card is reachable without scrolling past them.
+    const html = ready();
+    const firstCard = html.indexOf(role.role_title);
+    const counters = html.indexOf("Pending response");
+    expect(firstCard).toBeGreaterThan(-1);
+    expect(counters).toBeGreaterThan(-1);
+    // The counters still exist — they are just no longer in front of the work.
+    expect(html).toContain("<details");
+  });
+
+  it("promotes the one number that matters into the collapsed summary", () => {
+    expect(ready()).toContain("ready to send");
+  });
+
+  it("shows how many filters are hiding rows while collapsed", () => {
+    const html = ready({ ...noFilters, status: "applied", query: "acme" });
+    expect(html).toContain("2 active");
+  });
+
+  it("says nothing about active filters when none are set", () => {
+    expect(ready()).not.toContain("active</span>");
+  });
+
+  it("stays accessible with the disclosures in place", () => {
+    expect(auditA11y(ready())).toEqual([]);
   });
 });

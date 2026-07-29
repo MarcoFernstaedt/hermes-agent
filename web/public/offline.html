@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Imperator — Offline</title>
+    <meta name="theme-color" content="#0f0b1e" />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        display: flex;
+        min-height: 100dvh;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.25rem;
+        padding: 2rem;
+        background: #0f0b1e;
+        color: #e7e3f4;
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        text-align: center;
+      }
+      .badge {
+        display: grid;
+        place-items: center;
+        width: 4rem;
+        height: 4rem;
+        border-radius: 1rem;
+        background: rgba(124, 92, 255, 0.14);
+        border: 1px solid rgba(124, 92, 255, 0.35);
+      }
+      h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.01em; }
+      p { margin: 0; max-width: 30rem; color: #a9a2c6; }
+      button {
+        margin-top: 0.5rem;
+        padding: 0.65rem 1.25rem;
+        border-radius: 0.6rem;
+        border: 1px solid rgba(124, 92, 255, 0.45);
+        background: rgba(124, 92, 255, 0.16);
+        color: #efeafd;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover { background: rgba(124, 92, 255, 0.28); }
+      button:focus-visible { outline: 2px solid #7c5cff; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <div class="badge" aria-hidden="true">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#c4b6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a10 10 0 0 1 10 10" />
+        <path d="M12 6a6 6 0 0 1 6 6" />
+        <line x1="2" y1="2" x2="22" y2="22" />
+      </svg>
+    </div>
+    <h1>You're offline</h1>
+    <p role="status">
+      Imperator needs a live connection to its local server. Reconnect and the
+      dashboard will pick up right where you left off.
+    </p>
+    <button type="button" onclick="location.reload()">Try again</button>
+    <script>
+      // Auto-recover: the moment the browser reports connectivity, reload so
+      // the real (network-only) app document loads.
+      window.addEventListener("online", function () {
+        location.reload();
+      });
+    </script>
+  </body>
+</html>

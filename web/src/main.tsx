@@ -23,3 +23,19 @@ createRoot(document.getElementById("root")!).render(
     </I18nProvider>
   </BrowserRouter>,
 );
+
+// Register the offline-shell service worker (production builds only; the dev
+// server has no /sw.js and a SW would shadow HMR). The worker caches only
+// secret-free static assets and serves a token-free offline page — it never
+// caches the API or the token-injected app document. See public/sw.js.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    const base = HERMES_BASE_PATH || "";
+    navigator.serviceWorker
+      .register(`${base}/sw.js`, { scope: `${base}/` })
+      .catch(() => {
+        /* SW is a progressive enhancement — ignore registration failures
+           (insecure context on a bare-IP LAN host, private mode, etc.). */
+      });
+  });
+}

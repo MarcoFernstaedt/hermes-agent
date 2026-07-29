@@ -850,7 +850,6 @@ export default function SessionsPage() {
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
   const pageRef = useRef(page);
-
   useEffect(() => {
     pageRef.current = page;
   }, [page]);
@@ -930,6 +929,9 @@ export default function SessionsPage() {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
+    // Debounced search: clear results when the box empties, otherwise flag
+    // "searching" before the 300ms-deferred query fires.
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!search.trim()) {
       debounceRef.current = setTimeout(() => {
         setSearchResults(null);
@@ -938,8 +940,9 @@ export default function SessionsPage() {
       return;
     }
 
+    setSearching(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
     debounceRef.current = setTimeout(() => {
-      setSearching(true);
       api
         .searchSessions(search.trim())
         .then((resp) => setSearchResults(resp.results))
@@ -1223,6 +1226,10 @@ export default function SessionsPage() {
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
 
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- force list view whenever a search is active.
+    if (isSearching) setView("list");
+  }, [isSearching]);
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
     if (status.gateway_state === "startup_failed") {

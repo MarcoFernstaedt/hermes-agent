@@ -3140,6 +3140,119 @@ def login_spotify_command(args) -> None:
     print("  Provider state saved under providers.spotify")
     print(f"  Docs: {SPOTIFY_DOCS_URL}")
 
+
+# =============================================================================
+# Dashboard-driven Spotify re-auth (in-interface fallback)
+# =============================================================================
+#
+# Wraps the same PKCE flow as ``hermes auth spotify`` so the dashboard can offer
+# an in-interface "Reconnect Spotify" instead of a dead-end that tells the user
+# to run a server command. Single-user desktop app -> one pending session
+# tracked at module scope. The callback listener is the SAME loopback one the
+# CLI uses, so this completes where the browser can reach the dashboard host's
+# loopback (the desktop target); remote binds fall back to the documented CLI
+# path (surfaced to the UI via the redirect_uri + docs_url).
+
+_SPOTIFY_REAUTH_LOCK = threading.Lock()
+_SPOTIFY_REAUTH_STATE: Dict[str, Any] = {"status": "idle", "detail": ""}
+
+
+def _set_spotify_reauth(status: str, detail: str = "") -> None:
+    with _SPOTIFY_REAUTH_LOCK:
+        _SPOTIFY_REAUTH_STATE["status"] = status
+        _SPOTIFY_REAUTH_STATE["detail"] = detail
+
+
+def spotify_dashboard_reauth_status() -> Dict[str, Any]:
+    """Current state of an in-dashboard re-auth: idle|pending|connected|error."""
+    with _SPOTIFY_REAUTH_LOCK:
+        return dict(_SPOTIFY_REAUTH_STATE)
+
+
+def begin_spotify_dashboard_reauth(*, timeout_seconds: float = 300.0) -> Dict[str, Any]:
+    """Start an in-dashboard Spotify PKCE re-auth.
+
+    Returns ``{configured: False, needs_client_id: True, ...}`` when no client id
+    is set (so the UI can guide setup), otherwise ``{configured: True, auth_url,
+    redirect_uri, docs_url}`` and arms a background thread that waits for the
+    loopback callback, exchanges the code, and persists the token. Poll
+    :func:`spotify_dashboard_reauth_status` for completion.
+    """
+    existing = get_provider_auth_state("spotify") or {}
+    try:
+        client_id = _spotify_client_id(None, existing)
+    except AuthError as exc:
+        if getattr(exc, "code", "") == "spotify_client_id_missing":
+            return {
+                "configured": False,
+                "needs_client_id": True,
+                "docs_url": SPOTIFY_DOCS_URL,
+                "dashboard_url": SPOTIFY_DASHBOARD_URL,
+            }
+        raise
+
+    redirect_uri = _spotify_redirect_uri(None, existing)
+    scope = _spotify_scope_string(existing.get("scope"))
+    accounts_base_url = _spotify_accounts_base_url(existing)
+    api_base_url = _spotify_api_base_url(existing)
+    code_verifier = _spotify_code_verifier()
+    code_challenge = _spotify_code_challenge(code_verifier)
+    state_nonce = uuid.uuid4().hex
+    authorize_url = _spotify_build_authorize_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        state=state_nonce,
+        code_challenge=code_challenge,
+        accounts_base_url=accounts_base_url,
+    )
+    _set_spotify_reauth("pending", "")
+
+    def _worker() -> None:
+        try:
+            callback = _spotify_wait_for_callback(redirect_uri, timeout_seconds=timeout_seconds)
+            if callback.get("error"):
+                _set_spotify_reauth(
+                    "error", str(callback.get("error_description") or callback.get("error"))
+                )
+                return
+            if callback.get("state") != state_nonce:
+                _set_spotify_reauth("error", "state mismatch")
+                return
+            token_payload = _spotify_exchange_code_for_tokens(
+                client_id=client_id,
+                code=str(callback.get("code") or ""),
+                redirect_uri=redirect_uri,
+                code_verifier=code_verifier,
+                accounts_base_url=accounts_base_url,
+            )
+            spotify_state = _spotify_token_payload_to_state(
+                token_payload,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                requested_scope=scope,
+                accounts_base_url=accounts_base_url,
+                api_base_url=api_base_url,
+            )
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                _store_provider_state(auth_store, "spotify", spotify_state, set_active=False)
+                _save_auth_store(auth_store)
+            _set_spotify_reauth("connected", "")
+        except Exception as exc:  # pragma: no cover - live network round-trip
+            _set_spotify_reauth("error", str(exc))
+
+    threading.Thread(
+        target=_worker, name="spotify-dashboard-reauth", daemon=True
+    ).start()
+    return {
+        "configured": True,
+        "auth_url": authorize_url,
+        "redirect_uri": redirect_uri,
+        "docs_url": SPOTIFY_DOCS_URL,
+    }
+
+
 # =============================================================================
 # SSH / remote session detection
 # =============================================================================

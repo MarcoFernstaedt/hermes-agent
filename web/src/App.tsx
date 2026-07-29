@@ -24,32 +24,41 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  CalendarDays,
+  CalendarPlus,
   Brain,
   BriefcaseBusiness,
   Clock,
   Code,
+  FilePlus,
   Cpu,
   Database,
   Download,
   Eye,
   FolderOpen,
   FileText,
+  Compass,
   GitBranch,
   Globe,
   Heart,
   KeyRound,
+  Inbox,
+  Mail,
   Menu,
   MessageSquare,
+  NotebookText,
   Music,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  PenSquare,
   Plug,
   Puzzle,
   Radio,
   RotateCw,
   Search,
   Settings,
+  Share2,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -69,15 +78,19 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { emitIntent } from "@/lib/app-intent";
 import {
   CommandPalette,
   type CommandPaletteItem,
 } from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { GlobalStopControl } from "@/components/GlobalStopControl";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
+import { NavBadgesProvider } from "@/contexts/NavBadges";
+import { useNavBadge } from "@/contexts/nav-badges-context";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -97,6 +110,9 @@ const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
+const NowPage = lazy(() => import("@/pages/NowPage"));
+const ReviewPage = lazy(() => import("@/pages/ReviewPage"));
+const CapabilityBuilderPage = lazy(() => import("@/pages/CapabilityBuilderPage"));
 const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
@@ -115,6 +131,25 @@ const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 import ChatPage from "@/pages/ChatPage";
 const MediaPage = lazy(() => import("@/features/media/MediaPage"));
+const EmailPage = lazy(() => import("@/features/email/EmailPage"));
+const CalendarPage = lazy(() => import("@/features/calendar/CalendarPage"));
+const VaultPage = lazy(() => import("@/features/vault/VaultPage"));
+const BlocksGalleryPage = lazy(() => import("@/pages/BlocksGalleryPage"));
+const SearchPage = lazy(() => import("@/pages/SearchPage"));
+const GraphPage = lazy(() => import("@/pages/GraphPage"));
+const CapabilityArea = lazy(() =>
+  import("@/capabilities/CapabilityArea").then((m) => ({ default: m.CapabilityArea })),
+);
+import { capabilityPath } from "@/capabilities/registry";
+import { useCapabilities } from "@/capabilities/useCapabilities";
+import type { Capability } from "@/capabilities/types";
+import {
+  deriveBuiltinNav,
+  deriveBuiltinRoutes,
+  deriveSettingsOnlyNav,
+  deriveSettingsOnlyPaths,
+  type BuiltinModule,
+} from "@/shell/builtin-modules";
 import { MediaProvider } from "@/features/media/MediaProvider";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
@@ -122,6 +157,12 @@ import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import {
+  getAppSettings,
+  hydrateAppSettings,
+  setAppSetting,
+  useAppSettings,
+} from "@/lib/app-settings";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -129,9 +170,18 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
-function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
-  if (pluginsLoading) {
-    // Render nothing during the plugin-load window — a spinner here would just flash.
+function UnknownRouteFallback({
+  pluginsLoading,
+  capabilitiesLoading,
+}: {
+  pluginsLoading: boolean;
+  capabilitiesLoading: boolean;
+}) {
+  // Both plugin tabs and capability routes (/c/<id>) arrive asynchronously.
+  // Redirecting before either resolves would bounce a deep-link to a real
+  // capability/plugin route off to /sessions, so hold until both settle.
+  if (pluginsLoading || capabilitiesLoading) {
+    // Render nothing during the load window — a spinner here would just flash.
     return null;
   }
   return <Navigate to="/sessions" replace />;
@@ -153,33 +203,68 @@ const CHAT_NAV_ITEM: NavItem = {
  * Routing still owns the URL so /chat deep-links, browser back/forward,
  * and nav highlight keep working.
  */
-const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
-  "/sessions": SessionsPage,
-  "/media": MediaPage,
-  "/jobs": JobsPage,
-  "/progress": ProgressPage,
-  "/files": FilesPage,
-  "/git": GitPage,
-  "/learning": LearningPage,
-  "/analytics": AnalyticsPage,
-  "/models": ModelsPage,
-  "/logs": LogsPage,
-  "/cron": CronPage,
-  "/skills": SkillsPage,
-  "/plugins": PluginsPage,
-  "/mcp": McpPage,
-  "/pairing": PairingPage,
-  "/channels": ChannelsPage,
-  "/webhooks": WebhooksPage,
-  "/system": SystemPage,
-  "/settings": SettingsPage,
-  "/profiles": ProfilesPage,
-  "/profiles/new": ProfileBuilderPage,
-  "/config": ConfigPage,
-  "/env": EnvPage,
-  "/docs": DocsPage,
-};
+// The built-in module manifest — each module authored once (route + optional
+// nav) and projected into the route map, primary nav, and settings-only set by
+// the pure derivations in @/shell/builtin-modules. /chat is deliberately absent:
+// it's rendered persistently and wired separately (CHAT_NAV_ITEM + the dynamic
+// ChatRouteSink below). Nav modules appear here in the exact sidebar order.
+const BUILTIN_MODULES: BuiltinModule[] = [
+  { path: "/", component: RootRedirect }, // route-only (redirect)
+  // Now leads the sidebar: it is the answer to "what needs me?", assembled
+  // from the same volatile-context payload the agent pulls.
+  { path: "/now", component: NowPage, nav: { label: "Now", icon: Compass } },
+  { path: "/search", component: SearchPage, nav: { label: "Search", icon: Search } },
+  { path: "/graph", component: GraphPage, nav: { label: "Graph", icon: Share2 } },
+  { path: "/sessions", component: SessionsPage, nav: { label: "Sessions", labelKey: "sessions", icon: MessageSquare } },
+  { path: "/review", component: ReviewPage, nav: { label: "Review", icon: Inbox } },
+  { path: "/media", component: MediaPage, nav: { label: "Media", icon: Music } },
+  { path: "/email", component: EmailPage, nav: { label: "Email", icon: Mail } },
+  { path: "/calendar", component: CalendarPage, nav: { label: "Calendar", icon: CalendarDays } },
+  { path: "/vault", component: VaultPage, nav: { label: "Vault", icon: NotebookText } },
+  { path: "/jobs", component: JobsPage, nav: { label: "Jobs", icon: BriefcaseBusiness } },
+  { path: "/progress", component: ProgressPage, nav: { label: "Progress", icon: Activity } },
+  { path: "/files", component: FilesPage, nav: { label: "Files", icon: FolderOpen } },
+  { path: "/git", component: GitPage, nav: { label: "Git", icon: GitBranch } },
+  { path: "/analytics", component: AnalyticsPage, nav: { label: "Analytics", labelKey: "analytics", icon: BarChart3 } },
+  { path: "/logs", component: LogsPage, nav: { label: "Logs", labelKey: "logs", icon: FileText } },
+  { path: "/cron", component: CronPage, nav: { label: "Cron", labelKey: "cron", icon: Clock } },
+  { path: "/skills", component: SkillsPage, nav: { label: "Skills", labelKey: "skills", icon: Package } },
+  { path: "/learning", component: LearningPage, nav: { label: "Learning", icon: Brain } },
+  { path: "/plugins", component: PluginsPage, nav: { label: "Plugins", labelKey: "plugins", icon: Puzzle } },
+  { path: "/mcp", component: McpPage, nav: { label: "MCP", icon: Plug } },
+  { path: "/channels", component: ChannelsPage, nav: { label: "Channels", icon: Radio } },
+  { path: "/webhooks", component: WebhooksPage, nav: { label: "Webhooks", icon: Webhook } },
+  { path: "/pairing", component: PairingPage, nav: { label: "Pairing", icon: ShieldCheck } },
+  { path: "/profiles", component: ProfilesPage, nav: { label: "Profiles", labelKey: "profiles", icon: Users } },
+  { path: "/config", component: ConfigPage, nav: { label: "Config", labelKey: "config", icon: Settings } },
+  { path: "/env", component: EnvPage, nav: { label: "Keys", labelKey: "keys", icon: KeyRound } },
+  { path: "/settings", component: SettingsPage, nav: { label: "Settings", icon: SlidersHorizontal } },
+  // Route-only (no sidebar entry).
+  { path: "/profiles/new", component: ProfileBuilderPage },
+  { path: "/capabilities/new", component: CapabilityBuilderPage },
+  { path: "/blocks", component: BlocksGalleryPage },
+  // Settings-only: Settings hub + command palette, never the sidebar. The
+  // /achievements page is provided by a plugin, so it has no component here.
+  { path: "/models", component: ModelsPage, nav: { label: "Models", labelKey: "models", icon: Cpu, settingsOnly: true } },
+  { path: "/system", component: SystemPage, nav: { label: "System", icon: Wrench, settingsOnly: true } },
+  { path: "/docs", component: DocsPage, nav: { label: "Documentation", labelKey: "documentation", icon: BookOpen, settingsOnly: true } },
+  { path: "/achievements", nav: { label: "Achievements", icon: Trophy, settingsOnly: true } },
+];
+
+const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = deriveBuiltinRoutes(BUILTIN_MODULES);
+
+// Declared capabilities render as routes + nav entries derived entirely from
+// the server-served declarations — the "declare, don't hand-wire" payoff of the
+// Capability API. The set is fetched at runtime (useCapabilities), so these are
+// built inside the component from that async result rather than at module load.
+function capabilityRoutes(caps: Capability[]): Record<string, ComponentType> {
+  return Object.fromEntries(
+    caps.map((cap) => [
+      capabilityPath(cap),
+      () => <CapabilityArea capability={cap} />,
+    ]),
+  );
+}
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
 // outside <Routes> when embedded chat is on) paints on top; this empty
@@ -189,38 +274,9 @@ function ChatRouteSink() {
   return null;
 }
 
-const BUILTIN_NAV_REST: NavItem[] = [
-  {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
-  },
-  { path: "/media", label: "Media", icon: Music },
-  { path: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
-  { path: "/progress", label: "Progress", icon: Activity },
-  { path: "/files", label: "Files", icon: FolderOpen },
-  { path: "/git", label: "Git", icon: GitBranch },
-  {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
-  },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/learning", label: "Learning", icon: Brain },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/settings", label: "Settings", icon: SlidersHorizontal },
-];
+// Primary sidebar nav, derived from the manifest above (nav modules that aren't
+// settings-only, in declaration order).
+const BUILTIN_NAV_REST: NavItem[] = deriveBuiltinNav(BUILTIN_MODULES);
 
 /**
  * Routes that are reachable only through the Settings hub, never as their
@@ -229,19 +285,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
  * each — this set just keeps them out of the primary navigation so Settings
  * is the single home for models, system, docs, and achievements.
  */
-const SETTINGS_ONLY_PATHS = new Set(["/models", "/system", "/docs", "/achievements"]);
+const SETTINGS_ONLY_PATHS = deriveSettingsOnlyPaths(BUILTIN_MODULES);
 
 /**
  * The settings-only destinations, re-exposed in the command palette so
  * power users can still jump straight to them (Cmd/Ctrl+K) even though they
  * no longer occupy a sidebar slot. Kept in sync with SETTINGS_ONLY_PATHS.
  */
-const SETTINGS_ONLY_NAV: NavItem[] = [
-  { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
-  { path: "/system", label: "System", icon: Wrench },
-  { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
-  { path: "/achievements", label: "Achievements", icon: Trophy },
-];
+const SETTINGS_ONLY_NAV: NavItem[] = deriveSettingsOnlyNav(BUILTIN_MODULES);
 
 /**
  * Sidebar groupings for the built-in nav. Purely presentational — routing,
@@ -262,7 +313,7 @@ const NAV_SECTIONS: Array<{
     id: "operate",
     labelKey: "operate",
     label: "Operate",
-    paths: ["/sessions", "/media", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
+    paths: ["/sessions", "/media", "/email", "/calendar", "/vault", "/jobs", "/progress", "/files", "/git", "/analytics", "/logs"],
   },
   {
     id: "automate",
@@ -446,13 +497,12 @@ function buildRoutes(
   return routes;
 }
 
-const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
-
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
+  const { capabilities, loading: capabilitiesLoading } = useCapabilities();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -572,22 +622,27 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      } catch { /* localStorage may be unavailable in private browsing */ }
-      return next;
-    });
+  // Settings are server-persisted (survive reload / new browser / device);
+  // hydrate once on mount, then apply the ones with a visual effect.
+  const appSettings = useAppSettings();
+  useEffect(() => {
+    void hydrateAppSettings();
   }, []);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--theme-spacing-mul",
+      appSettings.density === "compact" ? "0.9" : "1",
+    );
+    root.dataset.density = appSettings.density;
+    if (appSettings.motion === "reduced") root.dataset.motion = "reduced";
+    else delete root.dataset.motion;
+  }, [appSettings.density, appSettings.motion]);
+
+  const collapsed = appSettings.sidebarCollapsed;
+  const toggleCollapsed = useCallback(() => {
+    setAppSetting("sidebarCollapsed", !collapsed);
+  }, [collapsed]);
   const isMobile = useBelowBreakpoint(1024);
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
@@ -639,19 +694,25 @@ export default function App() {
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
+      ...capabilityRoutes(capabilities),
       ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
-    [embeddedChat],
+    [embeddedChat, capabilities],
   );
 
   const builtinNav = useMemo(() => {
+    const capabilityNav: NavItem[] = capabilities.map((cap) => ({
+      path: capabilityPath(cap),
+      label: cap.label,
+      icon: cap.icon ?? Package,
+    }));
     const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
+      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST, ...capabilityNav]
+      : [...BUILTIN_NAV_REST, ...capabilityNav];
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+  }, [embeddedChat, showTokenAnalytics, capabilities]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
@@ -701,6 +762,180 @@ export default function App() {
       },
     });
     const settingsHint = t.app.navSections?.settings ?? "Settings";
+
+    // Action commands — the palette isn't only a page jumper; the row and
+    // settings actions that otherwise need a mouse are reachable here too, so
+    // a keyboard/screen-reader user can drive the whole app from ⌘K. Labels
+    // reflect the current state so the outcome is unambiguous before running.
+    const actionHint = "Action";
+    const s = appSettings;
+    const actionItems: CommandPaletteItem[] = [
+      {
+        id: "action:new-chat",
+        label: "Start new chat",
+        hint: actionHint,
+        keywords: "new chat conversation session fresh compose",
+        icon: MessageSquare,
+        run: () => {
+          navigate("/chat");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:compose-email",
+        label: "Compose email",
+        hint: actionHint,
+        keywords: "email compose write new message send mail gmail",
+        icon: PenSquare,
+        run: () => {
+          navigate("/email");
+          closeMobile();
+          emitIntent("email:compose");
+        },
+      },
+      {
+        id: "action:new-event",
+        label: "New calendar event",
+        hint: actionHint,
+        keywords: "calendar event new meeting appointment schedule create",
+        icon: CalendarPlus,
+        run: () => {
+          navigate("/calendar");
+          closeMobile();
+          emitIntent("calendar:new-event");
+        },
+      },
+      {
+        id: "action:new-note",
+        label: "New note",
+        hint: actionHint,
+        keywords: "vault note new markdown obsidian write create",
+        icon: FilePlus,
+        run: () => {
+          navigate("/vault");
+          closeMobile();
+          emitIntent("vault:new-note");
+        },
+      },
+      {
+        id: "action:search-records",
+        label: "Search all records",
+        hint: actionHint,
+        keywords: "search records find reading tasks contacts entities everything full text",
+        icon: Search,
+        run: () => {
+          navigate("/search");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:relationships-graph",
+        label: "Open relationships graph",
+        hint: actionHint,
+        keywords: "graph relationships links connections network map entities",
+        icon: Share2,
+        run: () => {
+          navigate("/graph");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:search-vault",
+        label: "Search vault",
+        hint: actionHint,
+        keywords: "vault search notes find markdown obsidian",
+        icon: Search,
+        run: () => {
+          navigate("/vault");
+          closeMobile();
+          emitIntent("vault:search");
+        },
+      },
+      {
+        id: "action:blocks-gallery",
+        label: "Open blocks gallery",
+        hint: actionHint,
+        keywords: "blocks gallery datatable components ui catalogue intelligence hub",
+        icon: Package,
+        run: () => {
+          navigate("/blocks");
+          closeMobile();
+        },
+      },
+      {
+        id: "action:toggle-density",
+        label: s.density === "compact" ? "Use comfortable density" : "Use compact density",
+        hint: actionHint,
+        keywords: "density compact comfortable spacing layout",
+        icon: SlidersHorizontal,
+        run: () =>
+          setAppSetting(
+            "density",
+            getAppSettings().density === "compact" ? "comfortable" : "compact",
+          ),
+      },
+      {
+        id: "action:toggle-motion",
+        label: s.motion === "reduced" ? "Allow motion and animations" : "Reduce motion",
+        hint: actionHint,
+        keywords: "motion animation reduce accessibility",
+        icon: Zap,
+        run: () =>
+          setAppSetting(
+            "motion",
+            getAppSettings().motion === "reduced" ? "full" : "reduced",
+          ),
+      },
+      {
+        id: "action:toggle-notifications",
+        label: s.notificationsEnabled ? "Disable reply notifications" : "Enable reply notifications",
+        hint: actionHint,
+        keywords: "notifications browser push replies alerts",
+        icon: Radio,
+        run: () => setAppSetting("notificationsEnabled", !getAppSettings().notificationsEnabled),
+      },
+      {
+        id: "action:toggle-tool-activity",
+        label: s.showToolCalls ? "Hide tool activity in chat" : "Show tool activity in chat",
+        hint: actionHint,
+        keywords: "tool calls activity system rows chat feed",
+        icon: Wrench,
+        run: () => setAppSetting("showToolCalls", !getAppSettings().showToolCalls),
+      },
+      {
+        id: "action:toggle-timestamps",
+        label: s.showTimestamps ? "Hide message timestamps" : "Show message timestamps",
+        hint: actionHint,
+        keywords: "timestamps time chat feed",
+        icon: Clock,
+        run: () => setAppSetting("showTimestamps", !getAppSettings().showTimestamps),
+      },
+      {
+        id: "action:toggle-token-cost",
+        label: s.showTokenCost ? "Hide token and cost readouts" : "Show token and cost readouts",
+        hint: actionHint,
+        keywords: "token cost usage readout",
+        icon: SlidersHorizontal,
+        run: () => setAppSetting("showTokenCost", !getAppSettings().showTokenCost),
+      },
+      {
+        id: "action:toggle-sound",
+        label: s.sound ? "Mute reply sound cue" : "Play a sound on reply",
+        hint: actionHint,
+        keywords: "sound audio cue chime reply",
+        icon: Music,
+        run: () => setAppSetting("sound", !getAppSettings().sound),
+      },
+      {
+        id: "action:toggle-sidebar",
+        label: s.sidebarCollapsed ? "Expand the sidebar" : "Collapse the sidebar",
+        hint: actionHint,
+        keywords: "sidebar collapse expand rail navigation",
+        icon: s.sidebarCollapsed ? PanelLeftOpen : PanelLeftClose,
+        run: () => setAppSetting("sidebarCollapsed", !getAppSettings().sidebarCollapsed),
+      },
+    ];
+
     return [
       ...sidebarNav.coreItems.map((item) =>
         toItem(item, item.path === "/chat" ? undefined : sectionOf(item.path)),
@@ -711,8 +946,9 @@ export default function App() {
       // Settings-only pages keep a palette entry even though they're no
       // longer in the sidebar.
       ...SETTINGS_ONLY_NAV.map((item) => toItem(item, settingsHint)),
+      ...actionItems,
     ];
-  }, [sidebarNav, t, navigate, closeMobile]);
+  }, [sidebarNav, t, navigate, closeMobile, appSettings]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -740,6 +976,7 @@ export default function App() {
   return (
     <ProfileProvider>
     <MediaProvider>
+    <NavBadgesProvider>
     <div
       data-layout-variant="standard"
       className="imperator-canvas flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -961,6 +1198,10 @@ export default function App() {
               )}
             </nav>
 
+            <div className="shrink-0 border-t border-current/10 pt-2">
+              <GlobalStopControl collapsed={isDesktopCollapsed} />
+            </div>
+
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}
               onNavigate={closeMobile}
@@ -1055,7 +1296,10 @@ export default function App() {
                       <Route
                         path="*"
                         element={
-                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                          <UnknownRouteFallback
+                            pluginsLoading={pluginsLoading}
+                            capabilitiesLoading={capabilitiesLoading}
+                          />
                         }
                       />
                     </Routes>
@@ -1106,6 +1350,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </NavBadgesProvider>
     </MediaProvider>
     </ProfileProvider>
   );
@@ -1323,6 +1568,36 @@ function GroupedCoreNav({
   );
 }
 
+/**
+ * A live count on a nav entry (unread email, events today). Expanded: a small
+ * gold pill after the label. Collapsed rail: a dot on the icon corner. The
+ * count is always announced to screen readers regardless of presentation.
+ */
+function NavBadge({ count, collapsed }: { count: number; collapsed: boolean }) {
+  if (count <= 0) return null;
+  return (
+    <>
+      <span className="sr-only">{count} new</span>
+      {collapsed ? (
+        <span
+          aria-hidden
+          className="absolute right-3.5 top-2 size-1.5 rounded-full bg-midground lg:block hidden"
+        />
+      ) : null}
+      <span
+        aria-hidden
+        className={cn(
+          "ml-auto shrink-0 rounded-full bg-midground/15 px-1.5 py-0.5",
+          "text-xs font-semibold leading-none text-midground tabular-nums",
+          collapsed && "lg:hidden",
+        )}
+      >
+        {count > 99 ? "99+" : count}
+      </span>
+    </>
+  );
+}
+
 function SidebarNavLink({
   closeMobile,
   collapsed,
@@ -1331,6 +1606,7 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const badge = useNavBadge(path);
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
@@ -1383,6 +1659,8 @@ function SidebarNavLink({
             >
               {navLabel}
             </span>
+
+            <NavBadge count={badge} collapsed={collapsed} />
 
             <span
               aria-hidden

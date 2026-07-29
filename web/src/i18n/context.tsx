@@ -45,6 +45,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 // countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
 // any single jurisdiction). Endonyms are unambiguous and avoid the political
 // mismapping that flag pairings inevitably create.
+// eslint-disable-next-line react-refresh/only-export-components -- locale metadata table lives with the i18n provider it describes.
 export const LOCALE_META: Record<Locale, { name: string }> = {
   en: { name: "English" },
   zh: { name: "简体中文" },
@@ -118,6 +119,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- context hook paired with its provider in this file.
 export function useI18n() {
   return useContext(I18nContext);
 }

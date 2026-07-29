@@ -180,3 +180,60 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_stats_reports_retained_and_capacity():
+    """The registry must be able to say how full it is.
+
+    The on-machine report could only diagnose worker exhaustion by counting OS
+    processes — the app knew and did not say. Retained (detached but alive)
+    sessions are what fill the cap.
+    """
+    reg = make_registry(max_sessions=2)
+    s1, _ = await reg.attach_or_spawn("a", spawn=lambda: FakeBridge([b"", b""]))
+    s2, _ = await reg.attach_or_spawn("b", spawn=lambda: FakeBridge([b"", b""]))
+
+    ws1, ws2 = FakeWS(), FakeWS()
+    await s1.attach(ws1)
+    await s2.attach(ws2)
+
+    stats = reg.stats()
+    assert stats["total"] == 2
+    assert stats["attached"] == 2
+    assert stats["retained"] == 0
+    assert stats["at_capacity"] is True
+    assert stats["max_sessions"] == 2
+
+    # Detaching moves a session into the retained pool — the number that matters.
+    s2.detach(ws2)
+    stats = reg.stats()
+    assert stats["attached"] == 1
+    assert stats["retained"] == 1
+
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_retained_never_disconnects_a_live_client():
+    """The cleanup control is safe by construction: it closes only detached
+    sessions, so it can never cut off someone currently chatting."""
+    reg = make_registry()
+    live, _ = await reg.attach_or_spawn("live", spawn=lambda: FakeBridge([b"", b""]))
+    idle1, _ = await reg.attach_or_spawn("idle1", spawn=lambda: FakeBridge([b"", b""]))
+    idle2, _ = await reg.attach_or_spawn("idle2", spawn=lambda: FakeBridge([b"", b""]))
+
+    live_ws = FakeWS()
+    await live.attach(live_ws)
+    for sess in (idle1, idle2):
+        w = FakeWS()
+        await sess.attach(w)
+        sess.detach(w)
+
+    closed = await reg.close_retained()
+    assert closed == 2
+    stats = reg.stats()
+    assert stats["total"] == 1
+    assert stats["attached"] == 1  # the live client survived
+
+    await reg.close_all()

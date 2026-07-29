@@ -15,6 +15,9 @@ export type ChatFeedStatus =
   | "streaming"
   | "running"
   | "waiting"
+  // Handed to the agent's own /queue while it was mid-run; it will start its
+  // own turn after the current one completes.
+  | "queued"
   | "error";
 
 export interface ChatFeedMessage {

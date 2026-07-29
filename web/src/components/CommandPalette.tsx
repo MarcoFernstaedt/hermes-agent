@@ -35,6 +35,7 @@ export interface CommandPaletteItem {
 }
 
 /** Pure ranking used by the palette (exported for tests). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper co-located with its sole consumer; exported for unit tests.
 export function rankPaletteItems(
   items: readonly CommandPaletteItem[],
   query: string,
@@ -67,6 +68,9 @@ export function CommandPalette({
   // Fresh query + selection every time the palette opens.
   useEffect(() => {
     if (!open) return;
+    // Intentional reset on the closed→open transition; the palette stays
+    // mounted (renders null when closed) so state must be cleared here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setQuery("");
     setSelected(0);
     const frame = requestAnimationFrame(() => inputRef.current?.focus());

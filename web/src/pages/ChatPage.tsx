@@ -38,12 +38,14 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
+import { ChatHeaderRename } from "@/components/ChatHeaderRename";
+import { ChatScopeControl } from "@/components/ChatScopeControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api, type SessionMessage } from "@/lib/api";
-import { latchChatActivation } from "@/lib/chat-activation";
+
 import {
   eventChannelForPtyAttach,
   isPtyOwnershipReady,
@@ -69,6 +71,7 @@ import {
   takeNextQueuedSend,
   type QueuedSend,
 } from "@/lib/chat-send-queue";
+import { clearDraft, getDraft, setDraft } from "@/lib/chat-drafts";
 import {
   planInitialWindow,
   planOlderPage,
@@ -241,10 +244,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
   // PTY alive across later tab switches (the persistence UX) — once true it
   // stays true.
-  const [hasActivated, setHasActivated] = useState(isActive);
-  useEffect(() => {
-    setHasActivated((prev) => latchChatActivation(prev, isActive));
-  }, [isActive]);
+
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -365,6 +365,47 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  // Chat is mounted persistently (so the conversation survives navigation), but
+  // the PTY must NOT be. Without this latch, merely visiting /jobs in a fresh
+  // browser context spawned a TUI child + slash worker; the on-machine report
+  // measured 16 Node and 15 Python workers and ~2.4 GB retained. We keep the
+  // warm-PTY benefit for people who use chat by latching on FIRST activation
+  // and never un-latching: navigate away and the PTY stays warm, but a session
+  // that never opens Chat never spawns one.
+  const [chatEverShown, setChatEverShown] = useState(false);
+  /**
+   * Set when the chat backend would have to build itself before a prompt could
+   * appear. Recon opened chat on a cold checkout and watched it hang on
+   * "Installing TUI dependencies…" for five minutes with no explanation; the
+   * server now refuses that connect, and this stops the client attempting it.
+   */
+  const [chatBlocked, setChatBlocked] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch on first activation.
+    if (isActive) setChatEverShown(true);
+  }, [isActive]);
+
+  useEffect(() => {
+    // Probe once, on the first activation that matters — paired with the
+    // latch above so a document that never opens Chat makes no request either.
+    if (!chatEverShown) return;
+    let alive = true;
+    void api
+      .getChatReadiness()
+      .then((status) => {
+        if (!alive || status.ready) return;
+        setChatBlocked(true);
+        setBanner(
+          [status.detail, status.remedy].filter(Boolean).join(" "),
+        );
+      })
+      // A probe that fails must not cost the owner chat: fall through and let
+      // the connect attempt speak for itself.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [chatEverShown]);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -461,7 +502,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd, setTitle } = usePageHeader();
+  const { setEnd, setTitle, setAfterTitle } = usePageHeader();
   /** True while chat's mobile panel button occupies the header end slot. */
   const headerEndOwnedRef = useRef(false);
   /** True while chat's session title occupies the header title slot. */
@@ -519,6 +560,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyAttachIdentity(rotateAlignedPtyAttachToken());
     resetFreshChatProjection();
   }, [ptyTargetKey, resetFreshChatProjection]);
+
+  // Composer draft: persist per session so an unsent message survives a
+  // reload, navigating away and back, or a rotation. The change handler
+  // writes through to localStorage keyed by the current session; the effect
+  // restores the right draft on mount and whenever the session switches.
+  const handleComposerChange = useCallback((value: string) => {
+    setComposer(value);
+    setDraft(ptyTargetKeyRef.current, value);
+  }, []);
+  useEffect(() => {
+    const draft = getDraft(ptyTargetKey);
+    queueMicrotask(() => setComposer(draft));
+  }, [ptyTargetKey]);
   // The PTY-side event publisher is fixed to the channel chosen when that
   // keep-alive process starts. Derive the subscriber from the same persistent
   // attach identity so reload/reattach cannot silently split the two streams.
@@ -538,6 +592,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+  // Latest-callback ref so the long-lived event socket can push live title
+  // updates (from the agent's auto-titler) without being torn down whenever
+  // the title scope changes.
+  const handleSessionTitleChangeRef = useRef(handleSessionTitleChange);
+  useEffect(() => {
+    handleSessionTitleChangeRef.current = handleSessionTitleChange;
+  }, [handleSessionTitleChange]);
 
   // ── Session-chain hydration ─────────────────────────────────────────
   // Resume runs continue under CHILD session ids (the store links them via
@@ -807,6 +868,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
         }
 
+        // The agent auto-titles a session in the background after its first
+        // reply (and can be asked to regenerate). It pushes the result as a
+        // session.title frame so the header/sidebar rename live, without a
+        // list refetch. Apply it and stop — this isn't a feed event.
+        if (event.type === "session.title") {
+          const nextTitle = event.payload?.title;
+          if (typeof nextTitle === "string") {
+            handleSessionTitleChangeRef.current(normalizeSessionTitle(nextTitle));
+          }
+          return;
+        }
+
         const feedEvent =
           event.type === "write_approval.request"
             ? {
@@ -976,6 +1049,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // Messages composed while the agent was mid-run, waiting to start their
   // own turn. Flushed one per run-completion by the effect below.
   const queuedSendsRef = useRef<QueuedSend[]>([]);
+  // Messages submitted while the socket was down but a reconnect is expected.
+  // Held (bubble stays "sending") and flushed by ws.onopen instead of dropped.
+  const pendingReconnectSendsRef = useRef<QueuedSend[]>([]);
 
   const markOptimisticFailed = useCallback((id: string) => {
     setFeedState((state) => ({
@@ -1005,11 +1081,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         ...state.messages,
         {
           ...createOptimisticUserMessage(text, id, now),
-          status: agentRunning && !isSlashCommand ? "waiting" : "sending",
+          status:
+            agentRunning && !isSlashCommand && !activeClarify ? "queued" : "sending",
         },
       ],
     }));
     setComposer("");
+    clearDraft(ptyTargetKeyRef.current);
 
     let sent = false;
     if (activeClarify && activeClarify.choices?.length) {
@@ -1028,18 +1106,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         answeringClarify: Boolean(activeClarify),
       })
     ) {
-      // Mid-run: hold the message locally (bubble shows "Waiting to send")
-      // and let the flush effect below deliver it when this run completes.
-      // Writing it to the PTY now would steer the active turn instead of
-      // starting a new one.
-      queuedSendsRef.current.push({ id, text });
-      sent = true;
+      // Mid-run: hand the message to the agent's own /queue so it queues
+      // server-side and starts its own turn after the current one, instead of
+      // steering the active turn or holding it in the browser. The bubble
+      // shows "Queued" until the agent goes idle.
+      sent = sendPtyText(`/queue ${text}`);
+      if (!sent && ptyStateRef.current !== "ended") {
+        // Socket down: replay the /queue command on reconnect.
+        pendingReconnectSendsRef.current.push({ id, text: `/queue ${text}` });
+        return;
+      }
     } else {
       sent = sendPtyText(text);
     }
 
     if (!sent) {
-      markOptimisticFailed(id);
+      // Socket down. If a reconnect is expected, hold the message (bubble
+      // stays "sending") and let ws.onopen flush it — never silently drop.
+      // Only give up when the session has truly ended.
+      if (ptyStateRef.current !== "ended") {
+        pendingReconnectSendsRef.current.push({ id, text });
+      } else {
+        markOptimisticFailed(id);
+      }
       return;
     }
 
@@ -1090,6 +1179,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       markOptimisticFailed(next.id);
     }
   }, [agentRunning, markOptimisticFailed, sendPtyText]);
+
+  // Once the agent finishes its current turn, any messages we handed to its
+  // /queue are now in flight on the agent side — settle their bubbles from
+  // "queued" to "sent". Their replies stream back as normal assistant bubbles.
+  useEffect(() => {
+    if (agentRunning) return;
+    queueMicrotask(() =>
+      setFeedState((state) => {
+        if (!state.messages.some((m) => m.status === "queued")) return state;
+        return {
+          ...state,
+          messages: state.messages.map((m) =>
+            m.status === "queued" ? { ...m, status: "sent" } : m,
+          ),
+        };
+      }),
+    );
+  }, [agentRunning]);
 
   const stopAgent = useCallback(() => {
     const ws = wsRef.current;
@@ -1164,19 +1271,44 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (headerTitleOwnedRef.current) {
         headerTitleOwnedRef.current = false;
         setTitle(null);
+        setAfterTitle(null);
       }
       return;
     }
 
     headerTitleOwnedRef.current = true;
     setTitle(sessionTitle);
+    // Inline rename beside the title once a session exists to rename.
+    const renameSessionId = resumeParam ?? activeStoredSessionIdRef.current;
+    setAfterTitle(
+      renameSessionId ? (
+        <span className="inline-flex items-center gap-2">
+          <ChatHeaderRename
+            sessionId={renameSessionId}
+            title={sessionTitle}
+            profile={scopedProfile}
+            onRenamed={handleSessionTitleChange}
+          />
+          <ChatScopeControl sessionId={renameSessionId} />
+        </span>
+      ) : null,
+    );
     return () => {
       if (headerTitleOwnedRef.current) {
         headerTitleOwnedRef.current = false;
         setTitle(null);
+        setAfterTitle(null);
       }
     };
-  }, [isActive, sessionTitle, setTitle]);
+  }, [
+    isActive,
+    sessionTitle,
+    setTitle,
+    setAfterTitle,
+    resumeParam,
+    scopedProfile,
+    handleSessionTitleChange,
+  ]);
 
   // Unread-reply badge clears the moment the chat is actually in view.
   useEffect(() => {
@@ -1372,11 +1504,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   useEffect(() => {
-    // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
-    // until the chat tab has been activated. Prevents the persistently
-    // mounted, hidden ChatPage from opening `/api/pty` on every dashboard
-    // page. Sticky, so switching away from /chat keeps the PTY alive.
-    if (!hasActivated || !eventSocketReady) return;
+    // Don't open a PTY for a document that has never shown Chat (see the
+    // activation latches): no spawn, no retained worker, no reconnect churn.
+    if (!chatEverShown) return;
+    // Nor when the backend would have to build itself first. The server
+    // refuses that connect anyway; checking here means the owner reads an
+    // actionable sentence instead of watching a terminal that never opens.
+    if (chatBlocked) return;
+    if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;
 
@@ -1899,6 +2034,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setLastCloseCode(null);
       setPtyState("open");
       blockedInputNoticeRef.current = false;
+      // Flush any messages composed while the socket was down (buffered by
+      // submitComposer). Staggered so a burst doesn't collide in the PTY.
+      if (pendingReconnectSendsRef.current.length) {
+        const pending = pendingReconnectSendsRef.current;
+        pendingReconnectSendsRef.current = [];
+        pending.forEach((item, index) => {
+          window.setTimeout(() => {
+            if (!sendPtyText(item.text)) markOptimisticFailed(item.id);
+          }, 120 + index * 60);
+        });
+      }
       // Connected — cancel any pending reconnect from a prior transient drop.
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -2125,8 +2271,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
+    // Deliberately curated deps: the PTY/socket lifecycle re-runs only on these
+    // identity changes; adding the setters/refs it uses would thrash the terminal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    hasActivated,
     channel,
     clearReconnectTimer,
     resumeParam,
@@ -2134,6 +2282,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectNonce,
     ptyAttachIdentity,
     eventSocketReady,
+    chatEverShown,
+    chatBlocked,
   ]);
 
   // Refit the off-screen terminal on tab activation. Only return focus to
@@ -2264,7 +2414,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
-            "transition-transform duration-200 ease-out",
+            "transition-transform duration-[var(--motion-panel)] ease-[var(--ease-spring)]",
             mobilePanelOpen
               ? "translate-x-0"
               : "pointer-events-none translate-x-full",
@@ -2362,7 +2512,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onLoadOlderHistory={loadOlderHistory}
             isWorking={agentRunning}
             focusSignal={reconnectNonce}
-            onComposerChange={setComposer}
+            onComposerChange={handleComposerChange}
             onSubmit={submitComposer}
             onStop={stopAgent}
             onRetry={retryMessage}

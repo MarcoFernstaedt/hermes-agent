@@ -623,6 +623,18 @@ class ToolRegistry:
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        # Session scopes + the global stop are enforced here — the one place
+        # every tool call passes through. Only engages when an agent turn has
+        # armed a scope; internal/system calls are never gated. Guarded so the
+        # gate can never itself crash dispatch.
+        try:
+            from hermes_cli.agent_scopes import enforce_dispatch
+
+            refusal = enforce_dispatch(name)
+            if refusal is not None:
+                return json.dumps({"error": refusal, "refused": True})
+        except Exception:
+            pass
         try:
             if entry.is_async:
                 from model_tools import _run_async

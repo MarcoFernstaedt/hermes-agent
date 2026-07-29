@@ -22,6 +22,7 @@ const BASE = HERMES_BASE_PATH;
 import type { DashboardTheme } from "@/themes/types";
 import { buildJobsQuery } from "@/lib/jobs";
 import type {
+  JobHistoryResponse,
   JobStatus,
   JobStatusObservation,
   JobStatusUpdate,
@@ -137,15 +138,32 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  // A caller-supplied signal still wins; the timeout only applies when the
+  // caller asked for one and did not bring its own abort control.
+  let signal = init?.signal;
+  if (options?.timeoutMs && !signal) {
+    signal = AbortSignal.timeout(options.timeoutMs);
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      signal,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (err) {
+    // Name the timeout, so the UI can say "this took too long" rather than
+    // the browser's generic "signal is aborted without reason".
+    if (options?.timeoutMs && err instanceof DOMException && err.name === "TimeoutError") {
+      throw new Error(`Request timed out after ${options.timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -455,6 +473,497 @@ export interface SpotifySearchResults {
   items: SpotifyMediaItem[];
 }
 
+export interface SpotifyConnection {
+  provider: "spotify";
+  connected: boolean;
+  account: string | null;
+  scopes: string[];
+  needs_reauth: boolean;
+}
+
+/** Response of starting an in-interface Spotify re-auth (the token-expiry
+ *  fallback). Either an authorize URL to open, or a needs_client_id signal. */
+export interface SpotifyReauthStart {
+  configured: boolean;
+  auth_url?: string;
+  redirect_uri?: string;
+  docs_url?: string;
+  needs_client_id?: boolean;
+  dashboard_url?: string;
+}
+
+export interface SpotifyReauthStatus {
+  status: "idle" | "pending" | "connected" | "error";
+  detail?: string;
+}
+
+export interface GoogleConnection {
+  connected: boolean;
+  needs_reauth: boolean;
+  account: string | null;
+  scopes: string[];
+}
+
+/** A named session capability scope (server-enforced agent guardrail). */
+export interface AgentScope {
+  name: string;
+  label: string;
+  description: string;
+}
+
+export type HealthStatus = "ok" | "warn" | "error" | "unknown";
+
+export interface SystemHealth {
+  status: HealthStatus;
+  generated_at: number;
+  sections: Record<
+    string,
+    { status: HealthStatus; [key: string]: unknown }
+  >;
+}
+
+export interface CommitInfo {
+  commit: string;
+  commit_short: string;
+  branch: string;
+  dirty: boolean | null;
+  built_at?: string | null;
+  available?: boolean;
+}
+
+/**
+ * Which Hermes is actually running. `version` is the source tree the server
+ * imported; `installed_version` is what package metadata records, when a wheel
+ * is installed at all. They diverge when a checkout shadows an install — the
+ * reason the sidebar and `hermes --version` could disagree.
+ */
+export interface RuntimeIdentity {
+  version: string;
+  release_date: string;
+  package_path: string;
+  installed_version: string | null;
+  installed_path: string | null;
+  version_drift: boolean;
+  source: "installed" | "checkout";
+}
+
+/**
+ * The volatile context tier — what is true right now. Assembled server-side by
+ * `hermes_cli/hub_context.py` and served to two consumers from one place: the
+ * agent's `hub_context` tool and the Now surface. Deliberately kept out of the
+ * system prompt so the prompt cache stays byte-stable.
+ */
+export interface HubContextSection {
+  available: boolean;
+  /** Present only when `available` is false — why this section is missing. */
+  reason?: string;
+}
+
+export interface HubJobsSection extends HubContextSection {
+  counts?: Record<string, number>;
+  next_actions: Array<{
+    id: number;
+    company: string;
+    role: string;
+    fit_score?: number;
+    freshness?: string;
+    apply_url?: string;
+  }>;
+}
+
+export interface HubReviewSection extends HubContextSection {
+  counts?: Record<string, number>;
+  pending: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    risk: string;
+    source: string;
+  }>;
+}
+
+export interface HubGuardrailsSection extends HubContextSection {
+  halted: boolean;
+  scope: string | null;
+  note: string;
+}
+
+export interface HubCapabilitiesSection extends HubContextSection {
+  areas: Array<{ id: string; label?: string }>;
+  due_or_overdue: Array<{
+    capability: string;
+    title: string;
+    field: string;
+    date: string;
+  }>;
+}
+
+export interface HubHealthSection extends HubContextSection {
+  status: HealthStatus;
+  problems: string[];
+}
+
+export interface HubContext {
+  generated_at: string;
+  generated_at_epoch: number;
+  /** The lead lines, worst-blocker first. Everything else is the evidence. */
+  attention: string[];
+  sections: {
+    jobs?: HubJobsSection;
+    review?: HubReviewSection;
+    guardrails?: HubGuardrailsSection;
+    capabilities?: HubCapabilitiesSection;
+    health?: HubHealthSection;
+  };
+}
+
+/**
+ * Whether opening chat will reach a prompt, or trigger a build first. A cold
+ * checkout would otherwise run `npm install` inside the connect handler and
+ * hang for minutes with no explanation.
+ */
+export interface ChatReadiness {
+  ready: boolean;
+  source?: string;
+  reason?: "missing" | "blocking_build";
+  detail?: string;
+  /** The exact thing the owner should do about it. */
+  remedy?: string;
+}
+
+export interface SystemProvenance {
+  backend: CommitInfo;
+  frontend: CommitInfo;
+  /** True when the served frontend was built from a different commit than the running backend. */
+  commit_drift: boolean;
+  runtime: RuntimeIdentity;
+  process: {
+    started_at: number;
+    uptime_seconds: number;
+    python: string;
+  };
+}
+
+export interface AgentGuardrails {
+  scopes: AgentScope[];
+  default_scope: string;
+  halted: boolean;
+  /** "observe" (default), "enforce", or "off". */
+  approval_integrity?: string;
+}
+
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+/** Flattened list-row shape from the backend's parse_metadata. */
+export interface EmailRow {
+  id: string;
+  thread_id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  starred: boolean;
+  has_attachment: boolean;
+  labels: string[];
+}
+
+export interface EmailListResponse {
+  messages: Array<{ id: string; threadId: string }>;
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
+}
+
+/** Raw Gmail message (format=full) — payload parsed client-side for the reader. */
+export interface GmailMessage {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  snippet?: string;
+  payload?: GmailPayload;
+}
+
+export interface GmailPayload {
+  mimeType?: string;
+  filename?: string;
+  headers?: Array<{ name: string; value: string }>;
+  body?: { size?: number; data?: string; attachmentId?: string };
+  parts?: GmailPayload[];
+}
+
+/** A record in the generic entity store (Intelligence Hub spine). */
+export interface Entity<T = Record<string, unknown>> {
+  id: string;
+  type: string;
+  data: T;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityListResponse<T = Record<string, unknown>> {
+  items: Entity<T>[];
+  total: number;
+}
+
+/**
+ * A capability declaration as served by GET /api/capabilities — the wire shape
+ * of the canonical JSON in hermes_cli/capabilities/definitions. Snake-case
+ * fields mirror the JSON; the frontend registry maps this into the richer
+ * `Capability` (icon string → lucide component, title_field → titleField).
+ */
+export interface CapabilityFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface CapabilityFieldDef {
+  name: string;
+  label?: string;
+  type: string;
+  required?: boolean;
+  options?: CapabilityFieldOption[];
+}
+
+export interface CapabilityLifecycleDef {
+  field: string;
+  states: string[];
+  initial: string;
+  transitions: Array<{ from: string; to: string[] }>;
+}
+
+export interface CapabilityViewDef {
+  id: string;
+  kind: "board" | "table";
+  groupBy?: string;
+  columns?: string[];
+  default?: boolean;
+}
+
+export interface CapabilityDef {
+  id: string;
+  label: string;
+  icon?: string;
+  group?: string;
+  entity?: string;
+  title_field: string;
+  subtitle_field?: string;
+  fields: CapabilityFieldDef[];
+  lifecycle?: CapabilityLifecycleDef;
+  views: CapabilityViewDef[];
+  agent?: { expose?: string[] };
+}
+
+export type ProposalKind =
+  | "capability" | "skill" | "mcp" | "plugin" | "tool" | "automation" | "improvement";
+export type ProposalStatus = "pending" | "approved" | "rejected" | "applied" | "failed";
+
+export interface ReviewProposal {
+  id: string;
+  kind: ProposalKind;
+  title: string;
+  summary: string;
+  source: string;
+  risk: "low" | "medium" | "high";
+  status: ProposalStatus;
+  payload: Record<string, unknown>;
+  preview: Record<string, unknown>;
+  outcome: string;
+  created_at: number;
+  decided_at: number | null;
+  applied_at: number | null;
+}
+
+export interface ReviewQueueResponse {
+  proposals: ReviewProposal[];
+  counts: Partial<Record<ProposalStatus, number>>;
+}
+
+export interface NewProposal {
+  kind: ProposalKind;
+  title: string;
+  summary?: string;
+  source?: string;
+  risk?: "low" | "medium" | "high";
+  payload?: Record<string, unknown>;
+  preview?: Record<string, unknown>;
+}
+
+export interface CapabilityLoadError {
+  source: string;
+  id: string | null;
+  errors: string[];
+}
+
+export interface CapabilitiesResponse {
+  capabilities: CapabilityDef[];
+  /** Declarations rejected at load time (invalid → never served as UI). */
+  load_errors?: CapabilityLoadError[];
+}
+
+export interface CapabilityValidation {
+  valid: boolean;
+  errors: string[];
+}
+
+/** A record linked to another, as returned by the links endpoint (the far end
+ *  of the edge plus the relation). */
+export interface EntityLinkItem {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+  rel: string;
+  created_at: string;
+}
+
+export interface EntityLinksResponse {
+  items: EntityLinkItem[];
+}
+
+/** The whole link graph — nodes are records, edges reference node ids. */
+export interface GraphNode {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  rel: string;
+}
+
+export interface EntityGraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+/** Raw Gmail thread (format=full) — an ordered list of its messages. */
+export interface GmailThread {
+  id: string;
+  historyId?: string;
+  messages?: GmailMessage[];
+}
+
+/** Mailbox profile; `historyId` is the change signal polled for incremental sync. */
+export interface GmailProfile {
+  emailAddress?: string;
+  messagesTotal?: number;
+  threadsTotal?: number;
+  historyId?: string;
+}
+
+/** Reduced mailbox delta since a prior historyId (see summarize_history). */
+export interface GmailHistoryDelta {
+  added: string[];
+  deleted: string[];
+  changed: string[];
+  historyId: string | null;
+  expired: boolean;
+}
+
+export interface EmailSendBody {
+  to: string[];
+  subject?: string;
+  body?: string;
+  cc?: string[];
+  bcc?: string[];
+  html_body?: string;
+  thread_id?: string;
+  in_reply_to?: string;
+  references?: string;
+}
+
+export interface CalendarInfo {
+  id: string;
+  summary: string;
+  primary?: boolean;
+  backgroundColor?: string;
+}
+
+export interface CalendarEventTime {
+  dateTime?: string;
+  date?: string;
+  timeZone?: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  start: CalendarEventTime;
+  end: CalendarEventTime;
+  status?: string;
+  htmlLink?: string;
+  attendees?: Array<{ email: string; responseStatus?: string; self?: boolean }>;
+  recurringEventId?: string;
+}
+
+export interface CalendarEventBody {
+  summary: string;
+  start: string;
+  end: string;
+  timezone?: string;
+  all_day?: boolean;
+  description?: string;
+  location?: string;
+  attendees?: string[];
+  calendar_id?: string;
+}
+
+export interface GoogleTask {
+  id: string;
+  title: string;
+  notes?: string;
+  due?: string;
+  status?: string;
+}
+
+export interface VaultNoteMeta {
+  path: string;
+  title: string;
+  mtime: number;
+  size: number;
+}
+
+export interface VaultLink {
+  target: string | null;
+  heading: string | null;
+  block: string | null;
+  alias: string | null;
+}
+
+export interface VaultNote {
+  path: string;
+  title: string;
+  frontmatter: Record<string, unknown>;
+  headings: Array<{ level: number; text: string }>;
+  tags: string[];
+  links: VaultLink[];
+  embeds: VaultLink[];
+  content: string;
+  body: string;
+  mtime: number;
+}
+
+export interface VaultSearchResult {
+  path: string;
+  title: string;
+  snippet: string;
+}
+
+export interface VaultBacklink {
+  path: string;
+  title: string;
+  context: string;
+}
+
 export type SpotifyMediaCommand =
   | { action: "play" | "pause" | "previous" | "next"; device_id?: string }
   | { action: "seek"; position_ms: number; device_id?: string }
@@ -607,6 +1116,11 @@ export interface AudiobookProgress {
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
+  getSystemHealth: () => fetchJSON<SystemHealth>("/api/system/health"),
+  getChatReadiness: () => fetchJSON<ChatReadiness>("/api/system/chat-readiness"),
+  getHubContext: () =>
+    fetchJSON<HubContext>("/api/system/context", undefined, { timeoutMs: 15_000 }),
   getSpotifyMediaState: () =>
     fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
   controlSpotifyMedia: (command: SpotifyMediaCommand) =>
@@ -633,6 +1147,154 @@ export const api = {
     fetchJSON<SpotifySearchResults>(
       `/api/media/spotify/playlists?limit=${Math.min(Math.max(limit, 1), 50)}`,
     ),
+  getSpotifyConnection: () =>
+    fetchJSON<SpotifyConnection>("/api/media/spotify/connection"),
+  disconnectSpotify: () =>
+    fetchJSON<{ ok: boolean; cleared: boolean }>(
+      "/api/media/spotify/disconnect",
+      { method: "POST" },
+    ),
+  startSpotifyReauth: () =>
+    fetchJSON<SpotifyReauthStart>("/api/media/spotify/reauth/start", {
+      method: "POST",
+    }),
+  getSpotifyReauthStatus: () =>
+    fetchJSON<SpotifyReauthStatus>("/api/media/spotify/reauth/status"),
+
+  // -- Agent guardrails: session scopes + the global stop ------------------
+  getAgentGuardrails: () =>
+    fetchJSON<AgentGuardrails>("/api/agent/guardrails"),
+  setAgentHalt: (halted: boolean) =>
+    fetchJSON<{ halted: boolean }>("/api/agent/guardrails/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ halted }),
+    }),
+  getSessionScope: (sessionId: string) =>
+    fetchJSON<{ session_id: string; scope: string }>(
+      `/api/agent/guardrails/session/${encodeURIComponent(sessionId)}`,
+    ),
+  setSessionScope: (sessionId: string, scope: string) =>
+    fetchJSON<{ session_id: string; scope: string }>(
+      `/api/agent/guardrails/session/${encodeURIComponent(sessionId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope }),
+      },
+    ),
+
+  // -- Email (Gmail) -------------------------------------------------------
+  getEmailConnection: () =>
+    fetchJSON<GoogleConnection>("/api/email/connection"),
+  getEmailLabels: () => fetchJSON<{ labels: GmailLabel[] }>("/api/email/labels"),
+  listEmail: (params: { q?: string; label?: string; maxResults?: number; pageToken?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.label) qs.set("label", params.label);
+    qs.set("max_results", String(params.maxResults ?? 25));
+    if (params.pageToken) qs.set("page_token", params.pageToken);
+    return fetchJSON<EmailListResponse>(`/api/email/messages?${qs.toString()}`);
+  },
+  getEmailMetadata: (ids: string[]) =>
+    fetchJSON<{ messages: EmailRow[] }>("/api/email/messages/metadata", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
+  getEmailMessage: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}?fmt=${fmt}`),
+  getEmailThread: (id: string, fmt: "full" | "metadata" | "minimal" = "full") =>
+    fetchJSON<GmailThread>(`/api/email/threads/${encodeURIComponent(id)}?fmt=${fmt}`),
+  getEmailUnreadCount: () => fetchJSON<{ count: number }>("/api/email/unread_count"),
+  getEmailProfile: () => fetchJSON<GmailProfile>("/api/email/profile"),
+  getEmailHistory: (startHistoryId: string, label?: string) =>
+    fetchJSON<GmailHistoryDelta>(
+      `/api/email/history?start_history_id=${encodeURIComponent(startHistoryId)}` +
+        (label ? `&label=${encodeURIComponent(label)}` : ""),
+    ),
+  modifyEmail: (id: string, add: string[] = [], remove: string[] = []) =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/modify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ add, remove }),
+    }),
+  trashEmail: (id: string) =>
+    fetchJSON<GmailMessage>(`/api/email/messages/${encodeURIComponent(id)}/trash`, {
+      method: "POST",
+    }),
+  sendEmail: (body: EmailSendBody) =>
+    fetchJSON<{ id: string; threadId: string }>("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createEmailDraft: (body: EmailSendBody) =>
+    fetchJSON<{ id: string }>("/api/email/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  // -- Calendar + Tasks ----------------------------------------------------
+  getCalendarConnection: () => fetchJSON<GoogleConnection>("/api/calendar/connection"),
+  getCalendars: () => fetchJSON<{ items: CalendarInfo[] }>("/api/calendar/calendars"),
+  listCalendarEvents: (timeMin: string, timeMax: string, calendarId = "primary") =>
+    fetchJSON<{ items: CalendarEvent[] }>(
+      `/api/calendar/events?calendar_id=${encodeURIComponent(calendarId)}` +
+        `&time_min=${encodeURIComponent(timeMin)}&time_max=${encodeURIComponent(timeMax)}`,
+    ),
+  createCalendarEvent: (body: CalendarEventBody) =>
+    fetchJSON<CalendarEvent>("/api/calendar/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteCalendarEvent: (id: string, calendarId = "primary") =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/calendar/events/${encodeURIComponent(id)}?calendar_id=${encodeURIComponent(calendarId)}`,
+      { method: "DELETE" },
+    ),
+  listTasks: (showCompleted = false) =>
+    fetchJSON<{ items: GoogleTask[] }>(`/api/calendar/tasks?show_completed=${showCompleted}`),
+  createTask: (title: string, due?: string, notes?: string) =>
+    fetchJSON<GoogleTask>("/api/calendar/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, due, notes }),
+    }),
+  completeTask: (id: string) =>
+    fetchJSON<GoogleTask>(`/api/calendar/tasks/${encodeURIComponent(id)}/complete`, {
+      method: "POST",
+    }),
+
+  // -- Vault (Obsidian) ----------------------------------------------------
+  getVaultStatus: () => fetchJSON<{ configured: boolean; root: string | null }>("/api/vault/status"),
+  listVaultNotes: () => fetchJSON<{ notes: VaultNoteMeta[] }>("/api/vault/notes"),
+  getVaultNote: (path: string) =>
+    fetchJSON<VaultNote>(`/api/vault/note?path=${encodeURIComponent(path)}`),
+  searchVault: (q: string) =>
+    fetchJSON<{ results: VaultSearchResult[] }>(`/api/vault/search?q=${encodeURIComponent(q)}`),
+  getVaultBacklinks: (path: string) =>
+    fetchJSON<{ backlinks: VaultBacklink[] }>(`/api/vault/backlinks?path=${encodeURIComponent(path)}`),
+  appendVaultNote: (path: string, text: string) =>
+    fetchJSON<{ path: string; mtime: number }>("/api/vault/append", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, text }),
+    }),
+  createVaultNote: (path: string, content = "") =>
+    fetchJSON<{ path: string; mtime: number }>("/api/vault/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    }),
+  writeVaultNote: (path: string, content: string, expected_mtime?: number) =>
+    fetchJSON<{ path: string; mtime: number; bytes: number }>("/api/vault/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content, expected_mtime }),
+    }),
   getAudiobookIndex: () =>
     fetchJSON<AudiobookIndex>("/api/media/audiobooks"),
   saveAudiobookProgress: (progress: AudiobookProgress) =>
@@ -641,9 +1303,112 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(progress),
     }),
+  // Both carry a ceiling: this page sits in front of a scraper-backed store
+  // that can stall, and an unbounded request means an unbounded spinner.
   getJobs: (filters: JobsFilters) =>
-    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
-  getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`, undefined, {
+      timeoutMs: 15_000,
+    }),
+  getJobsSummary: () =>
+    fetchJSON<JobsSummary>("/api/jobs/summary", undefined, { timeoutMs: 15_000 }),
+  getJobHistory: (jobId: number) =>
+    fetchJSON<JobHistoryResponse>(`/api/jobs/${jobId}/history`),
+
+  // -- Entities (generic capability store) --------------------------------
+  listEntities: (type: string, params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return fetchJSON<EntityListResponse>(
+      `/api/entities/${encodeURIComponent(type)}${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getEntity: (type: string, id: string) =>
+    fetchJSON<Entity>(`/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
+  createEntity: (type: string, data: Record<string, unknown>) =>
+    fetchJSON<Entity>(`/api/entities/${encodeURIComponent(type)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+    }),
+  updateEntity: (
+    type: string,
+    id: string,
+    data: Record<string, unknown>,
+    expectedVersion: number,
+  ) =>
+    fetchJSON<Entity>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, expected_version: expectedVersion }),
+      },
+    ),
+  deleteEntity: (type: string, id: string) =>
+    fetchJSON<{ deleted: boolean; id: string }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+
+  // -- Capabilities (declarations served for dynamic UI wiring) -----------
+  getReviewQueue: (status?: string) =>
+    fetchJSON<ReviewQueueResponse>(
+      `/api/review${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  getProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}`),
+  createProposal: (proposal: NewProposal) =>
+    fetchJSON<ReviewProposal>("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    }),
+  approveProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  rejectProposal: (id: string) =>
+    fetchJSON<ReviewProposal>(`/api/review/${encodeURIComponent(id)}/reject`, { method: "POST" }),
+
+  getCapabilities: () => fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+  getCapabilitySchema: () => fetchJSON<Record<string, unknown>>("/api/capabilities/schema"),
+  validateCapability: (declaration: unknown) =>
+    fetchJSON<CapabilityValidation>("/api/capabilities/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(declaration),
+    }),
+
+  /** The whole entity link graph (nodes + edges) for the relationships view. */
+  getEntityGraph: () => fetchJSON<EntityGraphResponse>("/api/entities/graph"),
+
+  // -- Entity links (the cross-record graph) ------------------------------
+  listLinks: (type: string, id: string) =>
+    fetchJSON<EntityLinksResponse>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links`,
+    ),
+  createLink: (type: string, id: string, targetId: string, rel = "related") =>
+    fetchJSON<{ source: string; target: string; rel: string }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_id: targetId, rel }),
+      },
+    ),
+  deleteLink: (type: string, id: string, targetId: string, rel = "related") =>
+    fetchJSON<{ removed: boolean }>(
+      `/api/entities/${encodeURIComponent(type)}/${encodeURIComponent(id)}/links/${encodeURIComponent(targetId)}?rel=${encodeURIComponent(rel)}`,
+      { method: "DELETE" },
+    ),
+
+  /** Full-text search across every entity; optional type scope. */
+  searchEntities: (
+    q: string,
+    opts: { types?: string[]; limit?: number } = {},
+  ) => {
+    const params = new URLSearchParams({ q });
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return fetchJSON<EntityListResponse>(`/api/entities/search?${params.toString()}`);
+  },
   updateJobStatus: (
     jobId: number,
     status: JobStatus,
@@ -817,6 +1582,24 @@ export const api = {
         body: JSON.stringify({ title, profile: profile || undefined }),
       },
     ),
+  regenerateSessionTitle: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}/regenerate-title`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: profile || undefined }),
+      },
+    ),
+  archiveSession: (id: string, archived: boolean, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; archived: boolean }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived, profile: profile || undefined }),
+      },
+    ),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -956,6 +1739,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
     }),
+  // Dashboard preferences — single namespaced object persisted server-side
+  // (config.yaml `dashboard.prefs`); the source of truth for user settings.
+  getDashboardPrefs: () =>
+    fetchJSON<{ prefs: Record<string, unknown> }>("/api/dashboard/prefs"),
+  setDashboardPrefs: (prefs: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; prefs: Record<string, unknown> }>("/api/dashboard/prefs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prefs }),
+    }),
+
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
   setEnvVar: (key: string, value: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
@@ -2345,6 +3139,12 @@ interface FetchJSONOptions {
    *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
    *  rather than evidence of a rotated session token. */
   allowUnauthorized?: boolean;
+  /** Abort the request after this many milliseconds and reject with a clear
+   *  timeout error. Opt-in per call: most endpoints are fast, but a few sit in
+   *  front of work that can stall, and a request with no ceiling leaves the UI
+   *  in a loading state with no way out. Round-2 recon watched Jobs sit on
+   *  "Loading jobs…" for over 90 seconds for exactly this reason. */
+  timeoutMs?: number;
 }
 
 export interface ActionStatusResponse {
@@ -2406,6 +3206,7 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  archived?: boolean;
 }
 
 export interface SessionLatestDescendantResponse {

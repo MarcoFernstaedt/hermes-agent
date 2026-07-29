@@ -190,6 +190,45 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         asyncio.create_task(oldest.close())
 
+    def stats(self) -> Dict[str, object]:
+        """Observable state of the registry.
+
+        The on-machine report could only diagnose worker exhaustion by counting
+        OS processes; the app knew this and did not say. Retained (detached but
+        still alive) sessions are the number that matters — they hold a TUI
+        child each and are what fills the cap.
+        """
+        now = time.monotonic()
+        attached = sum(1 for s in self._sessions.values() if s.attached)
+        retained = [s for s in self._sessions.values()
+                    if not s.attached and s.alive]
+        oldest_idle = max(
+            (now - s.last_detached_at for s in retained
+             if s.last_detached_at is not None),
+            default=0.0,
+        )
+        return {
+            "total": len(self._sessions),
+            "attached": attached,
+            "retained": len(retained),
+            "max_sessions": self._max,
+            "ttl_seconds": self._ttl,
+            "oldest_retained_seconds": round(oldest_idle, 1),
+            # True when a new chat client would have to evict something.
+            "at_capacity": len(self._sessions) >= self._max,
+        }
+
+    async def close_retained(self) -> int:
+        """Close every detached session, keeping attached ones untouched.
+
+        The safe cleanup control: it can never disconnect a live client, so it
+        is not destructive to anyone currently chatting.
+        """
+        doomed = [key for key, s in self._sessions.items() if not s.attached]
+        for key in doomed:
+            await self._sessions.pop(key).close()
+        return len(doomed)
+
     async def close_all(self) -> None:
         for key in list(self._sessions):
             await self._sessions.pop(key).close()

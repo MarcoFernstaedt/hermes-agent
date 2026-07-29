@@ -15,6 +15,7 @@ import asyncio
 import atexit
 import base64
 import binascii
+import collections
 import concurrent.futures
 import functools
 from dataclasses import dataclass
@@ -185,9 +186,24 @@ async def _lifespan(app: "FastAPI"):
     from hermes_cli.jobs.router import initialize_jobs
     from hermes_cli.life.router import default_database_path
     from hermes_cli.life.repository import LifeRepository
+    from hermes_cli.entities.router import initialize_entities
 
     initialize_jobs()
     LifeRepository(default_database_path()).migrate()
+    initialize_entities()
+
+    # One-time, idempotent import of the Workspace skill's plaintext Google
+    # token into the encrypted store. Guarded so a bad/absent legacy file can
+    # never block startup. The plaintext file is left in place until the skill
+    # is cut over to read from the store (a later phase).
+    try:
+        from hermes_cli.secure_store import import_legacy_google_token
+
+        if import_legacy_google_token():
+            logger.info("Imported legacy Google token into the encrypted store.")
+    except Exception:
+        logger.debug("Legacy Google token import skipped", exc_info=True)
+
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -247,6 +263,43 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+# Per-channel bounded replay buffer + monotonic sequence counter. Lets a
+# reconnecting or second-device subscriber request ``?since=<seq>`` and
+# receive the events it missed, so multi-device chat stays in sync without a
+# full history reload. Bounded, so an idle channel can't grow without limit.
+_EVENT_RING_MAX = 500
+
+
+def _get_event_rings(app: "FastAPI"):
+    """Return (event_rings, event_seq) from app.state, lazily initialised."""
+    try:
+        return app.state.event_rings, app.state.event_seq
+    except AttributeError:
+        app.state.event_rings = {}  # dict[str, deque[(seq, payload)]]
+        app.state.event_seq = {}  # dict[str, int]
+        return app.state.event_rings, app.state.event_seq
+
+
+def _stamp_and_buffer(rings, seqs, channel: str, payload: str) -> str:
+    """Stamp a monotonic ``_seq`` onto a JSON-object frame and buffer it.
+
+    Non-object payloads are broadcast unchanged (and not buffered — they
+    can't be deduped/replayed). Callers must hold the event lock.
+    """
+    try:
+        obj = json.loads(payload)
+    except (ValueError, TypeError):
+        return payload
+    if not isinstance(obj, dict):
+        return payload
+    seq = seqs.get(channel, 0) + 1
+    seqs[channel] = seq
+    obj["_seq"] = seq
+    stamped = json.dumps(obj, separators=(",", ":"))
+    rings.setdefault(channel, collections.deque(maxlen=_EVENT_RING_MAX)).append((seq, stamped))
+    return stamped
 
 
 def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
@@ -360,6 +413,11 @@ async def _static_cache_headers(request: Request, call_next):
     path = request.url.path
     if path.startswith("/assets/"):
         response.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE)
+    elif path in ("/sw.js", "/offline.html"):
+        # The service worker and its offline fallback must revalidate every
+        # load so a new deploy's worker is picked up promptly (a stale SW
+        # would keep serving old asset caches).
+        response.headers.setdefault("Cache-Control", "no-cache")
     elif path.startswith(("/icons/", "/fonts/", "/fonts-terminal/", "/ds-assets/")) or path in (
         "/favicon.ico",
         "/manifest.webmanifest",
@@ -466,9 +524,34 @@ def _require_token(request: Request) -> None:
 # assertion. Feature logic stays in the modular jobs package.
 from hermes_cli.jobs.router import create_jobs_router as _create_jobs_router  # noqa: E402
 from hermes_cli.life.router import create_life_router as _create_life_router  # noqa: E402
+from hermes_cli.email.router import create_email_router as _create_email_router  # noqa: E402
+from hermes_cli.calendar.router import create_calendar_router as _create_calendar_router  # noqa: E402
+from hermes_cli.vault.router import create_vault_router as _create_vault_router  # noqa: E402
+from hermes_cli.entities.router import create_entities_router as _create_entities_router  # noqa: E402
+from hermes_cli.capabilities.router import create_capabilities_router as _create_capabilities_router  # noqa: E402
+from hermes_cli.agent_scopes_router import create_agent_scopes_router as _create_agent_scopes_router  # noqa: E402
+from hermes_cli.system_router import create_system_router as _create_system_router  # noqa: E402
+from hermes_cli.review.router import create_review_router as _create_review_router  # noqa: E402
 
 app.include_router(_create_jobs_router(_require_token, initialize=False))
 app.include_router(_create_life_router(_require_token, initialize=False))
+app.include_router(_create_email_router(_require_token))
+app.include_router(_create_calendar_router(_require_token))
+app.include_router(_create_vault_router(_require_token))
+async def _publish_entity_event(channel: str, payload: dict) -> None:
+    """Fan an entity change out to /api/events subscribers on the entities channel."""
+    await _broadcast_event(app, channel, json.dumps(payload, separators=(",", ":")))
+
+
+app.include_router(
+    _create_entities_router(
+        _require_token, publish=_publish_entity_event, initialize=False
+    )
+)
+app.include_router(_create_capabilities_router(_require_token))
+app.include_router(_create_agent_scopes_router(_require_token))
+app.include_router(_create_system_router(_require_token))
+app.include_router(_create_review_router(_require_token, publish=_publish_entity_event))
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -11239,6 +11322,97 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         db.close()
 
 
+def _first_text(content: Any) -> str:
+    """Flatten a stored message body to plain text.
+
+    Content is usually a string, but multimodal turns store a list of
+    ``{"type": "text", "text": ...}`` blocks; pull the text out of those.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
+class RegenerateTitleBody(BaseModel):
+    # Regenerate a session belonging to another (local) profile. Omit for the
+    # current/default profile.
+    profile: Optional[str] = None
+
+
+@app.post("/api/sessions/{session_id}/regenerate-title")
+async def regenerate_session_title_endpoint(
+    session_id: str, body: RegenerateTitleBody
+):
+    """Regenerate a session's title from its first user/assistant exchange.
+
+    The agent auto-titles a session in the background after its first reply;
+    this endpoint lets the user ask for a fresh title on demand (e.g. after
+    the conversation's topic drifted). It reuses the same
+    ``agent.title_generator.generate_title`` machinery and the auxiliary
+    ``title_generation`` model slot, so no new model configuration is
+    involved. Runs behind the standard session-token auth gate like every
+    other ``/api/...`` route. The generated title is returned in the response;
+    the client updates the header and refreshes the session list.
+    """
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sid = db.resolve_resume_session_id(sid)
+        messages = db.get_messages(sid, limit=50)
+    finally:
+        db.close()
+
+    user_message = ""
+    assistant_response = ""
+    for msg in messages:
+        role = msg.get("role")
+        text = _first_text(msg.get("content"))
+        if not text:
+            continue
+        if role == "user" and not user_message:
+            user_message = text
+        elif role == "assistant" and not assistant_response:
+            assistant_response = text
+        if user_message and assistant_response:
+            break
+
+    if not user_message or not assistant_response:
+        raise HTTPException(
+            status_code=422,
+            detail="Session has no complete exchange to title yet.",
+        )
+
+    from agent.title_generator import generate_title
+
+    title = await asyncio.to_thread(
+        generate_title, user_message, assistant_response
+    )
+    if not title:
+        raise HTTPException(
+            status_code=502, detail="Title generation failed. Try again."
+        )
+
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        try:
+            db.set_session_title(sid, title)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "title": db.get_session_title(sid) or title}
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
@@ -16796,6 +16970,26 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # startup — see _get_event_state / _get_chat_argv_lock above.)
 
 
+def _chat_argv_resolver_is_patched() -> bool:
+    """True when a test has replaced *either* chat argv resolver.
+
+    Tests inject a tiny fake command (``cat``, ``sh -c …``) so nothing has to
+    build Node or the TUI bundle. The readiness probe describes the *real* TUI,
+    so running it against a fake resolver would report "not ready" and refuse
+    connections the test expects to succeed.
+
+    Both the sync resolver and its async wrapper have to be checked. Checking
+    only the sync one missed ``test_pty_ws_resolves_argv_through_async_wrapper``,
+    which patches the wrapper alone: the probe ran, refused the connect, and the
+    resolver it was asserting on was never reached. Identity comparison, so a
+    genuine reassignment of the same function is not mistaken for a patch.
+    """
+    return (
+        _resolve_chat_argv is not _ORIGINAL_RESOLVE_CHAT_ARGV
+        or _resolve_chat_argv_async is not _ORIGINAL_RESOLVE_CHAT_ARGV_ASYNC
+    )
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -16977,6 +17171,11 @@ def _build_gateway_ws_url() -> Optional[str]:
     return f"ws://{netloc}/api/ws?{qs}"
 
 
+# Bound once, immediately after definition, so `_chat_argv_resolver_is_patched`
+# has a stable identity to compare against.
+_ORIGINAL_RESOLVE_CHAT_ARGV = _resolve_chat_argv
+
+
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -17006,6 +17205,11 @@ async def _resolve_chat_argv_async(
             _resolve_chat_argv,
             **kwargs,
         )
+
+
+# Bound immediately after definition, alongside the sync original, so
+# `_chat_argv_resolver_is_patched` can detect a patch of either one.
+_ORIGINAL_RESOLVE_CHAT_ARGV_ASYNC = _resolve_chat_argv_async
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -17098,13 +17302,17 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     instead of serially blocking every other subscriber on the channel.
     """
     event_channels, event_lock = _get_event_state(app)
+    rings, seqs = _get_event_rings(app)
     async with event_lock:
+        # Stamp + buffer under the same lock that snapshots subscribers, so
+        # sequence numbers stay monotonic and the ring stays consistent.
+        stamped = _stamp_and_buffer(rings, seqs, channel, payload)
         subs = list(event_channels.get(channel, ()))
     if not subs:
         return
 
     await asyncio.gather(
-        *(_send_event_or_evict(app, channel, sub, payload) for sub in subs)
+        *(_send_event_or_evict(app, channel, sub, stamped) for sub in subs)
     )
 
 
@@ -17881,6 +18089,29 @@ async def pty_ws(ws: WebSocket) -> None:
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
 
+    # Refuse to start a multi-minute build inside a connect handler. Recon
+    # opened chat on a cold checkout and watched it hang on "Installing TUI
+    # dependencies…" for five minutes with a 404 session and leftover workers.
+    # Building is fine; building silently while someone waits for a prompt is
+    # not. Tests monkeypatch `_resolve_chat_argv`, so skip the probe when the
+    # resolver has been replaced — otherwise every chat test would need a TUI.
+    if not _chat_argv_resolver_is_patched():
+        try:
+            from hermes_cli.chat_readiness import chat_backend_status
+
+            status = await asyncio.to_thread(chat_backend_status)
+        except Exception:  # a probe failure must never block chat
+            status = {"ready": True}
+        if not status.get("ready", True):
+            detail = status.get("detail", "Chat is not ready.")
+            remedy = status.get("remedy", "")
+            await ws.send_text(
+                f"\r\n\x1b[33m{detail}\x1b[0m\r\n"
+                + (f"\x1b[2m{remedy}\x1b[0m\r\n" if remedy else "")
+            )
+            await ws.close(code=1011)
+            return
+
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:
@@ -18088,9 +18319,29 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    # Optional catch-up: a reconnecting/second-device client passes the last
+    # sequence number it saw so we can replay what it missed.
+    since_raw = ws.query_params.get("since", "")
+    since = int(since_raw) if since_raw.isdigit() else None
+
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
         event_channels.setdefault(channel, set()).add(ws)
+        replay: list[str] = []
+        if since is not None:
+            rings, _seqs = _get_event_rings(ws.app)
+            replay = [payload for (seq, payload) in rings.get(channel, ()) if seq > since]
+
+    # Replay missed events to THIS subscriber only. Live events already fan
+    # out via _broadcast_event; the client dedupes by `_seq`, so an overlap
+    # between the replay snapshot and a concurrent live event is harmless.
+    for payload in replay:
+        try:
+            await asyncio.wait_for(
+                ws.send_text(payload), timeout=_EVENT_SEND_TIMEOUT_SECONDS
+            )
+        except Exception:
+            break
 
     try:
         while True:
@@ -18688,6 +18939,86 @@ async def set_dashboard_font(body: FontSetBody):
     config["dashboard"]["font"] = font
     save_config(config)
     return {"ok": True, "font": font}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard user preferences — a single namespaced object under
+# ``config["dashboard"]["prefs"]`` (same persistence as theme/font above, so
+# no parallel store). Machine-wide, matching those neighbours; the client
+# nests any per-profile values (e.g. last-active-session keyed by profile)
+# inside this one object. Writes MERGE so a partial update never drops keys.
+# ---------------------------------------------------------------------------
+
+
+class DashboardPrefsBody(BaseModel):
+    prefs: Dict[str, Any]
+
+
+@app.get("/api/dashboard/prefs")
+async def get_dashboard_prefs():
+    """Return the persisted dashboard preferences object (``{}`` if unset)."""
+    config = load_config()
+    prefs = cfg_get(config, "dashboard", "prefs", default={})
+    return {"prefs": prefs if isinstance(prefs, dict) else {}}
+
+
+@app.put("/api/dashboard/prefs")
+async def set_dashboard_prefs(body: DashboardPrefsBody):
+    """Merge the supplied keys into the persisted preferences object."""
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    existing = config["dashboard"].get("prefs")
+    merged = {**(existing if isinstance(existing, dict) else {}), **body.prefs}
+    config["dashboard"]["prefs"] = merged
+    save_config(config)
+    return {"ok": True, "prefs": merged}
+
+
+# ---------------------------------------------------------------------------
+# Agent audit log — a reviewable, filterable, exportable record of every
+# write the agent performs against an external service on my behalf. Read-only
+# over HTTP (the log is append-only; entries are written by module tools).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/audit")
+async def get_audit_log(
+    module: Optional[str] = None,
+    tool: Optional[str] = None,
+    actor: Optional[str] = None,
+    since: Optional[float] = None,
+    until: Optional[float] = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """Return audit entries (newest first) matching the optional filters."""
+    from hermes_cli import audit_log
+
+    entries = audit_log.query(
+        module=module,
+        tool=tool,
+        actor=actor,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return {"entries": entries, "total": audit_log.count()}
+
+
+@app.get("/api/audit/export")
+async def export_audit_log():
+    """Stream the full audit log as JSON Lines for download/archival."""
+    from fastapi.responses import StreamingResponse
+
+    from hermes_cli import audit_log
+
+    return StreamingResponse(
+        audit_log.export_jsonl(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="imperator-audit.jsonl"'},
+    )
 
 
 # ---------------------------------------------------------------------------

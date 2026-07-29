@@ -26,6 +26,7 @@ import {
   SlashPopover,
   type SlashPopoverHandle,
 } from "@/components/SlashPopover";
+import { AgentLiveStatus } from "@/components/AgentLiveStatus";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { Markdown } from "@/components/Markdown";
 import { api } from "@/lib/api";
@@ -74,6 +75,38 @@ const roleLabel = (message: ChatFeedMessage): string => {
   return message.title || message.role;
 };
 
+/**
+ * The verified facts behind an approval request — and nothing else.
+ *
+ * The guard model that pre-screens gated calls (`_smart_approve`) is asked for
+ * exactly one word, with `max_tokens=16`, and its answer is reduced to a
+ * verdict string. No rationale is ever produced, so a card that showed
+ * "the agent's reasoning" would be inventing it. On-machine recon confirmed
+ * this and ruled: show only what the protocol actually carries.
+ *
+ * That still leaves a fact worth surfacing that the card previously threw
+ * away: `payload.description` — the specific pattern that tripped the gate.
+ * `roleLabel()` returns a constant for approvals, so the trigger never reached
+ * the screen and the owner was asked to approve a command with no stated cause.
+ */
+function ApprovalFacts({ message }: { message: ChatFeedMessage }) {
+  const raw = (message.raw ?? {}) as Record<string, unknown>;
+  const trigger =
+    typeof raw.description === "string" && raw.description.trim()
+      ? raw.description.trim()
+      : message.title?.trim();
+  if (!trigger || trigger === "Approval required") return null;
+
+  return (
+    <dl className="mt-2.5 flex flex-col gap-1 border-t border-warning/25 pt-2.5">
+      <dt className="text-xs font-semibold uppercase tracking-[0.11em] text-warning">
+        Why you are being asked
+      </dt>
+      <dd className="text-xs leading-relaxed text-text-secondary">{trigger}</dd>
+    </dl>
+  );
+}
+
 function MessageTime({ message }: { message: ChatFeedMessage }) {
   const label = formatMessageTime(message.timestamp);
   if (!label) return null;
@@ -95,6 +128,7 @@ function statusLabel(message: ChatFeedMessage): string | null {
   if (message.status === "sending") return "Sending";
   if (message.status === "streaming") return "Responding";
   if (message.status === "running") return "Running";
+  if (message.status === "queued") return "Queued";
   if (message.status === "waiting") {
     return message.role === "user" ? "Waiting to send" : "Waiting for you";
   }
@@ -109,8 +143,12 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 text-[0.6875rem] tracking-wide",
-        message.status === "error" ? "text-destructive" : "text-text-tertiary",
+        "inline-flex items-center gap-1 text-xs tracking-wide",
+        message.status === "error"
+          ? "text-destructive"
+          : message.status === "queued"
+            ? "text-midground"
+            : "text-text-tertiary",
       )}
       aria-label={label}
     >
@@ -118,11 +156,33 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
       message.status === "streaming" ||
       message.status === "running" ? (
         <LoaderCircle className="size-3 animate-spin motion-reduce:animate-none" />
+      ) : message.status === "queued" ? (
+        <ListPlus className="size-3 animate-[queued-pulse_1.6s_ease-in-out_infinite] motion-reduce:animate-none" />
       ) : message.status === "error" ? (
         <AlertCircle className="size-3" />
       ) : null}
       {label}
     </span>
+  );
+}
+
+/** Alive "agent is working" cue shown in the feed between your message and the
+ *  first streamed token: three gold dots bobbing. Disabled under reduced
+ *  motion, where it becomes a plain static "working" line. */
+function ThinkingRow() {
+  return (
+    <div className="flex items-center gap-2 px-1 py-1" role="status" aria-label="Imperator is working">
+      <span className="flex items-center gap-1" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="size-1.5 rounded-full bg-midground animate-[thinking-bob_1.2s_ease-in-out_infinite] motion-reduce:animate-none"
+            style={{ animationDelay: `${i * 160}ms` }}
+          />
+        ))}
+      </span>
+      <span className="text-xs text-text-tertiary">Imperator is working…</span>
+    </div>
   );
 }
 
@@ -162,7 +222,7 @@ export function ChatBubbleFeed({
     isWorking &&
     composer.trim().length > 0 &&
     !composer.trimStart().startsWith("/");
-  const { showToolCalls } = useAppSettings();
+  const { showToolCalls, showTimestamps } = useAppSettings();
 
   // Voice dictation → composer. A ref keeps the callback reading the latest
   // draft so a transcript appends instead of clobbering typed text.
@@ -456,12 +516,16 @@ export function ChatBubbleFeed({
                         "max-w-full rounded-xl border-warning/45 bg-warning/10",
                       message.status === "error" &&
                         "border-destructive/50 bg-destructive/10",
+                      // Alive treatment while a message waits in the agent's
+                      // queue: a gentle gold ring breathing until it runs.
+                      message.status === "queued" &&
+                        "border-midground/50 animate-[queued-glow_2s_ease-in-out_infinite] motion-reduce:animate-none",
                     )}
                   >
                     <div className="mb-1.5 flex min-w-0 items-center justify-between gap-3">
                       <span
                         className={cn(
-                          "truncate text-[0.6875rem] font-semibold uppercase tracking-[0.11em]",
+                          "truncate text-xs font-semibold uppercase tracking-[0.11em]",
                           user
                             ? "text-primary"
                             : interactive
@@ -473,7 +537,7 @@ export function ChatBubbleFeed({
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         <MessageStatus message={message} />
-                        <MessageTime message={message} />
+                        {showTimestamps && <MessageTime message={message} />}
                       </span>
                     </div>
 
@@ -515,6 +579,10 @@ export function ChatBubbleFeed({
                     )}
 
                     {message.role === "approval" && message.status === "waiting" && (
+                      <ApprovalFacts message={message} />
+                    )}
+
+                    {message.role === "approval" && message.status === "waiting" && (
                       <div className="mt-3 flex flex-wrap gap-2 border-t border-warning/25 pt-3">
                         <Button size="sm" onClick={() => onApproval("once", message)}>
                           Allow once
@@ -543,6 +611,12 @@ export function ChatBubbleFeed({
                         >
                           Deny
                         </Button>
+                        {message.allowPermanent !== false && (
+                          <p className="w-full text-xs text-text-tertiary">
+                            “Always allow” persists after this session and is
+                            changed in Settings, not here.
+                          </p>
+                        )}
                       </div>
                     )}
 
@@ -650,6 +724,11 @@ export function ChatBubbleFeed({
                 </article>
               );
             })}
+            {isWorking &&
+              !(
+                visibleMessages[visibleMessages.length - 1]?.role === "assistant" &&
+                visibleMessages[visibleMessages.length - 1]?.status === "streaming"
+              ) && <ThinkingRow />}
           </div>
         )}
       </div>
@@ -797,8 +876,11 @@ export function ChatBubbleFeed({
 
           <div className="mt-1.5 flex items-center justify-between gap-2 px-1 text-xs text-text-tertiary">
             {/* Always-on agent state: the user can tell at a glance whether
-                Imperator is mid-run, idle, or the link is down. */}
-            <span className="inline-flex min-w-0 items-center gap-1.5" role="status">
+                Imperator is mid-run, idle, or the link is down. This pill is
+                visual only — screen-reader announcements come from the
+                debounced AgentLiveStatus region below, which avoids the noisy
+                re-announcement a role="status" pill produces on every toggle. */}
+            <span className="inline-flex min-w-0 items-center gap-1.5">
               <span
                 aria-hidden
                 className={cn(
@@ -818,6 +900,9 @@ export function ChatBubbleFeed({
                     : "Idle — ready"}
               </span>
             </span>
+            <AgentLiveStatus
+              state={disabled ? "reconnecting" : isWorking ? "working" : "idle"}
+            />
 
             {/* Voice dictation feedback — errors announced politely. */}
             <span

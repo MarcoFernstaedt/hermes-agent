@@ -26,6 +26,9 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
+    // `Component` is a plugin-registered component pulled from an external
+    // store, not created during render — dynamic by design.
+    // eslint-disable-next-line react-hooks/static-components
     return <Component />;
   }
 

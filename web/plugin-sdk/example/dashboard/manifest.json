@@ -1,0 +1,12 @@
+{
+  "name": "example-panel",
+  "label": "Example",
+  "description": "Canonical dashboard-plugin template — authored in TSX, built to an IIFE by scripts/build-dashboard-plugin.mjs. Copy this to plugins/<name>/ to start a rich removable module.",
+  "icon": "Sparkles",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/example",
+    "position": "end"
+  },
+  "entry": "dist/index.js"
+}

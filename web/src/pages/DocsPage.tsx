@@ -159,7 +159,7 @@ export default function DocsPage() {
                 <span className="block text-sm text-foreground">
                   {imperatorDocText(d.title)}
                 </span>
-                <span className="block truncate text-[0.65rem] text-text-secondary">
+                <span className="block truncate text-xs text-text-secondary">
                   {imperatorDocText(d.trail)}
                 </span>
               </button>
@@ -170,7 +170,7 @@ export default function DocsPage() {
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto pb-4">
           {DOCS_MANIFEST.map((section) => (
             <div key={section.id}>
-              <p className="mb-1 px-2 text-[0.65rem] font-bold tracking-[0.2em] text-text-secondary uppercase">
+              <p className="mb-1 px-2 text-xs font-bold tracking-[0.2em] text-text-secondary uppercase">
                 {section.label}
               </p>
               <DocTree nodes={section.children} activePage={page} onOpen={openPage} />

@@ -78,6 +78,26 @@
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
 
+  /* Motion tokens. One spring curve, reused everywhere, so every module's
+     transitions feel like one system. Durations split by intent: quick for
+     in-place state changes, slower for panels/sheets that travel. Under
+     reduced motion the html[data-motion="reduced"] rule below collapses all
+     of these to ~0ms, so consumers never branch on the preference themselves.
+     Usage: `transition: transform var(--motion-state) var(--ease-spring);` */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-micro: 100ms; /* press, checkbox, icon swap (80–120ms band, ease-out) */
+  --motion-state: 160ms; /* in-place state changes (120–200ms band, ease-out) */
+  --motion-move: 240ms;  /* elements travelling: FLIP, reorder, stage change (200–280ms, spring) */
+  --motion-panel: 280ms; /* panels, sheets, overlays (240–320ms band, spring) */
+  --motion-route: 260ms; /* route + view transitions (240–300ms band) */
+  /* Composite shorthands so consumers never re-pair a duration with the wrong
+     easing. Motion is *caused*: use the band that matches why it moved. */
+  --transition-micro: var(--motion-micro) var(--ease-out);
+  --transition-state: var(--motion-state) var(--ease-out);
+  --transition-move: var(--motion-move) var(--ease-spring);
+  --transition-panel: var(--motion-panel) var(--ease-spring);
+
   /* Data-series accents — consumed by Analytics + Models pages for the
      input-vs-output token visualisations (chart bars, table values,
      legend swatches). Imperator gold input vs. violet output read as
@@ -231,6 +251,24 @@ code { font-size: 0.875rem; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Queued-message "alive" cues: a breathing gold ring on the bubble and a
+   soft pulse on the status glyph while a message waits in the agent's queue.
+   Both are disabled under reduced motion via motion-reduce:animate-none. */
+@keyframes queued-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--midground-base) 0%, transparent); }
+  50%      { box-shadow: 0 0 0 3px color-mix(in srgb, var(--midground-base) 22%, transparent); }
+}
+@keyframes queued-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* Three-dot "agent is working" bob. */
+@keyframes thinking-bob {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+  40%           { transform: translateY(-3px); opacity: 1; }
+}
+
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
 .scrollbar-none {
   -ms-overflow-style: none;
@@ -324,6 +362,100 @@ html[data-mobile-nav="visible"] .player-dock {
   /* Desktop has no tab bar; keep a little breathing room plus dock height. */
   .media-dock-inset {
     padding-bottom: calc(2rem + var(--app-media-dock-h));
+  }
+}
+
+/* Opt-in reduced motion (the app setting, independent of the OS toggle):
+   collapse animations/transitions app-wide when the user asks for it. */
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* ── The motion catalogue ─────────────────────────────────────────────────
+   The visual half of the motion system. Every class here is *caused* — it
+   fires because something actually happened, never for atmosphere. Both
+   reduced-motion rules below collapse all of it to an instant state change
+   with no information lost, so these can be used freely. */
+
+/* Entrance: a new row fades in and rises. Stagger via `animation-delay`
+   (see staggerDelay() in lib/motion.ts — capped so a batch never drags). */
+@keyframes imperator-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.motion-enter {
+  animation: imperator-enter var(--motion-state) var(--ease-out) both;
+}
+
+/* Exit: the list closes rather than snapping shut. */
+@keyframes imperator-exit {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(-2px); }
+}
+.motion-exit {
+  animation: imperator-exit 160ms var(--ease-out) both;
+}
+
+/* Live update: a row changed because something pushed. It warms toward gold
+   and decays — attention without alarm. */
+@keyframes imperator-warm {
+  from { background-color: color-mix(in srgb, var(--midground-base) 8%, transparent); }
+  to   { background-color: transparent; }
+}
+.motion-live {
+  animation: imperator-warm var(--motion-warm, 800ms) var(--ease-out) both;
+}
+
+/* Optimistic pending: written, not yet confirmed. Reads as provisional at a
+   glance, and the gold edge marks it as *ours* rather than an error. */
+.motion-pending {
+  opacity: 0.7;
+  box-shadow: inset 2px 0 0 0 var(--midground);
+  transition: opacity var(--transition-state);
+}
+.motion-pending[data-settled="true"] {
+  opacity: 1;
+  box-shadow: inset 2px 0 0 0 transparent;
+}
+
+/* FLIP: set the inverted transform, then add this class and clear it to let
+   the element physically travel to its new position. */
+.motion-flip {
+  transition: transform var(--transition-move);
+}
+
+/* Shared-element morph — a card opening into its detail view. */
+.motion-morph {
+  transition:
+    transform var(--transition-panel),
+    opacity var(--transition-panel);
+}
+
+/* The one permitted continuous motion: genuinely ongoing work. */
+@keyframes imperator-spin {
+  to { transform: rotate(360deg); }
+}
+.motion-working {
+  animation: imperator-spin 900ms linear infinite;
+}
+
+/* OS-level reduced motion. Independent of the app setting above: a user who
+   asked their system for less motion must get it without opening settings.
+   Motion becomes an instant state change — no information and no function is
+   lost, because nothing in this app conveys meaning through motion alone. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

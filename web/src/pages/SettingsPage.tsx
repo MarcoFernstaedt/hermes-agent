@@ -15,7 +15,14 @@ import {
 
 import { Card } from "@nous-research/ui/ui/components/card";
 import { Switch } from "@nous-research/ui/ui/components/switch";
-import { setAppSetting, useAppSettings } from "@/lib/app-settings";
+import { Segmented } from "@nous-research/ui/ui/components/segmented";
+import { Check } from "lucide-react";
+import {
+  setAppSetting,
+  useAppSettings,
+  useSaveStatus,
+  type AppSettings,
+} from "@/lib/app-settings";
 import { requestNotificationPermission } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
@@ -71,8 +78,41 @@ const AREA_LINKS = [
   },
 ] as const;
 
+/** Keys of AppSettings whose value is a boolean — the ones a switch can bind. */
+type BooleanSettingKey = {
+  [K in keyof AppSettings]: AppSettings[K] extends boolean ? K : never;
+}[keyof AppSettings];
+
+/** A labelled boolean preference row bound to the settings store. */
+function ToggleRow({
+  settingKey,
+  label,
+  description,
+  value,
+}: {
+  settingKey: BooleanSettingKey;
+  label: string;
+  description: string;
+  value: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 p-4">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{label}</div>
+        <p className="mt-0.5 text-xs text-text-secondary">{description}</p>
+      </div>
+      <Switch
+        checked={value}
+        onCheckedChange={(checked) => setAppSetting(settingKey, checked === true)}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const settings = useAppSettings();
+  const saveStatus = useSaveStatus();
   const [permissionHint, setPermissionHint] = useState<string | null>(null);
 
   const handleNotificationsToggle = async (checked: boolean) => {
@@ -94,6 +134,83 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+      {/* Quiet saved indicator — settings sync to the server automatically. */}
+      <p
+        className="flex items-center gap-1.5 self-end text-xs text-text-tertiary"
+        aria-live="polite"
+      >
+        {saveStatus === "saving" ? (
+          "Saving…"
+        ) : saveStatus === "saved" ? (
+          <>
+            <Check className="size-3.5 text-success" /> Saved
+          </>
+        ) : (
+          "Settings sync across your devices"
+        )}
+      </p>
+
+      <Card className="flex flex-col divide-y divide-current/10 p-0">
+        <div className="px-4 pt-3 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+          Preferences
+        </div>
+        <div className="flex items-center justify-between gap-3 p-4">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Density</div>
+            <p className="mt-0.5 text-xs text-text-secondary">
+              Compact tightens spacing across the app.
+            </p>
+          </div>
+          <Segmented
+            value={settings.density}
+            onChange={(v) => setAppSetting("density", v as AppSettings["density"])}
+            options={[
+              { value: "comfortable", label: "Comfortable" },
+              { value: "compact", label: "Compact" },
+            ]}
+          />
+        </div>
+        <div className="flex items-start justify-between gap-3 p-4">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Reduce motion</div>
+            <p className="mt-0.5 text-xs text-text-secondary">
+              Minimise animations and transitions, regardless of your OS setting.
+            </p>
+          </div>
+          <Switch
+            checked={settings.motion === "reduced"}
+            onCheckedChange={(checked) =>
+              setAppSetting("motion", checked === true ? "reduced" : "full")
+            }
+            aria-label="Reduce motion"
+          />
+        </div>
+        <ToggleRow
+          settingKey="sound"
+          label="Sound on reply"
+          description="Play a short cue when Imperator finishes a reply."
+          value={settings.sound}
+        />
+        <ToggleRow
+          settingKey="showToolCalls"
+          label="Show tool activity"
+          description="Render tool and system rows inline in the chat feed."
+          value={settings.showToolCalls}
+        />
+        <ToggleRow
+          settingKey="showTimestamps"
+          label="Show timestamps"
+          description="Show the time next to each chat message."
+          value={settings.showTimestamps}
+        />
+        <ToggleRow
+          settingKey="showTokenCost"
+          label="Show token & cost"
+          description="Surface token counts and cost readouts where available."
+          value={settings.showTokenCost}
+        />
+      </Card>
+
       <Card className="flex flex-col gap-3 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">

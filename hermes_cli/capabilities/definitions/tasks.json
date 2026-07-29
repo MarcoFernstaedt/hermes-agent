@@ -1,0 +1,45 @@
+{
+  "id": "tasks",
+  "label": "Tasks",
+  "icon": "list-todo",
+  "group": "do",
+  "entity": "task",
+  "title_field": "title",
+  "subtitle_field": "context",
+  "fields": [
+    { "name": "title", "label": "Title", "type": "text", "required": true },
+    { "name": "context", "label": "Context", "type": "text" },
+    { "name": "priority", "label": "Priority", "type": "select",
+      "options": [
+        { "value": "low", "label": "Low" },
+        { "value": "medium", "label": "Medium" },
+        { "value": "high", "label": "High" }
+      ] },
+    { "name": "due", "label": "Due", "type": "date" },
+    { "name": "status", "label": "Status", "type": "select",
+      "options": [
+        { "value": "todo", "label": "To do" },
+        { "value": "doing", "label": "Doing" },
+        { "value": "blocked", "label": "Blocked" },
+        { "value": "done", "label": "Done" }
+      ] },
+    { "name": "tags", "label": "Tags", "type": "tags" },
+    { "name": "notes", "label": "Notes", "type": "markdown" }
+  ],
+  "lifecycle": {
+    "field": "status",
+    "states": ["todo", "doing", "blocked", "done"],
+    "initial": "todo",
+    "transitions": [
+      { "from": "todo", "to": ["doing"] },
+      { "from": "doing", "to": ["blocked", "done"] },
+      { "from": "blocked", "to": ["doing"] },
+      { "from": "*", "to": ["todo"] }
+    ]
+  },
+  "views": [
+    { "id": "board", "kind": "board", "default": true },
+    { "id": "table", "kind": "table", "columns": ["title", "priority", "due", "status", "tags"] }
+  ],
+  "agent": { "expose": ["list", "get", "create", "advance"] }
+}

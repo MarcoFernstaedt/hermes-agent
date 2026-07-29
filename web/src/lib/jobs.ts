@@ -99,6 +99,17 @@ export interface JobStatusObservation {
   expected_updated_at: string;
 }
 
+export interface JobStatusEvent {
+  from_status: string;
+  to_status: string;
+  changed_at: string;
+  actor: string;
+}
+
+export interface JobHistoryResponse {
+  events: JobStatusEvent[];
+}
+
 type UpdateJobStatus = (
   jobId: number,
   status: JobStatus,
@@ -175,6 +186,31 @@ export function buildJobsQuery(filters: JobsFilters): string {
   return encoded ? `?${encoded}` : "";
 }
 
+function freshnessRank(freshness: JobFreshness): number {
+  // Active first, then unknown, then stale (least urgent to act on now).
+  if (freshness === "active") return 0;
+  if (freshness === "unknown") return 1;
+  return 2;
+}
+
+/**
+ * The day's highest-value income actions: roles whose application packet is
+ * built and just needs submitting. These are a single action away from
+ * progress, so they lead the daily command surface — freshest and best-fit
+ * first. Pure and deterministic so it can be unit-tested without the network.
+ */
+export function selectDailyActions(jobs: JobRole[], limit = 3): JobRole[] {
+  return [...jobs]
+    .filter((j) => j.status === "packet_ready_not_applied")
+    .sort((a, b) => {
+      const fr = freshnessRank(a.freshness) - freshnessRank(b.freshness);
+      if (fr !== 0) return fr;
+      if (b.fit_score !== a.fit_score) return b.fit_score - a.fit_score;
+      return (b.date_found || "").localeCompare(a.date_found || "");
+    })
+    .slice(0, Math.max(0, limit));
+}
+
 export function statusLabel(status: string): string {
   if (status === "packet_ready_not_applied") return "Packet ready — not applied";
   return status
@@ -183,4 +219,60 @@ export function statusLabel(status: string): string {
       index === 0 ? part.charAt(0).toUpperCase() + part.slice(1) : part,
     )
     .join(" ");
+}
+
+/**
+ * Load the Jobs page in the order that matters.
+ *
+ * The pipeline list is what the owner came for; the summary is a readout above
+ * it. The original implementation used `Promise.allSettled`, which makes two
+ * requests independent in *outcome* but not in *time* — it resolves only once
+ * both have settled, so a merely slow summary pinned the entire page on
+ * "Loading jobs…". Round-2 on-machine recon measured that at over 90 seconds,
+ * which turned an income-critical surface into a spinner.
+ *
+ * Here the two requests still start together, but the list is awaited on its
+ * own and reported the instant it lands. The summary is claimed up front (so a
+ * late rejection can never escape as an unhandled rejection) and reported
+ * afterwards, arriving behind the content or degrading to the stale banner.
+ */
+export interface JobsLoadHandlers {
+  onList(list: JobsListResponse): void;
+  /** The pipeline is on screen; the page is usable from this point. */
+  onReady(): void;
+  /** `null` means the summary failed and the stale banner should show. */
+  onSummary(summary: JobsSummary | null): void;
+  onError(kind: "unconfigured" | "timeout" | "error"): void;
+}
+
+export async function loadJobs(
+  listPromise: Promise<JobsListResponse>,
+  summaryPromise: Promise<JobsSummary>,
+  handlers: JobsLoadHandlers,
+): Promise<void> {
+  const settledSummary = summaryPromise.then(
+    (value) => ({ ok: true as const, value }),
+    () => ({ ok: false as const }),
+  );
+
+  let list: JobsListResponse;
+  try {
+    list = await listPromise;
+  } catch (reason) {
+    const text = String(reason);
+    handlers.onError(
+      /not configured|503/i.test(text)
+        ? "unconfigured"
+        : /timed out/i.test(text)
+          ? "timeout"
+          : "error",
+    );
+    return;
+  }
+
+  handlers.onList(list);
+  handlers.onReady();
+
+  const summary = await settledSummary;
+  handlers.onSummary(summary.ok ? summary.value : null);
 }

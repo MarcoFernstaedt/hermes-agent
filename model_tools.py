@@ -1068,6 +1068,33 @@ def handle_function_call(
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
+    # Approval integrity: for human-gated tools, snapshot the payload the
+    # approval decision sees here, then verify it is unchanged at dispatch —
+    # so nothing mutates a gated call between consent and execution. AUTO tools
+    # are never gated, so they are skipped (no cost, no audit noise).
+    # Approval integrity: is this call human-gated at all? The payload snapshot
+    # itself is taken later, at the post-middleware boundary (see below) — the
+    # request/execution middleware layers legitimately rewrite args, so
+    # snapshotting here produced false mismatches on real tools (found live on
+    # the terminal tool). Only the tier decision is made here.
+    _integrity_gated = False
+    try:
+        from hermes_cli.module_permissions import Tier, get_tier
+
+        _integrity_gated = bool(tool_call_id) and get_tier(function_name) is not Tier.AUTO
+    except Exception:
+        _integrity_gated = False
+
+    def _integrity_clear_on_block() -> None:
+        # A blocked/denied gated call must not leave a usable grant behind.
+        if _integrity_gated and tool_call_id:
+            try:
+                from hermes_cli import approval_integrity as _ai
+
+                _ai.clear(tool_call_id)
+            except Exception:
+                pass
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
@@ -1163,6 +1190,23 @@ def handle_function_call(
         except Exception as _mw_err:
             logger.debug("tool_request middleware error: %s", _mw_err)
 
+    # THE canonical integrity boundary: the payload as it stands after every
+    # legitimate request-side transform, which is what actually heads to
+    # execution. Snapshotting earlier compared a pre-transform payload against a
+    # post-transform one and refused honest calls. The window this protects is
+    # narrow and deliberate — anything that mutates the payload between here and
+    # dispatch was not part of what the tier gate authorised.
+    if _integrity_gated:
+        try:
+            from hermes_cli import approval_integrity as _integrity
+
+            _integrity.record_grant(
+                tool_call_id, function_name, function_args,
+                context={"middleware": [str(t) for t in _tool_middleware_trace][:8]},
+            )
+        except Exception:
+            pass
+
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
@@ -1211,6 +1255,7 @@ def handle_function_call(
                     error_message=block_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                _integrity_clear_on_block()
                 return result
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
@@ -1221,10 +1266,12 @@ def handle_function_call(
 
             edit_block_message = maybe_require_edit_approval(function_name, function_args)
             if edit_block_message is not None:
+                _integrity_clear_on_block()
                 return edit_block_message
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
+                _integrity_clear_on_block()
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
@@ -1256,12 +1303,49 @@ def handle_function_call(
             )
         except Exception:
             reset_current_observability_context = None
+        # Arm this session's capability scope so enforce_dispatch (at the
+        # registry chokepoint) applies it to this agent-initiated call. Reset
+        # unconditionally below so the scope never leaks to the next call on a
+        # reused thread. The global stop is enforced regardless of this arming.
+        _scope_token = None
         try:
+            from hermes_cli.agent_scopes import (
+                get_session_scope as _get_session_scope,
+                set_active_scope as _set_active_scope,
+            )
+            _scope_token = _set_active_scope(_get_session_scope(session_id or ""))
+        except Exception:
+            _scope_token = None
+        try:
+            def _integrity_refusal(next_args: Dict[str, Any]) -> Optional[str]:
+                # Approval integrity: the executed payload must match the approved
+                # one. Then the agent guards: outbound secret-scan + rate ceilings.
+                try:
+                    from hermes_cli import approval_integrity as _integrity
+
+                    refused = _integrity.verify_at_execution(
+                        tool_call_id or "", function_name, next_args,
+                        gated=_integrity_gated,
+                    )
+                    if refused is not None:
+                        return refused
+                except Exception:
+                    pass
+                try:
+                    from hermes_cli import agent_guards as _guards
+
+                    return _guards.pre_dispatch_check(function_name, next_args)
+                except Exception:
+                    return None
+
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    _refused = _integrity_refusal(next_args)
+                    if _refused is not None:
+                        return json.dumps({"error": _refused, "refused": True})
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1270,6 +1354,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    _refused = _integrity_refusal(next_args)
+                    if _refused is not None:
+                        return json.dumps({"error": _refused, "refused": True})
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1293,6 +1380,12 @@ def handle_function_call(
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
                     reset_current_observability_context(_approval_tokens)
+                except Exception:
+                    pass
+            if _scope_token is not None:
+                try:
+                    from hermes_cli.agent_scopes import reset_active_scope as _reset_active_scope
+                    _reset_active_scope(_scope_token)
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)

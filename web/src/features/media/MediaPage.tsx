@@ -23,6 +23,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 
 import { cn } from "@/lib/utils";
 import type { SpotifyItemType, SpotifyMediaItem } from "@/lib/api";
+import { SpotifyConnectionCard } from "./SpotifyConnectionCard";
 import { useMedia } from "./MediaProvider";
 import {
   MEDIA_SOURCES,
@@ -186,6 +187,8 @@ function SpotifyPanel() {
                 <RefreshCw />
               </Button>
             </div>
+
+            <SpotifyConnectionCard onChanged={() => void refreshSpotify()} />
 
             {status.status === "disconnected" && (
               <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">

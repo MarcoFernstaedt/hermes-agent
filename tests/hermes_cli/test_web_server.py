@@ -42,6 +42,32 @@ async def test_event_subscriber_emits_heartbeat_while_idle():
     ]
 
 
+def test_event_stamp_and_buffer_seq_ring_and_replay():
+    """Frames get a monotonic ``_seq`` + ring buffer; ``since`` replays the tail."""
+    from hermes_cli import web_server
+
+    rings: dict = {}
+    seqs: dict = {}
+    p1 = web_server._stamp_and_buffer(rings, seqs, "c", json.dumps({"method": "a"}))
+    p2 = web_server._stamp_and_buffer(rings, seqs, "c", json.dumps({"method": "b"}))
+    assert json.loads(p1)["_seq"] == 1
+    assert json.loads(p2)["_seq"] == 2
+
+    # `since=1` replays only what came after seq 1.
+    missed = [payload for (seq, payload) in rings["c"] if seq > 1]
+    assert [json.loads(m)["_seq"] for m in missed] == [2]
+
+    # Non-object frames pass through unstamped and are not buffered.
+    raw = web_server._stamp_and_buffer(rings, seqs, "c", "[1,2,3]")
+    assert raw == "[1,2,3]"
+    assert len(rings["c"]) == 2
+
+    # The ring is bounded.
+    for i in range(web_server._EVENT_RING_MAX + 50):
+        web_server._stamp_and_buffer(rings, seqs, "d", json.dumps({"n": i}))
+    assert len(rings["d"]) == web_server._EVENT_RING_MAX
+
+
 @pytest.mark.asyncio
 async def test_event_heartbeat_send_is_bounded_on_half_open_socket(monkeypatch):
     """A half-open subscriber that stalls the heartbeat *send* must raise
@@ -313,6 +339,137 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
+
+    def test_dashboard_prefs_round_trip_and_merge(self):
+        # Empty to start.
+        assert self.client.get("/api/dashboard/prefs").json() == {"prefs": {}}
+
+        # First write persists.
+        r1 = self.client.put(
+            "/api/dashboard/prefs",
+            json={"prefs": {"density": "compact", "showTimestamps": False}},
+        )
+        assert r1.status_code == 200
+        assert r1.json()["prefs"]["density"] == "compact"
+
+        # A partial write MERGES rather than replacing.
+        r2 = self.client.put("/api/dashboard/prefs", json={"prefs": {"sound": True}})
+        merged = r2.json()["prefs"]
+        assert merged["sound"] is True
+        assert merged["density"] == "compact"
+        assert merged["showTimestamps"] is False
+
+        # And it survives a fresh read (persisted to config).
+        assert self.client.get("/api/dashboard/prefs").json()["prefs"] == merged
+
+    def test_spotify_connection_reports_disconnected(self):
+        resp = self.client.get("/api/media/spotify/connection")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "spotify"
+        assert body["connected"] is False
+        assert body["scopes"] == []
+
+    def test_spotify_disconnect_is_idempotent(self):
+        resp = self.client.post("/api/media/spotify/disconnect")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        # Nothing was connected, so nothing was cleared — still a success.
+        assert body["cleared"] is False
+
+    def test_audit_log_endpoint_lists_and_filters(self):
+        from hermes_cli import audit_log
+
+        audit_log.record(actor="agent", module="email", tool="email.send",
+                         action="send", outcome="ok")
+        audit_log.record(actor="agent", module="media", tool="media.play",
+                         action="play", outcome="ok")
+
+        resp = self.client.get("/api/audit")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 2
+        assert len(body["entries"]) >= 2
+
+        filtered = self.client.get("/api/audit?module=email").json()
+        assert all(e["module"] == "email" for e in filtered["entries"])
+        assert len(filtered["entries"]) >= 1
+
+    def test_audit_log_export_is_ndjson(self):
+        from hermes_cli import audit_log
+
+        audit_log.record(actor="agent", module="notes", tool="notes.append",
+                         action="append", outcome="ok")
+        resp = self.client.get("/api/audit/export")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-ndjson")
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) >= 1
+        import json
+
+        assert all("tool" in json.loads(ln) for ln in lines)
+
+    def test_regenerate_session_title_from_first_exchange(self, monkeypatch):
+        """Regenerate reads the first user/assistant exchange, calls the
+        title generator, and persists the returned title."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="sess-regen", source="cli")
+            db.append_message("sess-regen", "user", content="How do I deploy?")
+            db.append_message(
+                "sess-regen", "assistant", content="Run the deploy script."
+            )
+        finally:
+            db.close()
+
+        captured = {}
+
+        def _fake_generate_title(user_message, assistant_response, *a, **k):
+            captured["user"] = user_message
+            captured["assistant"] = assistant_response
+            return "Deploying the app"
+
+        monkeypatch.setattr(
+            "agent.title_generator.generate_title", _fake_generate_title
+        )
+
+        resp = self.client.post("/api/sessions/sess-regen/regenerate-title", json={})
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Deploying the app"
+        assert captured["user"] == "How do I deploy?"
+        assert captured["assistant"] == "Run the deploy script."
+
+        # Persisted, so a subsequent detail read reflects the new title.
+        db = SessionDB()
+        try:
+            assert db.get_session_title("sess-regen") == "Deploying the app"
+        finally:
+            db.close()
+
+    def test_regenerate_session_title_requires_complete_exchange(self, monkeypatch):
+        """A session with only a user turn (no assistant reply) can't be
+        titled — the endpoint reports 422 rather than calling the model."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="sess-regen-partial", source="cli")
+            db.append_message("sess-regen-partial", "user", content="Hello?")
+        finally:
+            db.close()
+
+        def _boom(*a, **k):
+            raise AssertionError("generate_title must not run without an exchange")
+
+        monkeypatch.setattr("agent.title_generator.generate_title", _boom)
+
+        resp = self.client.post(
+            "/api/sessions/sess-regen-partial/regenerate-title", json={}
+        )
+        assert resp.status_code == 422
 
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
@@ -8918,9 +9075,18 @@ class TestPtyWebSocket:
 
         sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
 
-        # Every subscriber on the channel got the frame verbatim, exactly once.
-        assert sub_a1.sent == [frame]
-        assert sub_a2.sent == [frame]
+        # Every subscriber on the channel got the frame exactly once, stamped
+        # with a monotonic ``_seq`` (the replay cursor the client dedupes on);
+        # apart from that injected field the payload is delivered verbatim.
+        import json
+
+        original = json.loads(frame)
+        assert len(sub_a1.sent) == 1
+        assert len(sub_a2.sent) == 1
+        for got in (sub_a1.sent[0], sub_a2.sent[0]):
+            parsed = json.loads(got)
+            assert isinstance(parsed.pop("_seq", None), int)
+            assert parsed == original
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
 
@@ -8991,7 +9157,19 @@ class TestPtyWebSocket:
 
         healthy, stalled, remaining, frame = asyncio.run(_run())
 
-        assert healthy.sent == [frame, frame]
+        # The healthy subscriber received both broadcasts; each frame is the
+        # original payload plus an injected monotonic ``_seq``.
+        import json
+
+        original = json.loads(frame)
+        assert len(healthy.sent) == 2
+        seqs = []
+        for got in healthy.sent:
+            parsed = json.loads(got)
+            seqs.append(parsed.pop("_seq", None))
+            assert parsed == original
+        assert all(isinstance(seq, int) for seq in seqs)
+        assert seqs[1] > seqs[0]  # monotonic across broadcasts
         assert stalled.closed_with == 1011
         assert remaining == {healthy}
 
