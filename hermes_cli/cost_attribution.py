@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
+
 #: The feature currently executing, set by whatever initiated the work and read
 #: at the dispatch chokepoint. A ContextVar rather than a parameter because the
 #: call site is deep inside the provider layer and every intermediate frame
@@ -97,7 +99,10 @@ class CostLedger:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if not force_delete_journal_if_wal_unsafe(
+            conn, db_label="phase1-cost-ledger"
+        ):
+            conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _migrate(self) -> None:

@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_sqlite import force_delete_journal_if_wal_unsafe
+
 #: How long a recorded outcome stays replayable. A retry days later is a new
 #: intent, not the same one — keeping keys forever would silently swallow a
 #: deliberate repeat of a legitimate action.
@@ -50,7 +52,10 @@ class IdempotencyStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if not force_delete_journal_if_wal_unsafe(
+            conn, db_label="phase1-idempotency-store"
+        ):
+            conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _migrate(self) -> None:
