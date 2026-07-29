@@ -181,3 +181,50 @@ class TestNotificationPolicy:
         assert [c.value for c in NotificationClass] == [
             "blocking", "actionable", "opportunity", "informational",
         ]
+
+
+class TestClientMirrorHasNotDrifted:
+    """`web/src/lib/itemState.ts` mirrors this enum so the card can render a
+    state without a round trip. A state the client does not know renders as a
+    blank card; one the server does not know produces a rejected transition the
+    owner cannot explain. Either way the drift is invisible until it bites."""
+
+    def test_every_state_exists_on_both_sides(self):
+        import re
+        from pathlib import Path
+
+        source = Path("web/src/lib/itemState.ts").read_text(encoding="utf-8")
+        block = re.search(r"export const State = \{(.*?)\} as const;", source, re.S)
+        assert block, "could not find the State mirror in the frontend"
+        client = set(re.findall(r':\s*"([a-z_]+)"', block.group(1)))
+        server = {s.value for s in State}
+        assert client == server, (
+            f"only in client: {sorted(client - server)}; "
+            f"only in server: {sorted(server - client)}"
+        )
+
+    def test_notification_classes_match(self):
+        import re
+        from pathlib import Path
+
+        source = Path("web/src/lib/itemState.ts").read_text(encoding="utf-8")
+        block = re.search(
+            r"export const NOTIFICATION_CLASSES = \[(.*?)\] as const;", source, re.S
+        )
+        assert block
+        client = re.findall(r'"([a-z]+)"', block.group(1))
+        assert client == [c.value for c in NotificationClass]
+
+    def test_class_rank_matches(self):
+        import re
+        from pathlib import Path
+        from hermes_cli.items.lifecycle import CLASS_RANK
+
+        source = Path("web/src/lib/itemState.ts").read_text(encoding="utf-8")
+        block = re.search(
+            r"export const CLASS_RANK: Record<NotificationClass, number> = \{(.*?)\};",
+            source, re.S,
+        )
+        assert block
+        client = {k: int(v) for k, v in re.findall(r"(\w+):\s*(\d+)", block.group(1))}
+        assert client == CLASS_RANK
