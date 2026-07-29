@@ -485,9 +485,41 @@ The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes
 - The server spawns whatever `hermes --tui` would spawn, through `ptyprocess` (POSIX PTY — WSL works, native Windows does not).
 - Frames: raw PTY bytes each direction; resize via `\x1b[RESIZE:<cols>;<rows>]` intercepted on the server and applied with `TIOCSWINSZ`.
 
-**Do not re-implement the primary chat experience in React.** The main transcript, composer/input flow (including slash-command behavior), and PTY-backed terminal belong to the embedded `hermes --tui` — anything new you add to Ink shows up in the dashboard automatically. If you find yourself rebuilding the transcript or composer for the dashboard, stop and extend Ink instead.
+**One session contract, not one rendering technology.** The rule here used to be
+"do not re-implement the primary chat experience in React". That rule was
+protecting the right thing for the wrong reason, and the repository already
+contradicted it: `apps/desktop/` has its own composer, transcript and
+slash-command pipeline against the same `tui_gateway`, and the dashboard's own
+bubble feed is already a projection of the gateway's structured event stream
+while xterm survives only as a hidden input engine.
 
-**Structured React UI around the TUI is allowed when it is not a second chat surface.** Sidebar widgets, inspectors, summaries, status panels, and similar supporting views (e.g. `ChatSidebar`, `ModelPickerDialog`, `ToolCall`) are fine when they complement the embedded TUI rather than replacing the transcript / composer / terminal. Keep their state independent of the PTY child's session and surface their failures non-destructively so the terminal pane keeps working unimpaired.
+What actually must not happen is a **second session**: two composers, two turn
+orders, two transcripts, two queues that can disagree about what the agent was
+asked. That is a backend contract, not a frontend one.
+
+So the binding rules are:
+
+- **One backend session writer owns turn order.** Every surface — the embedded
+  TUI, the dashboard feed, the quick-chat overlay, the desktop app — submits
+  through the same `tui_gateway` methods (`session.create` / `session.resume` /
+  `prompt.submit` / `session.interrupt`) and observes the same sequenced events.
+  The shared transport lives in `apps/shared` (`@hermes/shared`).
+- **A new chat surface must reuse that contract, never fork it.** If you find
+  yourself inventing a parallel session id, a private queue, or a second
+  transcript store, stop — that is the failure the old rule was aimed at.
+- **The PTY terminal is a labelled fallback and debug surface**, not the
+  permanent primary. `web/src/lib/nativeChat.ts` is the PTY-free transport on
+  the same contract; it is behind `isNativeChatEnabled()` until it has been
+  soaked against a real gateway, and the terminal remains the default until
+  then. Do not add features to the PTY path that the native transport cannot
+  also express.
+- **Supporting structured UI stays welcome** — sidebars, inspectors, status
+  panels (`ChatSidebar`, `ModelPickerDialog`, `ToolCall`). Surface their
+  failures non-destructively so a broken panel never takes chat with it.
+
+Changed deliberately as part of the ambient-layer work, because the accepted
+owner briefs require a native structured client and the previous wording would
+have forbidden work that is already authorised and partly landed.
 
 ### Electron Desktop Chat App (`apps/desktop/`)
 
