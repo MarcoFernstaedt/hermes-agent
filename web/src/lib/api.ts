@@ -617,6 +617,20 @@ export interface HubContext {
   };
 }
 
+/**
+ * Whether opening chat will reach a prompt, or trigger a build first. A cold
+ * checkout would otherwise run `npm install` inside the connect handler and
+ * hang for minutes with no explanation.
+ */
+export interface ChatReadiness {
+  ready: boolean;
+  source?: string;
+  reason?: "missing" | "blocking_build";
+  detail?: string;
+  /** The exact thing the owner should do about it. */
+  remedy?: string;
+}
+
 export interface SystemProvenance {
   backend: CommitInfo;
   frontend: CommitInfo;
@@ -1104,6 +1118,7 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
   getSystemHealth: () => fetchJSON<SystemHealth>("/api/system/health"),
+  getChatReadiness: () => fetchJSON<ChatReadiness>("/api/system/chat-readiness"),
   getHubContext: () =>
     fetchJSON<HubContext>("/api/system/context", undefined, { timeoutMs: 15_000 }),
   getSpotifyMediaState: () =>

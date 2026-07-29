@@ -56,6 +56,18 @@ def create_system_router(authorize: Authorize) -> APIRouter:
 
         return collect_hub_context()
 
+    @router.get("/chat-readiness")
+    def read_chat_readiness(request: Request) -> dict:
+        """Whether opening chat will reach a prompt, or trigger a build first.
+
+        The UI polls this before connecting so a cold checkout shows an
+        actionable message instead of a terminal that hangs for five minutes.
+        """
+        authorize(request)
+        from hermes_cli.chat_readiness import chat_backend_status
+
+        return chat_backend_status()
+
     @router.get("/chat-sessions")
     def read_chat_sessions(request: Request) -> dict:
         """Retained PTY/TUI session stats — the number that fills the cap."""

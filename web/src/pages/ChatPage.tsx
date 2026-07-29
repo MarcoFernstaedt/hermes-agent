@@ -364,10 +364,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // and never un-latching: navigate away and the PTY stays warm, but a session
   // that never opens Chat never spawns one.
   const [chatEverShown, setChatEverShown] = useState(false);
+  /**
+   * Set when the chat backend would have to build itself before a prompt could
+   * appear. Recon opened chat on a cold checkout and watched it hang on
+   * "Installing TUI dependencies…" for five minutes with no explanation; the
+   * server now refuses that connect, and this stops the client attempting it.
+   */
+  const [chatBlocked, setChatBlocked] = useState(false);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch on first activation.
     if (isActive) setChatEverShown(true);
   }, [isActive]);
+
+  useEffect(() => {
+    // Probe once, on the first activation that matters — paired with the
+    // latch above so a document that never opens Chat makes no request either.
+    if (!chatEverShown) return;
+    let alive = true;
+    void api
+      .getChatReadiness()
+      .then((status) => {
+        if (!alive || status.ready) return;
+        setChatBlocked(true);
+        setBanner(
+          [status.detail, status.remedy].filter(Boolean).join(" "),
+        );
+      })
+      // A probe that fails must not cost the owner chat: fall through and let
+      // the connect attempt speak for itself.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [chatEverShown]);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -1469,6 +1498,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // Don't open a PTY for a document that has never shown Chat (see the
     // chatEverShown latch): no spawn, no retained worker, no reconnect churn.
     if (!chatEverShown) return;
+    // Nor when the backend would have to build itself first. The server
+    // refuses that connect anyway; checking here means the owner reads an
+    // actionable sentence instead of watching a terminal that never opens.
+    if (chatBlocked) return;
     if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;

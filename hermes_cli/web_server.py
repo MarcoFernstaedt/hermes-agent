@@ -14898,6 +14898,18 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # startup — see _get_event_state / _get_chat_argv_lock above.)
 
 
+def _chat_argv_resolver_is_patched() -> bool:
+    """True when a test has replaced the chat argv resolver.
+
+    Tests inject a tiny fake command (``cat``, ``sh -c …``) so nothing has to
+    build Node or the TUI bundle. The readiness probe describes the *real* TUI,
+    so running it against a fake resolver would report "not ready" and refuse
+    connections the test expects to succeed. Identity comparison, so a genuine
+    reassignment of the same function is not mistaken for a patch.
+    """
+    return _resolve_chat_argv is not _ORIGINAL_RESOLVE_CHAT_ARGV
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -15076,6 +15088,11 @@ def _build_gateway_ws_url() -> Optional[str]:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
+
+
+# Bound once, immediately after definition, so `_chat_argv_resolver_is_patched`
+# has a stable identity to compare against.
+_ORIGINAL_RESOLVE_CHAT_ARGV = _resolve_chat_argv
 
 
 async def _resolve_chat_argv_async(
@@ -15995,6 +16012,29 @@ async def pty_ws(ws: WebSocket) -> None:
     }
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+
+    # Refuse to start a multi-minute build inside a connect handler. Recon
+    # opened chat on a cold checkout and watched it hang on "Installing TUI
+    # dependencies…" for five minutes with a 404 session and leftover workers.
+    # Building is fine; building silently while someone waits for a prompt is
+    # not. Tests monkeypatch `_resolve_chat_argv`, so skip the probe when the
+    # resolver has been replaced — otherwise every chat test would need a TUI.
+    if not _chat_argv_resolver_is_patched():
+        try:
+            from hermes_cli.chat_readiness import chat_backend_status
+
+            status = await asyncio.to_thread(chat_backend_status)
+        except Exception:  # a probe failure must never block chat
+            status = {"ready": True}
+        if not status.get("ready", True):
+            detail = status.get("detail", "Chat is not ready.")
+            remedy = status.get("remedy", "")
+            await ws.send_text(
+                f"\r\n\x1b[33m{detail}\x1b[0m\r\n"
+                + (f"\x1b[2m{remedy}\x1b[0m\r\n" if remedy else "")
+            )
+            await ws.close(code=1011)
+            return
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
