@@ -137,3 +137,70 @@ describe("describeDeclaration", () => {
     expect(lines.join(" ")).toContain("todo → doing → done");
   });
 });
+
+describe("agent exposure", () => {
+  it("emits agent.expose so a builder capability is not silently UI-only", () => {
+    // Round-2 recon: a builder-authored declaration produced zero agent tools
+    // because this section was never written. The default must be non-empty.
+    const draft = { ...emptyDraft(), id: "notes", label: "Notes", titleField: "title" };
+    const decl = draftToDeclaration(draft) as { agent?: { expose: string[] } };
+    expect(decl.agent?.expose).toContain("list");
+    expect(decl.agent?.expose).toContain("get");
+    expect(decl.agent?.expose).toContain("create");
+  });
+
+  it("never exposes 'advance' without a lifecycle to advance through", () => {
+    const draft = { ...emptyDraft(), id: "notes", label: "Notes", titleField: "title" };
+    const decl = draftToDeclaration(draft) as { agent?: { expose: string[] } };
+    expect(decl.agent?.expose).not.toContain("advance");
+  });
+
+  it("exposes 'advance' once a lifecycle field exists", () => {
+    const draft = {
+      ...emptyDraft(),
+      id: "pipeline",
+      label: "Pipeline",
+      titleField: "title",
+      fields: [
+        { name: "title", label: "Title", type: "text" as const, required: true },
+        {
+          name: "stage",
+          label: "Stage",
+          type: "select" as const,
+          options: [{ value: "todo", label: "Todo" }, { value: "done", label: "Done" }],
+        },
+      ],
+      lifecycleField: "stage",
+    };
+    const decl = draftToDeclaration(draft) as { agent?: { expose: string[] } };
+    expect(decl.agent?.expose).toContain("advance");
+  });
+
+  it("omits the agent section entirely when the owner unticks everything", () => {
+    const draft = { ...emptyDraft(), id: "private", label: "Private", titleField: "title", expose: [] };
+    const decl = draftToDeclaration(draft) as { agent?: unknown };
+    expect(decl.agent).toBeUndefined();
+  });
+
+  it("says plainly when a capability has no agent tools", () => {
+    const draft = { ...emptyDraft(), id: "private", label: "Private", titleField: "title", expose: [] };
+    const lines = describeDeclaration(draftToDeclaration(draft));
+    expect(lines.join(" ")).toMatch(/agent cannot see it/i);
+  });
+
+  it("round-trips exposure through declarationToDraft", () => {
+    const draft = { ...emptyDraft(), id: "notes", label: "Notes", titleField: "title" };
+    const back = declarationToDraft(draftToDeclaration(draft));
+    expect(back.expose).toEqual(["list", "get", "create"]);
+  });
+});
+
+describe("templates", () => {
+  it("every template produces agent tools", async () => {
+    const { TEMPLATES } = await import("./templates");
+    for (const t of TEMPLATES) {
+      const decl = draftToDeclaration(t.draft) as { agent?: { expose: string[] } };
+      expect(decl.agent?.expose?.length, `${t.id} exposes nothing to the agent`).toBeGreaterThan(0);
+    }
+  });
+});

@@ -75,6 +75,38 @@ const roleLabel = (message: ChatFeedMessage): string => {
   return message.title || message.role;
 };
 
+/**
+ * The verified facts behind an approval request — and nothing else.
+ *
+ * The guard model that pre-screens gated calls (`_smart_approve`) is asked for
+ * exactly one word, with `max_tokens=16`, and its answer is reduced to a
+ * verdict string. No rationale is ever produced, so a card that showed
+ * "the agent's reasoning" would be inventing it. On-machine recon confirmed
+ * this and ruled: show only what the protocol actually carries.
+ *
+ * That still leaves a fact worth surfacing that the card previously threw
+ * away: `payload.description` — the specific pattern that tripped the gate.
+ * `roleLabel()` returns a constant for approvals, so the trigger never reached
+ * the screen and the owner was asked to approve a command with no stated cause.
+ */
+function ApprovalFacts({ message }: { message: ChatFeedMessage }) {
+  const raw = (message.raw ?? {}) as Record<string, unknown>;
+  const trigger =
+    typeof raw.description === "string" && raw.description.trim()
+      ? raw.description.trim()
+      : message.title?.trim();
+  if (!trigger || trigger === "Approval required") return null;
+
+  return (
+    <dl className="mt-2.5 flex flex-col gap-1 border-t border-warning/25 pt-2.5">
+      <dt className="text-xs font-semibold uppercase tracking-[0.11em] text-warning">
+        Why you are being asked
+      </dt>
+      <dd className="text-xs leading-relaxed text-text-secondary">{trigger}</dd>
+    </dl>
+  );
+}
+
 function MessageTime({ message }: { message: ChatFeedMessage }) {
   const label = formatMessageTime(message.timestamp);
   if (!label) return null;
@@ -547,6 +579,10 @@ export function ChatBubbleFeed({
                     )}
 
                     {message.role === "approval" && message.status === "waiting" && (
+                      <ApprovalFacts message={message} />
+                    )}
+
+                    {message.role === "approval" && message.status === "waiting" && (
                       <div className="mt-3 flex flex-wrap gap-2 border-t border-warning/25 pt-3">
                         <Button size="sm" onClick={() => onApproval("once", message)}>
                           Allow once
@@ -575,6 +611,12 @@ export function ChatBubbleFeed({
                         >
                           Deny
                         </Button>
+                        {message.allowPermanent !== false && (
+                          <p className="w-full text-xs text-text-tertiary">
+                            “Always allow” persists after this session and is
+                            changed in Settings, not here.
+                          </p>
+                        )}
                       </div>
                     )}
 

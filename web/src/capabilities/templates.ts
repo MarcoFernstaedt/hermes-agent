@@ -47,6 +47,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       ],
       lifecycleField: "stage",
       tableColumns: ["name", "company", "stage"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -72,6 +73,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       lifecycleField: "status",
       gallery: true,
       tableColumns: ["title", "author", "status"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -93,6 +95,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       ],
       agendaField: "date",
       tableColumns: ["date", "description", "amount", "direction"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -111,6 +114,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       ],
       agendaField: "day",
       tableColumns: ["day", "habit", "done"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -135,6 +139,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       ],
       lifecycleField: "status",
       tableColumns: ["name", "owner", "due", "status"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -161,6 +166,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       gallery: true,
       agendaField: "publish",
       tableColumns: ["title", "channel", "publish", "stage"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
   {
@@ -183,6 +189,7 @@ export const TEMPLATES: CapabilityTemplate[] = [
       ],
       lifecycleField: "status",
       tableColumns: ["topic", "progress", "status"],
+      expose: ["list", "get", "create", "advance"],
     },
   },
 ];

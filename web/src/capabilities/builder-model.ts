@@ -38,7 +38,27 @@ export interface Draft {
   gallery?: boolean;
   /** Field to group an agenda by; set ⇒ an agenda view is emitted. */
   agendaField?: string;
+  /**
+   * Which operations the agent may perform on this area. Round-2 recon found
+   * builder-authored capabilities generated *zero* agent tools, because this
+   * was never emitted — you got a working UI the agent could not see. It is now
+   * explicit and defaulted, never silently absent. `delete` is not offered:
+   * the schema forbids exposing destructive ops at all.
+   */
+  expose: AgentOp[];
 }
+
+/** The operations a capability may expose to the agent. Mirrors AGENT_OPS server-side. */
+export type AgentOp = "list" | "get" | "create" | "advance";
+
+export const AGENT_OPS: AgentOp[] = ["list", "get", "create", "advance"];
+
+export const AGENT_OP_LABELS: Record<AgentOp, string> = {
+  list: "List and search records",
+  get: "Read a single record",
+  create: "Add new records",
+  advance: "Move records through the board",
+};
 
 export function emptyDraft(): Draft {
   return {
@@ -47,6 +67,9 @@ export function emptyDraft(): Draft {
     titleField: "",
     fields: [{ name: "title", label: "Title", type: "text", required: true }],
     tableColumns: [],
+    // Read plus create by default: useful to the agent immediately, and no
+    // destructive op is offered anywhere in this builder.
+    expose: ["list", "get", "create", "advance"],
   };
 }
 
@@ -114,6 +137,12 @@ export function draftToDeclaration(draft: Draft): Record<string, unknown> {
   views.push(tableView);
   decl.views = views;
 
+  // `advance` only generates a tool when a lifecycle exists, so don't claim it
+  // otherwise — an exposed op that produces nothing is the same silent lie as
+  // omitting the section entirely.
+  const expose = (draft.expose ?? []).filter((op) => op !== "advance" || Boolean(decl.lifecycle));
+  if (expose.length) decl.agent = { expose };
+
   return decl;
 }
 
@@ -137,6 +166,9 @@ export function declarationToDraft(decl: Record<string, unknown>): Draft {
     tableColumns: tableView?.columns ?? [],
     gallery: declViews.some((v) => v.kind === "gallery"),
     agendaField: agendaView?.dateField,
+    expose: (((decl.agent as { expose?: string[] } | undefined)?.expose ?? []).filter(
+      (op): op is AgentOp => (AGENT_OPS as string[]).includes(op),
+    )),
   };
 }
 
@@ -152,5 +184,11 @@ export function describeDeclaration(decl: Record<string, unknown>): string[] {
   const views = (decl.views as Array<{ kind: string }>) ?? [];
   const kinds = [...new Set(views.map((v) => v.kind))];
   lines.push(`Views: ${kinds.join(", ")}.`);
+  const expose = ((decl.agent as { expose?: AgentOp[] } | undefined)?.expose ?? []);
+  lines.push(
+    expose.length
+      ? `Agent tools: ${expose.map((op) => AGENT_OP_LABELS[op] ?? op).join(", ").toLowerCase()}.`
+      : "No agent tools — this area is yours to use in the app, and the agent cannot see it.",
+  );
   return lines;
 }

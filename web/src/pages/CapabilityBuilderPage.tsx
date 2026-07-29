@@ -11,6 +11,8 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
+  AGENT_OPS,
+  AGENT_OP_LABELS,
   FIELD_TYPES,
   declarationToDraft,
   describeDeclaration,
@@ -319,6 +321,45 @@ export default function CapabilityBuilderPage() {
                 ))}
             </Select>
           </label>
+        </div>
+      </section>
+
+      {/* What the agent may do */}
+      <section className="flex flex-col gap-2" aria-labelledby="agent-h">
+        <h2 id="agent-h" className="text-sm font-semibold text-text-secondary">
+          What the agent may do here
+        </h2>
+        <p className="text-xs text-text-tertiary">
+          Each one becomes a tool the agent can call. Untick everything to keep
+          this area to yourself. Deleting is never exposed.
+        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          {AGENT_OPS.map((op) => {
+            const needsLifecycle = op === "advance" && !draft.lifecycleField;
+            return (
+              <label
+                key={op}
+                className={cn("flex items-center gap-2 text-sm", needsLifecycle && "opacity-50")}
+              >
+                <Checkbox
+                  checked={draft.expose.includes(op)}
+                  disabled={needsLifecycle}
+                  onCheckedChange={(v) =>
+                    update({
+                      expose: v
+                        ? [...draft.expose, op]
+                        : draft.expose.filter((x) => x !== op),
+                    })
+                  }
+                  aria-label={AGENT_OP_LABELS[op]}
+                />
+                {AGENT_OP_LABELS[op]}
+                {needsLifecycle && (
+                  <span className="text-xs text-text-tertiary">(needs a board)</span>
+                )}
+              </label>
+            );
+          })}
         </div>
       </section>
 
