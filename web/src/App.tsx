@@ -86,6 +86,14 @@ import {
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { GlobalStopControl } from "@/components/GlobalStopControl";
 import { Glance } from "@/components/Glance";
+import { QuickChatFrame } from "@/components/QuickChatFrame";
+import {
+  chatPresentation,
+  isTypingTarget,
+  matchesOpenShortcut,
+  quickOpenFromSearch,
+  searchWithQuickChat,
+} from "@/lib/quickChat";
 import { useGlance } from "@/hooks/useGlance";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
@@ -501,7 +509,7 @@ function buildRoutes(
 
 export default function App() {
   const { t } = useI18n();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { capabilities, loading: capabilitiesLoading } = useCapabilities();
@@ -511,6 +519,33 @@ export default function App() {
   // Shell-level, so the glance survives every route change — that persistence
   // is the whole premise of the ambient layer.
   const glance = useGlance();
+
+  // Quick chat is a *presentation* of the persistent ChatPage below, never a
+  // second one. State lives in the URL so back and deep links behave.
+  const quickChatOpen = quickOpenFromSearch(search);
+  const chatPresent = chatPresentation(pathname, quickChatOpen);
+  const setQuickChat = useCallback(
+    (open: boolean) => navigate({ search: searchWithQuickChat(search, open) }),
+    [navigate, search],
+  );
+  const closeQuickChat = useCallback(() => setQuickChat(false), [setQuickChat]);
+  const promoteQuickChat = useCallback(() => {
+    // Close the overlay in the same navigation that opens the full page, so
+    // back does not land on a stale overlay over the route it promoted from.
+    navigate("/chat");
+  }, [navigate]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      // Never steal a keystroke aimed at a text field — the promise is that
+      // the current surface survives, and eating a draft breaks it first.
+      if (isTypingTarget(event.target) || !matchesOpenShortcut(event)) return;
+      event.preventDefault();
+      setQuickChat(!quickChatOpen);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [quickChatOpen, setQuickChat]);
 
   // Native-style touch gestures: swipe in from the left edge to open the
   // navigation drawer; swipe left while it's open to close it. Vertical
@@ -1346,13 +1381,30 @@ export default function App() {
                   ) : (
                     <div
                       data-chat-active={isChatRoute ? "true" : "false"}
+                      data-chat-presentation={chatPresent}
                       className={cn(
                         "min-h-0 min-w-0",
-                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                        chatPresent === "full" && "flex flex-1 flex-col",
+                        chatPresent === "hidden" && "hidden",
+                        // `overlay` deliberately has no layout classes here:
+                        // QuickChatFrame owns the geometry, and this element
+                        // stays mounted so the session is never torn down.
                       )}
-                      aria-hidden={!isChatRoute}
+                      aria-hidden={chatPresent === "hidden"}
                     >
-                      <ChatPage isActive={isChatRoute} />
+                      <QuickChatFrame
+                        presentation={chatPresent}
+                        onClose={closeQuickChat}
+                        onPromote={promoteQuickChat}
+                      >
+                        {/*
+                          One ChatPage for all three presentations. `isActive`
+                          stays true for the overlay so the same session keeps
+                          streaming into it — the overlay is a frame, not a
+                          second conversation.
+                        */}
+                        <ChatPage isActive={chatPresent !== "hidden"} />
+                      </QuickChatFrame>
                     </div>
                   ))}
               </div>
