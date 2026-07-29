@@ -49,7 +49,7 @@ export function PlatformHealthCard() {
             <StatusIcon status={section.status} small />
             <div className="flex min-w-0 flex-col">
               <dt className="font-sans text-xs font-medium capitalize text-text-secondary">{name}</dt>
-              <dd className="font-sans text-[0.7rem] text-text-tertiary">{summarize(name, section)}</dd>
+              <dd className="font-sans text-xs text-text-tertiary">{summarize(name, section)}</dd>
             </div>
           </div>
         ))}

@@ -79,7 +79,7 @@ function ProposalCard({
       <div className="flex flex-wrap items-start gap-3 p-3">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded bg-midground/10 px-1.5 py-0.5 font-mono-ui text-[0.68rem] uppercase tracking-[0.08em] text-text-secondary">
+            <span className="rounded bg-midground/10 px-1.5 py-0.5 font-mono-ui text-xs uppercase tracking-[0.08em] text-text-secondary">
               {proposal.kind}
             </span>
             <span className="font-sans text-sm font-medium text-text-primary">{proposal.title}</span>
@@ -92,7 +92,7 @@ function ProposalCard({
           {proposal.summary && (
             <p className="font-sans text-xs text-text-secondary">{proposal.summary}</p>
           )}
-          <span className="font-sans text-[0.68rem] text-text-tertiary">
+          <span className="font-sans text-xs text-text-tertiary">
             from {proposal.source}
           </span>
         </div>
@@ -119,13 +119,13 @@ function ProposalCard({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1 border-t border-current/10 px-3 py-1.5 text-left font-sans text-[0.68rem] text-text-tertiary hover:text-text-secondary"
+        className="flex w-full items-center gap-1 border-t border-current/10 px-3 py-1.5 text-left font-sans text-xs text-text-tertiary hover:text-text-secondary"
       >
         <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden />
         {open ? "Hide" : "Inspect"} exactly what will happen
       </button>
       {open && (
-        <pre className="max-h-72 overflow-auto border-t border-current/10 bg-background/40 p-3 font-mono-ui text-[0.7rem] leading-relaxed text-text-secondary">
+        <pre className="max-h-72 overflow-auto border-t border-current/10 bg-background/40 p-3 font-mono-ui text-xs leading-relaxed text-text-secondary">
           {payloadText}
         </pre>
       )}

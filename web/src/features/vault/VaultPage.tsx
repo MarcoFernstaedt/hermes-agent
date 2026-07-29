@@ -164,7 +164,7 @@ export default function VaultPage() {
                 )}
               >
                 <span className="truncate text-sm font-medium">{r.title}</span>
-                <span className="truncate text-[0.6875rem] text-text-tertiary">{r.snippet}</span>
+                <span className="truncate text-xs text-text-tertiary">{r.snippet}</span>
               </button>
             ))
           )}

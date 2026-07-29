@@ -41,6 +41,43 @@ Text ramp: `--color-text-secondary`, `--color-text-tertiary` (plus
 `--color-foreground`). Data-series accents (`--series-input-token` etc.) exist
 for charts so analytics never invents colours.
 
+## Emphasis — what gold is for
+
+The on-machine review found gold on "almost every label, nav item, border, and
+action, so it no longer indicates the one thing that matters." That is the
+failure the palette exists to avoid. The rule, in priority order:
+
+**Gold (`--midground` / `--color-primary`) is permitted for exactly three things
+per surface:**
+
+1. **The primary action** — one per surface. Secondary actions are `ghost`.
+2. **The active state** — the current nav item, the selected tab, focus rings.
+3. **The one number that matters** — not every number. The one.
+
+**Everything else uses the text ramp:** `--color-foreground` for body,
+`--color-text-secondary` for supporting copy, `--color-text-tertiary` for
+metadata. A heading is not gold. A label is not gold. A border is not gold —
+borders are `current/10`–`current/20`.
+
+Low-opacity `bg-midground/[0.02–0.10]` is **not** an emphasis use — that is the
+surface-depth arithmetic above, and it is correct.
+
+A quick census of full-opacity gold text:
+
+```bash
+grep -rEoh "text-(primary|midground)\b" web/src/{components,pages,blocks,capabilities} | wc -l
+```
+
+Treat a rising number as a regression in emphasis discipline. When adding gold,
+the question is not "does this look important" but "is this *the* one".
+
+### The ghost-button trap
+
+`Button` takes a **`ghost` boolean**, not `variant="ghost"`. The variant form is
+silently ignored, so the button renders as a gold primary — two quiet controls
+shipped that way before the live review caught it. If a secondary button looks
+gold, this is why.
+
 ## Type
 
 | Token | Value |
@@ -49,6 +86,7 @@ for charts so analytics never invents colours.
 | `--theme-font-mono` | ui-monospace stack — logs, code, tokens, JSON |
 | `--theme-font-display` | currently aliases sans |
 | `--theme-base-size` | `15px` |
+| **minimum text size** | **`text-xs` (0.75rem ≈ 11px).** Never smaller. |
 | `--theme-line-height` | `1.55` |
 | `--theme-letter-spacing` | `0` |
 
@@ -138,6 +176,17 @@ information or function**:
 
 Because both are global `!important` rules, **components never branch on the
 preference themselves.**
+
+### The text-size floor
+
+Nothing below `text-xs`. At a 15px base, an arbitrary `text-[0.65rem]` renders
+at **9.75px** — unreadable for a low-vision user, and the review flagged exactly
+this ("many controls and secondary labels are small and low-contrast"). 28 such
+instances were raised to the floor. Audit with:
+
+```bash
+grep -rE "text-\[0\.[0-6][0-9]*rem\]" web/src   # any hit is a bug
+```
 
 ## Conformance status
 

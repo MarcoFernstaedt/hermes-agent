@@ -39,7 +39,7 @@ export function GlobalStopControl({ collapsed = false }: { collapsed?: boolean }
               <span className="font-sans text-xs font-semibold tracking-[0.08em]">
                 Agent halted
               </span>
-              <span className="font-sans text-[0.68rem] text-destructive/80">
+              <span className="font-sans text-xs text-destructive/80">
                 All tools paused · resume
               </span>
             </span>

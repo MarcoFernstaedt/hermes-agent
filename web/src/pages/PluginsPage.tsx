@@ -85,10 +85,10 @@ function SetupCommandBlock({ code, label }: { code: string; label: string }) {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[0.6875rem] text-muted-foreground">{label}</span>
+        <span className="text-xs text-muted-foreground">{label}</span>
         <CopyButton text={code} />
       </div>
-      <div className="border border-border bg-background/40 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed">
+      <div className="border border-border bg-background/40 px-3 py-2 font-mono text-xs leading-relaxed">
         <code className="break-all">{code}</code>
       </div>
     </div>
@@ -123,7 +123,7 @@ function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupR
             <div className="flex flex-wrap items-center gap-2">
               <span
                 className={cn(
-                  "border px-2 py-0.5 font-mono text-[0.6875rem]",
+                  "border px-2 py-0.5 font-mono text-xs",
                   setupResultClass(result.status),
                 )}
               >
@@ -135,12 +135,12 @@ function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupR
               </span>
             </div>
             {result.command ? (
-              <code className="block break-all border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]">
+              <code className="block break-all border border-border bg-background/40 px-2 py-1 font-mono text-xs">
                 {result.command}
               </code>
             ) : null}
             {detail ? (
-              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem] text-muted-foreground">
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words border border-border bg-background/40 px-2 py-1 font-mono text-xs text-muted-foreground">
                 {detail}
               </pre>
             ) : null}
@@ -248,7 +248,7 @@ function MemoryProviderSetupHint({
                 {setup.pip_dependencies.map((dep) => (
                   <code
                     key={dep}
-                    className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
+                    className="border border-border bg-background/40 px-2 py-1 font-mono text-xs"
                   >
                     {dep}
                   </code>
@@ -268,7 +268,7 @@ function MemoryProviderSetupHint({
             {setup.required_env.map((envKey) => (
               <code
                 key={envKey}
-                className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
+                className="border border-border bg-background/40 px-2 py-1 font-mono text-xs"
               >
                 {envKey}
               </code>

@@ -1583,7 +1583,7 @@ function NavBadge({ count, collapsed }: { count: number; collapsed: boolean }) {
         aria-hidden
         className={cn(
           "ml-auto shrink-0 rounded-full bg-midground/15 px-1.5 py-0.5",
-          "text-[0.65rem] font-semibold leading-none text-midground tabular-nums",
+          "text-xs font-semibold leading-none text-midground tabular-nums",
           collapsed && "lg:hidden",
         )}
       >

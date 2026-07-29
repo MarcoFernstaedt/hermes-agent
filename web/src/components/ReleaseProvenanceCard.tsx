@@ -61,7 +61,7 @@ export function ReleaseProvenanceCard() {
         <CommitBlock label="Backend (running)" info={data.backend} />
         <CommitBlock label="Frontend (served build)" info={data.frontend} />
       </dl>
-      <p className="font-mono-ui text-[0.68rem] tracking-[0.04em] text-text-tertiary">
+      <p className="font-mono-ui text-xs tracking-[0.04em] text-text-tertiary">
         python {data.process.python} · up{" "}
         {formatUptime(data.process.uptime_seconds)}
       </p>
@@ -73,7 +73,7 @@ function CommitBlock({ label, info }: { label: string; info: CommitInfo }) {
   const unknown = info.commit === "unknown";
   return (
     <div className="flex flex-col gap-1">
-      <dt className="font-sans text-[0.68rem] uppercase tracking-[0.1em] text-text-tertiary">
+      <dt className="font-sans text-xs uppercase tracking-[0.1em] text-text-tertiary">
         {label}
       </dt>
       <dd className="flex items-center gap-2 font-mono-ui text-sm text-text-secondary">
@@ -93,7 +93,7 @@ function CommitBlock({ label, info }: { label: string; info: CommitInfo }) {
         )}
       </dd>
       {info.built_at ? (
-        <span className="font-sans text-[0.68rem] text-text-tertiary">
+        <span className="font-sans text-xs text-text-tertiary">
           built {new Date(info.built_at).toLocaleString()}
         </span>
       ) : null}

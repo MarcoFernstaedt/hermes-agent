@@ -228,7 +228,7 @@ export default function CapabilityBuilderPage() {
               </button>
               {f.type === "select" && (
                 <div className="sm:col-span-5">
-                  <Label htmlFor={`opts-${i}`} className="text-[0.68rem] text-text-tertiary">
+                  <Label htmlFor={`opts-${i}`} className="text-xs text-text-tertiary">
                     Options — one <code>value = Label</code> per line
                   </Label>
                   <textarea

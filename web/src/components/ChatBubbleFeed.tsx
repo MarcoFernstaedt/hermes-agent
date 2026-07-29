@@ -111,7 +111,7 @@ function MessageStatus({ message }: { message: ChatFeedMessage }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 text-[0.6875rem] tracking-wide",
+        "inline-flex items-center gap-1 text-xs tracking-wide",
         message.status === "error"
           ? "text-destructive"
           : message.status === "queued"
@@ -493,7 +493,7 @@ export function ChatBubbleFeed({
                     <div className="mb-1.5 flex min-w-0 items-center justify-between gap-3">
                       <span
                         className={cn(
-                          "truncate text-[0.6875rem] font-semibold uppercase tracking-[0.11em]",
+                          "truncate text-xs font-semibold uppercase tracking-[0.11em]",
                           user
                             ? "text-primary"
                             : interactive
