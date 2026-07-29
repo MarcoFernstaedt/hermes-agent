@@ -14899,15 +14899,23 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 
 
 def _chat_argv_resolver_is_patched() -> bool:
-    """True when a test has replaced the chat argv resolver.
+    """True when a test has replaced *either* chat argv resolver.
 
     Tests inject a tiny fake command (``cat``, ``sh -c …``) so nothing has to
     build Node or the TUI bundle. The readiness probe describes the *real* TUI,
     so running it against a fake resolver would report "not ready" and refuse
-    connections the test expects to succeed. Identity comparison, so a genuine
-    reassignment of the same function is not mistaken for a patch.
+    connections the test expects to succeed.
+
+    Both the sync resolver and its async wrapper have to be checked. Checking
+    only the sync one missed ``test_pty_ws_resolves_argv_through_async_wrapper``,
+    which patches the wrapper alone: the probe ran, refused the connect, and the
+    resolver it was asserting on was never reached. Identity comparison, so a
+    genuine reassignment of the same function is not mistaken for a patch.
     """
-    return _resolve_chat_argv is not _ORIGINAL_RESOLVE_CHAT_ARGV
+    return (
+        _resolve_chat_argv is not _ORIGINAL_RESOLVE_CHAT_ARGV
+        or _resolve_chat_argv_async is not _ORIGINAL_RESOLVE_CHAT_ARGV_ASYNC
+    )
 
 
 def _resolve_chat_argv(
@@ -15124,6 +15132,11 @@ async def _resolve_chat_argv_async(
             _resolve_chat_argv,
             **kwargs,
         )
+
+
+# Bound immediately after definition, alongside the sync original, so
+# `_chat_argv_resolver_is_patched` can detect a patch of either one.
+_ORIGINAL_RESOLVE_CHAT_ARGV_ASYNC = _resolve_chat_argv_async
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:

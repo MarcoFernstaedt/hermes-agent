@@ -95,12 +95,19 @@ def test_a_stale_rebuild_probe_failure_is_advisory_only(monkeypatch, tmp_path):
     assert chat_readiness.chat_backend_status()["ready"] is True
 
 
-def test_the_probe_is_skipped_when_tests_patch_the_resolver(monkeypatch):
-    """Otherwise every existing chat test would need a built TUI to pass."""
+@pytest.mark.parametrize("attr", ["_resolve_chat_argv", "_resolve_chat_argv_async"])
+def test_the_probe_is_skipped_when_tests_patch_either_resolver(monkeypatch, attr):
+    """Otherwise every existing chat test would need a built TUI to pass.
+
+    Both spellings matter. Checking only the sync resolver broke
+    ``test_pty_ws_resolves_argv_through_async_wrapper``, which patches the async
+    wrapper alone — the probe ran, refused the connect, and the resolver the
+    test was asserting on was never reached.
+    """
     from hermes_cli import web_server
 
     assert web_server._chat_argv_resolver_is_patched() is False
-    monkeypatch.setattr(web_server, "_resolve_chat_argv", lambda **kw: ([], None, None))
+    monkeypatch.setattr(web_server, attr, lambda **kw: ([], None, None))
     assert web_server._chat_argv_resolver_is_patched() is True
 
 
