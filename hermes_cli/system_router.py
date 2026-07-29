@@ -42,6 +42,20 @@ def create_system_router(authorize: Authorize) -> APIRouter:
 
         return health.collect_health()
 
+    @router.get("/context")
+    def read_hub_context(request: Request) -> dict:
+        """The same volatile-tier payload the agent's `hub_context` tool returns.
+
+        One assembler, two consumers: the agent pulls it as a tool, the Now
+        surface renders it. That is deliberate — if the dashboard and the agent
+        computed "what needs attention" separately they would drift, and the
+        owner would get two different answers to the same question.
+        """
+        authorize(request)
+        from hermes_cli.hub_context import collect_hub_context
+
+        return collect_hub_context()
+
     @router.get("/chat-sessions")
     def read_chat_sessions(request: Request) -> dict:
         """Retained PTY/TUI session stats — the number that fills the cap."""

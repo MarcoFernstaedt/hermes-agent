@@ -547,6 +547,76 @@ export interface RuntimeIdentity {
   source: "installed" | "checkout";
 }
 
+/**
+ * The volatile context tier — what is true right now. Assembled server-side by
+ * `hermes_cli/hub_context.py` and served to two consumers from one place: the
+ * agent's `hub_context` tool and the Now surface. Deliberately kept out of the
+ * system prompt so the prompt cache stays byte-stable.
+ */
+export interface HubContextSection {
+  available: boolean;
+  /** Present only when `available` is false — why this section is missing. */
+  reason?: string;
+}
+
+export interface HubJobsSection extends HubContextSection {
+  counts?: Record<string, number>;
+  next_actions: Array<{
+    id: number;
+    company: string;
+    role: string;
+    fit_score?: number;
+    freshness?: string;
+    apply_url?: string;
+  }>;
+}
+
+export interface HubReviewSection extends HubContextSection {
+  counts?: Record<string, number>;
+  pending: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    risk: string;
+    source: string;
+  }>;
+}
+
+export interface HubGuardrailsSection extends HubContextSection {
+  halted: boolean;
+  scope: string | null;
+  note: string;
+}
+
+export interface HubCapabilitiesSection extends HubContextSection {
+  areas: Array<{ id: string; label?: string }>;
+  due_or_overdue: Array<{
+    capability: string;
+    title: string;
+    field: string;
+    date: string;
+  }>;
+}
+
+export interface HubHealthSection extends HubContextSection {
+  status: HealthStatus;
+  problems: string[];
+}
+
+export interface HubContext {
+  generated_at: string;
+  generated_at_epoch: number;
+  /** The lead lines, worst-blocker first. Everything else is the evidence. */
+  attention: string[];
+  sections: {
+    jobs?: HubJobsSection;
+    review?: HubReviewSection;
+    guardrails?: HubGuardrailsSection;
+    capabilities?: HubCapabilitiesSection;
+    health?: HubHealthSection;
+  };
+}
+
 export interface SystemProvenance {
   backend: CommitInfo;
   frontend: CommitInfo;
@@ -1034,6 +1104,8 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
   getSystemHealth: () => fetchJSON<SystemHealth>("/api/system/health"),
+  getHubContext: () =>
+    fetchJSON<HubContext>("/api/system/context", undefined, { timeoutMs: 15_000 }),
   getSpotifyMediaState: () =>
     fetchJSON<SpotifyMediaState>("/api/media/spotify/state"),
   controlSpotifyMedia: (command: SpotifyMediaCommand) =>

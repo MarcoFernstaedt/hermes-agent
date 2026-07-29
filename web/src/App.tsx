@@ -37,6 +37,7 @@ import {
   Eye,
   FolderOpen,
   FileText,
+  Compass,
   GitBranch,
   Globe,
   Heart,
@@ -109,6 +110,7 @@ const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
+const NowPage = lazy(() => import("@/pages/NowPage"));
 const ReviewPage = lazy(() => import("@/pages/ReviewPage"));
 const CapabilityBuilderPage = lazy(() => import("@/pages/CapabilityBuilderPage"));
 const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
@@ -208,6 +210,9 @@ const CHAT_NAV_ITEM: NavItem = {
 // ChatRouteSink below). Nav modules appear here in the exact sidebar order.
 const BUILTIN_MODULES: BuiltinModule[] = [
   { path: "/", component: RootRedirect }, // route-only (redirect)
+  // Now leads the sidebar: it is the answer to "what needs me?", assembled
+  // from the same volatile-context payload the agent pulls.
+  { path: "/now", component: NowPage, nav: { label: "Now", icon: Compass } },
   { path: "/search", component: SearchPage, nav: { label: "Search", icon: Search } },
   { path: "/graph", component: GraphPage, nav: { label: "Graph", icon: Share2 } },
   { path: "/sessions", component: SessionsPage, nav: { label: "Sessions", labelKey: "sessions", icon: MessageSquare } },
