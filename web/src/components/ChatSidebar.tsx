@@ -41,6 +41,7 @@ import {
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
+import { sidecarSessionCreateParams } from "@/lib/chat-sidebar-session-params";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -65,21 +66,6 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
-}
-
-/** Build the ``session.create`` params for the sidecar session.
- *
- * Extracted from the effect below so the invariant — close_on_disconnect
- * is set, source is "tool", and the profile is forwarded when present —
- * can be tested without reading component source text. See
- * ``chat-sidebar-session-params.test.ts``.
- */
-export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
-  return {
-    close_on_disconnect: true,
-    source: "tool",
-    ...(profile ? { profile } : {}),
-  };
 }
 
 export function ChatSidebar({
