@@ -20,6 +20,7 @@ import { JobHistory } from "@/components/JobHistory";
 import {
   JOB_STATUSES,
   commitJobStatus,
+  loadJobs,
   statusLabel,
   type JobFreshness,
   type JobRole,
@@ -194,6 +195,15 @@ export function JobsView({
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement>,
   ) => onFiltersChange({ ...filters, [key]: event.target.value });
 
+  // Filters are collapsed by default, so their state has to be legible from the
+  // closed summary — otherwise a stale filter silently hides the pipeline.
+  const activeFilterCount = [
+    filters.query,
+    filters.status,
+    filters.lane,
+    filters.freshness,
+  ].filter(Boolean).length;
+
   return (
     <section aria-labelledby="jobs-heading" className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:p-6">
       <header>
@@ -241,8 +251,31 @@ export function JobsView({
               Offer accepted. Campaign stop signal is active.
             </p>
           )}
-          <section aria-labelledby="jobs-summary-heading">
-            <h2 id="jobs-summary-heading" className="mb-3 text-base font-semibold tracking-wide">Pipeline</h2>
+          {/*
+            Density: the recon landed on this page and met "Today, nine
+            counters, two quota bars, filters, and full cards before the user
+            acts." Counters describe the system; they do not help you apply to
+            anything. They now sit behind a disclosure with the one number that
+            matters — packets ready to send — promoted into the summary line, so
+            the page opens on work rather than on statistics.
+          */}
+          <details className="group rounded border border-current/15 bg-background-base/40">
+            <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-sm marker:hidden">
+              <span className="font-semibold tracking-wide">Pipeline</span>
+              {summary && (
+                <span className="text-text-secondary">
+                  ·{" "}
+                  <span className="font-mono-ui tabular-nums text-primary">
+                    {summary.counts.packet_ready}
+                  </span>{" "}
+                  ready to send
+                </span>
+              )}
+              <span className="ml-auto text-xs text-text-tertiary">
+                {summaryStale ? "counts unavailable" : "details"}
+              </span>
+            </summary>
+            <div className="border-t border-current/10 p-3">
             {summaryStale && (
               <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded border border-warning/40 bg-warning/5 p-3 text-sm">
                 <span>Summary unavailable. Status counts may be stale.</span>
@@ -267,9 +300,23 @@ export function JobsView({
                 </div>
               </>
             )}
-          </section>
+            </div>
+          </details>
 
-          <section aria-label="Job search filters" className="grid gap-3 rounded border border-current/15 bg-background-base/40 p-3 sm:grid-cols-4">
+          <details className="group rounded border border-current/15 bg-background-base/40">
+            <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-sm marker:hidden">
+              <Search className="size-3.5 shrink-0 text-text-tertiary" aria-hidden />
+              <span className="font-semibold tracking-wide">Filter</span>
+              {activeFilterCount > 0 && (
+                <span className="font-mono-ui tabular-nums text-primary">
+                  {activeFilterCount} active
+                </span>
+              )}
+              <span className="ml-auto text-xs text-text-tertiary">
+                {roles.length} shown
+              </span>
+            </summary>
+            <div aria-label="Job search filters" className="grid gap-3 border-t border-current/10 p-3 sm:grid-cols-4">
             <label className="grid gap-1 text-xs text-text-secondary">
               Search
               <span className="relative block">
@@ -310,7 +357,8 @@ export function JobsView({
                 ))}
               </select>
             </label>
-          </section>
+            </div>
+          </details>
 
           {roles.length === 0 ? (
             <Card>
@@ -489,44 +537,43 @@ export default function JobsPage() {
 
   const load = useCallback(async () => {
     setState("loading");
-    // The roles list is the page's core content; the summary is a
-    // secondary readout. Fetch them independently so a flaky summary
-    // (e.g. a 500) degrades to a "stale" banner instead of blanking the
-    // whole pipeline the user came to work.
-    const [listResult, summaryResult] = await Promise.allSettled([
-      api.getJobs(filters),
-      api.getJobsSummary(),
-    ]);
-
-    if (listResult.status === "rejected") {
-      if (/not configured|503/i.test(String(listResult.reason))) {
-        setState("unconfigured");
-        return;
-      }
-      setError("Jobs could not load.");
-      setState("error");
-      return;
-    }
-
-    const list = listResult.value;
-    setRoles(list.items);
-    setAvailableStatuses(list.filters.statuses);
-    setAvailableLanes(list.filters.lanes);
-    setSelected(
-      Object.fromEntries(
-        list.items
-          .filter((role) => JOB_STATUSES.includes(role.status as JobStatus))
-          .map((role) => [role.id, role.status as JobStatus]),
-      ),
-    );
-
-    if (summaryResult.status === "fulfilled") {
-      setSummary(summaryResult.value);
-      setSummaryStale(false);
-    } else {
-      setSummaryStale(true);
-    }
-    setState("ready");
+    // Ordering lives in `loadJobs` so it is testable: the pipeline renders the
+    // moment its own request lands, and the summary follows behind it.
+    await loadJobs(api.getJobs(filters), api.getJobsSummary(), {
+      onList: (list) => {
+        setRoles(list.items);
+        setAvailableStatuses(list.filters.statuses);
+        setAvailableLanes(list.filters.lanes);
+        setSelected(
+          Object.fromEntries(
+            list.items
+              .filter((role) => JOB_STATUSES.includes(role.status as JobStatus))
+              .map((role) => [role.id, role.status as JobStatus]),
+          ),
+        );
+      },
+      onReady: () => setState("ready"),
+      onSummary: (next) => {
+        if (next) {
+          setSummary(next);
+          setSummaryStale(false);
+        } else {
+          setSummaryStale(true);
+        }
+      },
+      onError: (kind) => {
+        if (kind === "unconfigured") {
+          setState("unconfigured");
+          return;
+        }
+        setError(
+          kind === "timeout"
+            ? "Jobs took too long to load."
+            : "Jobs could not load.",
+        );
+        setState("error");
+      },
+    });
   }, [filters]);
 
   useEffect(() => {

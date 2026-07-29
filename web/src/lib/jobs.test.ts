@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { buildJobsQuery, selectDailyActions, statusLabel, type JobRole } from "./jobs";
+import {
+  buildJobsQuery,
+  loadJobs,
+  selectDailyActions,
+  statusLabel,
+  type JobRole,
+  type JobsListResponse,
+  type JobsSummary,
+} from "./jobs";
 
 function role(over: Partial<JobRole>): JobRole {
   return {
@@ -82,5 +90,82 @@ describe("jobs filters", () => {
   it("uses concise readable status labels", () => {
     expect(statusLabel("packet_ready_not_applied")).toBe("Packet ready — not applied");
     expect(statusLabel("offer_accepted")).toBe("Offer accepted");
+  });
+});
+
+describe("loadJobs", () => {
+  const list = {
+    items: [],
+    filters: { statuses: [], lanes: [] },
+  } as unknown as JobsListResponse;
+  const summary = { counts: {} } as unknown as JobsSummary;
+
+  function recorder() {
+    const events: string[] = [];
+    return {
+      events,
+      handlers: {
+        onList: () => events.push("list"),
+        onReady: () => events.push("ready"),
+        onSummary: (s: JobsSummary | null) => events.push(s ? "summary" : "stale"),
+        onError: (k: string) => events.push(`error:${k}`),
+      },
+    };
+  }
+
+  it("renders the pipeline before the summary settles", async () => {
+    // The defect: `Promise.allSettled` held the page on "Loading jobs…" until
+    // *both* requests finished, so a slow summary blocked the content. Ready
+    // must precede the summary, not wait on it.
+    let releaseSummary: (s: JobsSummary) => void = () => {};
+    const slowSummary = new Promise<JobsSummary>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const r = recorder();
+
+    const done = loadJobs(Promise.resolve(list), slowSummary, r.handlers);
+    // Let the list promise flush without resolving the summary at all.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(r.events).toEqual(["list", "ready"]);
+
+    releaseSummary(summary);
+    await done;
+    expect(r.events).toEqual(["list", "ready", "summary"]);
+  });
+
+  it("degrades a failed summary to stale without hiding the pipeline", async () => {
+    const r = recorder();
+    await loadJobs(Promise.resolve(list), Promise.reject(new Error("500")), r.handlers);
+    expect(r.events).toEqual(["list", "ready", "stale"]);
+  });
+
+  it("distinguishes a timeout from a generic failure", async () => {
+    const r = recorder();
+    await loadJobs(
+      Promise.reject(new Error("Request timed out after 15000ms: /api/jobs")),
+      Promise.resolve(summary),
+      r.handlers,
+    );
+    expect(r.events).toEqual(["error:timeout"]);
+  });
+
+  it("reports an unconfigured tracker distinctly", async () => {
+    const r = recorder();
+    await loadJobs(
+      Promise.reject(new Error("jobs not configured")),
+      Promise.resolve(summary),
+      r.handlers,
+    );
+    expect(r.events).toEqual(["error:unconfigured"]);
+  });
+
+  it("never leaks an unhandled rejection when the summary fails after an error", async () => {
+    const r = recorder();
+    const failingSummary = Promise.reject(new Error("boom"));
+    await loadJobs(Promise.reject(new Error("nope")), failingSummary, r.handlers);
+    // Give the microtask queue a chance to surface an unhandled rejection.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(r.events).toEqual(["error:error"]);
   });
 });

@@ -138,15 +138,32 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  // A caller-supplied signal still wins; the timeout only applies when the
+  // caller asked for one and did not bring its own abort control.
+  let signal = init?.signal;
+  if (options?.timeoutMs && !signal) {
+    signal = AbortSignal.timeout(options.timeoutMs);
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      signal,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (err) {
+    // Name the timeout, so the UI can say "this took too long" rather than
+    // the browser's generic "signal is aborted without reason".
+    if (options?.timeoutMs && err instanceof DOMException && err.name === "TimeoutError") {
+      throw new Error(`Request timed out after ${options.timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -1199,9 +1216,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(progress),
     }),
+  // Both carry a ceiling: this page sits in front of a scraper-backed store
+  // that can stall, and an unbounded request means an unbounded spinner.
   getJobs: (filters: JobsFilters) =>
-    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`),
-  getJobsSummary: () => fetchJSON<JobsSummary>("/api/jobs/summary"),
+    fetchJSON<JobsListResponse>(`/api/jobs${buildJobsQuery(filters)}`, undefined, {
+      timeoutMs: 15_000,
+    }),
+  getJobsSummary: () =>
+    fetchJSON<JobsSummary>("/api/jobs/summary", undefined, { timeoutMs: 15_000 }),
   getJobHistory: (jobId: number) =>
     fetchJSON<JobHistoryResponse>(`/api/jobs/${jobId}/history`),
 
@@ -2990,6 +3012,12 @@ interface FetchJSONOptions {
    *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
    *  rather than evidence of a rotated session token. */
   allowUnauthorized?: boolean;
+  /** Abort the request after this many milliseconds and reject with a clear
+   *  timeout error. Opt-in per call: most endpoints are fast, but a few sit in
+   *  front of work that can stall, and a request with no ceiling leaves the UI
+   *  in a loading state with no way out. Round-2 recon watched Jobs sit on
+   *  "Loading jobs…" for over 90 seconds for exactly this reason. */
+  timeoutMs?: number;
 }
 
 export interface ActionStatusResponse {

@@ -3,6 +3,7 @@ import { ArrowUpRight, Check, Sunrise, Target } from "lucide-react";
 import { api } from "@/lib/api";
 import {
   commitJobStatus,
+  loadJobs,
   selectDailyActions,
   type JobRole,
   type JobsSummary,
@@ -24,22 +25,29 @@ export function JobsTodayCommand() {
   const mounted = useRef(true);
 
   const load = useCallback(async () => {
-    try {
-      const [list, sum] = await Promise.all([
-        api.getJobs({ status: "packet_ready_not_applied", lane: "", freshness: "", query: "" }),
-        api.getJobsSummary(),
-      ]);
-      if (!mounted.current) return;
-      setActions(selectDailyActions(list.items));
-      setSummary(sum);
-    } catch {
-      if (mounted.current) setActions([]);
-    }
+    // The actions are the point of this surface; the week counter is a footnote.
+    // `Promise.all` rejected on either, so a failing summary blanked the whole
+    // command strip — the one thing on the page that moves money.
+    await loadJobs(
+      api.getJobs({ status: "packet_ready_not_applied", lane: "", freshness: "", query: "" }),
+      api.getJobsSummary(),
+      {
+        onList: (list) => {
+          if (mounted.current) setActions(selectDailyActions(list.items));
+        },
+        onReady: () => {},
+        onSummary: (sum) => {
+          if (mounted.current && sum) setSummary(sum);
+        },
+        onError: () => {
+          if (mounted.current) setActions([]);
+        },
+      },
+    );
   }, []);
 
   useEffect(() => {
     mounted.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch; state lands after the await, not synchronously.
     void load();
     return () => {
       mounted.current = false;
