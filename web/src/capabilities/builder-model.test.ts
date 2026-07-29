@@ -204,3 +204,44 @@ describe("templates", () => {
     }
   });
 });
+
+describe("view defaults", () => {
+  const base = { ...emptyDraft(), id: "x", label: "X", titleField: "title" };
+
+  it("never makes a gallery the default view", () => {
+    // Recon: sparse decorative cards where board or table does the work.
+    const decl = draftToDeclaration({ ...base, gallery: true }) as {
+      views: Array<{ kind: string; default?: boolean }>;
+    };
+    const gallery = decl.views.find((v) => v.kind === "gallery");
+    expect(gallery).toBeDefined();
+    expect(gallery!.default).toBeUndefined();
+    // Something still has to be the default, or the surface opens on nothing.
+    expect(decl.views.filter((v) => v.default).length).toBe(1);
+  });
+
+  it("falls back to the table when a gallery is the only extra view", () => {
+    const decl = draftToDeclaration({ ...base, gallery: true }) as {
+      views: Array<{ kind: string; default?: boolean }>;
+    };
+    expect(decl.views.find((v) => v.default)!.kind).toBe("table");
+  });
+
+  it("still prefers a board when there is a lifecycle", () => {
+    const decl = draftToDeclaration({
+      ...base,
+      gallery: true,
+      fields: [
+        { name: "title", label: "Title", type: "text" as const, required: true },
+        {
+          name: "stage",
+          label: "Stage",
+          type: "select" as const,
+          options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+        },
+      ],
+      lifecycleField: "stage",
+    }) as { views: Array<{ kind: string; default?: boolean }> };
+    expect(decl.views.find((v) => v.default)!.kind).toBe("board");
+  });
+});

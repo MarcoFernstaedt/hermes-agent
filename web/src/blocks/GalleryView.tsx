@@ -34,7 +34,12 @@ export function GalleryView<T>({
       aria-label={label}
       className={cn(
         "grid gap-3 overflow-y-auto",
-        "grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))]",
+        // Recon at 1920×1080: "two very wide sparse cards" leaving most of the
+        // page empty. A 15rem floor with 1fr tracks lets a handful of records
+        // stretch across the full width — the grid fills the row rather than
+        // keeping cards card-sized. Cap the track so a card stays a card and
+        // extra width becomes more columns, not wider ones.
+        "grid-cols-[repeat(auto-fill,minmax(min(100%,13rem),18rem))]",
         className,
       )}
     >

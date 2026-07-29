@@ -118,7 +118,11 @@ export function draftToDeclaration(draft: Draft): Record<string, unknown> {
     views.push({ id: "board", kind: "board", default: true });
   }
   if (draft.gallery) {
-    views.push({ id: "gallery", kind: "gallery", ...(views.length === 0 ? { default: true } : {}) });
+    // Never the default. Recon: the owner's records are state- and
+    // action-oriented, so a gallery of them is decorative — board or table
+    // does the work. Gallery earns its place on image-rich data, chosen
+    // deliberately, not by being the only view that claimed the slot.
+    views.push({ id: "gallery", kind: "gallery" });
   }
   const agendaField = draft.fields.find(
     (f) => f.name === draft.agendaField && f.type === "date",
@@ -133,7 +137,11 @@ export function draftToDeclaration(draft: Draft): Record<string, unknown> {
   }
   const tableView: Record<string, unknown> = { id: "table", kind: "table" };
   if (draft.tableColumns.length) tableView.columns = draft.tableColumns;
-  if (views.length === 0) tableView.default = true;
+  // The table is the fallback default: it claims the slot whenever nothing
+  // *else* has. Testing `views.length === 0` was equivalent only while every
+  // other view claimed default on sight — once gallery stopped doing so, a
+  // gallery-plus-table capability had no default view at all.
+  if (!views.some((v) => v.default)) tableView.default = true;
   views.push(tableView);
   decl.views = views;
 

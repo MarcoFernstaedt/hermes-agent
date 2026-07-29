@@ -156,4 +156,38 @@ Effort is rough and assumes the existing gate stays green on every merge.
 | 6 | Proactivity, adaptation, health | M | Health **done**. Proactivity/adaptation pending, off by default. |
 | 7 | First-run drip | M | Last; composes everything above. |
 
-**Now starting phase one.**
+## 9. Round-2 recon outcomes (2026-07-29)
+
+The on-machine agent verified the round-1 fixes on the live machine and found
+three new blockers. All three are now closed, plus the two design calls it was
+asked to make.
+
+| Finding | Resolution |
+|---|---|
+| Builder capabilities generated **zero agent tools** — `agent.expose` was never emitted, so the surface worked and the agent could not see it | Exposure is an explicit, defaulted builder step; `advance` suppressed without a lifecycle; every template covered by test |
+| Jobs never finished loading (>90s) | `Promise.allSettled` coupled the list to the summary *in time*; ordering extracted to `loadJobs`, both endpoints given a 15s ceiling |
+| Approval card promised reasoning the protocol never carries | Ruled option 2 (show verified facts). Investigating it found `payload.description` — the actual gate trigger — was being discarded entirely; now shown |
+| Zero `hub_context` calls in 30 days | The tool did not exist. `hermes_cli/hub_context.py` + `tools/hub_context_tools.py` (AUTO) + `GET /api/system/context` + the **Now** surface, one assembler serving both |
+| Chat hung on "Installing TUI dependencies…" for 5 minutes | `chat_readiness` refuses a blocking build inside a connect handler and names the fix. Stopgap ahead of the native client |
+| Gallery: "large empty columns and sparse cards" | No longer claims the default view slot; card track capped so extra width becomes more columns, not wider ones |
+| Jobs density: counters and filters before any work | Both behind disclosures; packets-ready promoted into the collapsed summary; active-filter count kept visible |
+
+**Still open, in order:**
+
+1. **The native structured chat client.** The PTY bootstrap is the worst
+   remaining thing in the app — the recon's own verdict, and correct. The
+   readiness gate makes its failure legible; it does not make it good.
+2. **Approval integrity → `enforce`.** The live sample was clean (6 verified,
+   0 refusals, 0 false positives) but covered only 3 of 6 required gated
+   families; email send, calendar write, and capability write are unmeasured.
+   Enforcing on a partial denominator would violate the fail-closed rule.
+3. **Renderer breadth** — calendar/timeline/chart views, formula/rollup fields.
+4. **Self-extension** — skills → MCP → plugins/tools.
+5. **Proactivity, adaptation, first-run drip.**
+6. **Media & Jobs migration to plugins** — deferred by the owner to the very end.
+
+**Two installs.** The owner's machine runs the CLI from an editable `0.19.0`
+worktree while the dashboard serves the `0.18.2` fork checkout. The Release card
+now names this outright. Consolidation is an integration task — merging the fork
+onto the accepted `0.19.0` base and repointing both the venv install and the
+dashboard service at one root — not a `PYTHONPATH` edit.
