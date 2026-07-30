@@ -66,6 +66,12 @@ def _iter_import_time_statements(body: list) -> "list":
                 out.extend(_iter_import_time_statements(nested))
         for handler in getattr(node, "handlers", []) or []:
             out.extend(_iter_import_time_statements(handler.body))
+        # `match` keeps its executable branches under cases[*].body rather than
+        # a plain `body` attribute, so the generic walk above misses them
+        # entirely. A module-level match/case runs on import like any other
+        # control flow.
+        for case in getattr(node, "cases", []) or []:
+            out.extend(_iter_import_time_statements(case.body))
     return out
 
 

@@ -25,7 +25,27 @@
  * path into two. It ships behind `isNativeChatEnabled()` so the on-machine
  * agent can exercise it against a real gateway first.
  */
+import { GatewayRpcError } from "@hermes/shared";
 import type { GatewayEvent, GatewayEventName } from "@hermes/shared";
+
+/**
+ * The gateway's code for "that durable session is gone" (pruned, expired, or
+ * from another profile). The *only* condition under which creating a
+ * replacement is correct.
+ */
+export const SESSION_NOT_FOUND = 4007;
+
+/**
+ * Is this the server telling us the session no longer exists?
+ *
+ * Deliberately narrow. A timeout, a dropped socket, an auth failure or a 500
+ * all mean "we do not know" — and answering "we do not know" by creating a
+ * second session is how a transient blip becomes a duplicate session and a
+ * duplicate worker.
+ */
+export function isSessionNotFound(err: unknown): boolean {
+  return err instanceof GatewayRpcError && err.code === SESSION_NOT_FOUND;
+}
 
 /** The slice of a gateway client this controller needs — a seam for tests. */
 export interface NativeChatTransport {
@@ -90,8 +110,13 @@ export function eventSessionId(ev: GatewayEvent): string | null {
 
 export class NativeChatSession {
   /**
-   * The live transport identity. Changes on every reconnect, and is what
-   * `prompt.submit` and event filtering must use.
+   * The live transport identity — what `prompt.submit` and event filtering
+   * must use.
+   *
+   * It may or may not change across a reconnect: the gateway reuses the
+   * existing live sid on a quick reattach (inside the orphan grace) and issues
+   * a fresh one only once the prior live session has been reaped. So this is
+   * always taken from the resume response, never assumed either way.
    */
   private liveId: string | null = null;
   /**
@@ -138,11 +163,15 @@ export class NativeChatSession {
   /**
    * Connect, then resume `resumeId` if given and create a session otherwise.
    *
-   * Resume is tried *first* and falls back to create only when the gateway
-   * rejects it. A browser refresh that always created a fresh session is the
-   * documented cause of leaked slash-worker subprocesses (one per refresh) —
-   * the gateway even carries an orphan reaper to mop them up. Preferring resume
-   * means a reconnect reattaches the session that already exists.
+   * Resume is tried *first*, and falls back to create only when the gateway
+   * explicitly reports the durable session is gone (`4007`). A browser refresh
+   * that always created a fresh session is the documented cause of leaked
+   * slash-worker subprocesses (one per refresh) — the gateway even carries an
+   * orphan reaper to mop them up.
+   *
+   * Every other failure propagates. A timeout or a dropped socket means "we do
+   * not know whether that session still exists", and answering that by creating
+   * a second one turns a transient blip into a duplicate session.
    */
   async open(resumeId?: string | null): Promise<string> {
     if (this.closed) throw new Error("session is closed");
@@ -159,16 +188,23 @@ export class NativeChatSession {
             session_id: resumeId,
             cols: this.options.cols ?? 80,
           });
-          // Resume hands back a *fresh* live sid; the durable id is the one we
-          // asked with (echoed as `resumed`). Reusing the old live sid here
-          // would scope events to a transport that no longer exists.
+          // The gateway may hand back the *same* live sid (quick reconnect,
+          // before the prior live session was reaped) or a fresh one (cold
+          // reconnect, after). Both are correct; adopt whatever it returns
+          // rather than assuming either.
           if (res?.session_id) {
             this.liveId = res.session_id;
             this.storedId = res.resumed ?? resumeId;
           }
-        } catch {
-          // Genuinely gone — pruned, expired, or from another profile. Falling
-          // back is right; failing would strand the owner on a dead id.
+        } catch (err) {
+          // Fall back ONLY when the server says the session is genuinely gone.
+          // Catching everything meant a timeout, a dropped socket or a 500
+          // silently created a duplicate session — the same class of defect as
+          // the identity bug, one layer up.
+          if (!isSessionNotFound(err)) {
+            this.setStatus("error");
+            throw err;
+          }
           this.liveId = null;
           this.storedId = null;
         }

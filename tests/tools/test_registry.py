@@ -843,6 +843,26 @@ class TestImportTimeRegistrationIsDiscovered:
             "try:\n    for n in NAMES:\n        registry.register(name=n)\nexcept Exception:\n    pass\n",
         )
 
+    def test_registration_inside_a_module_level_match(self, tmp_path):
+        # `ast.Match` keeps its branches under cases[*].body, not `body`, so a
+        # generic walk misses them. Caught in review, not by me.
+        assert self._detects(
+            tmp_path,
+            'match MODE:\n    case "enabled":\n        registry.register(name="a")\n',
+        )
+
+    def test_registration_in_a_match_wildcard_case(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            'match MODE:\n    case _:\n        registry.register(name="a")\n',
+        )
+
+    def test_a_function_defined_inside_a_match_case_is_not_import_time(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            'match MODE:\n    case "x":\n        def later():\n            registry.register(name="a")\n',
+        )
+
     def test_a_function_that_registers_when_called_is_not_a_tool_module(self, tmp_path):
         # The distinction the original check was protecting, and still is: a
         # helper that registers when *invoked* must not be imported eagerly.
@@ -863,10 +883,52 @@ class TestImportTimeRegistrationIsDiscovered:
             "for n in NAMES:\n    def later():\n        registry.register(name=n)\n",
         )
 
-    def test_the_real_gmail_and_calendar_modules_are_discovered(self):
+    def test_the_real_hidden_modules_are_discovered(self):
+        """Gmail, Calendar and Vault were all invisible. Review found Vault —
+        13 tools appeared in the catalogue delta, not the 7 I predicted."""
         from pathlib import Path
 
         from tools.registry import _module_registers_tools
 
-        for module in ("tools/gmail_tools.py", "tools/calendar_tools.py"):
+        for module in (
+            "tools/gmail_tools.py",
+            "tools/calendar_tools.py",
+            "tools/vault_tools.py",
+        ):
             assert _module_registers_tools(Path(module)) is True, module
+
+    def test_newly_exposed_write_tools_carry_an_approval_tier(self):
+        """Discovery widened the live tool surface. Every write among the newly
+        visible tools must gate, and anything unregistered must fail safe."""
+        import tools.calendar_tools  # noqa: F401
+        import tools.gmail_tools  # noqa: F401
+        import tools.vault_tools  # noqa: F401
+        from hermes_cli.module_permissions import Tier, get_tier
+
+        for name in (
+            "gmail_draft",
+            "calendar_create_event",
+            "calendar_create_task",
+            "vault_append",
+            "vault_create",
+        ):
+            assert get_tier(name) is Tier.APPROVAL, name
+
+        # Stricter still, and rightly so: replace destroys existing content
+        # where append does not, so it can never be blanket-allowed for a
+        # session. (Both the review and I had this down as APPROVAL; the code
+        # is the one that was correct.)
+        assert get_tier("vault_replace") is Tier.ALWAYS_APPROVAL
+
+        for name in (
+            "gmail_search",
+            "gmail_read",
+            "calendar_list_events",
+            "calendar_find_free_time",
+            "vault_search",
+            "vault_read",
+        ):
+            assert get_tier(name) is Tier.AUTO, name
+
+        # Fail-safe: an unknown tool is never silently permitted.
+        assert get_tier("definitely_not_registered") is Tier.ALWAYS_APPROVAL

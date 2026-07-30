@@ -3,10 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   NativeChatSession,
+  SESSION_NOT_FOUND,
   eventSessionId,
   isNativeChatEnabled,
+  isSessionNotFound,
   type NativeChatTransport,
 } from "./nativeChat";
+import { GatewayRpcError } from "@hermes/shared";
 import type { GatewayEvent, GatewayEventName } from "@hermes/shared";
 
 /** A gateway that records calls and lets tests push events by hand. */
@@ -138,13 +141,63 @@ describe("NativeChatSession", () => {
     expect(t.calls.map((c) => c.method)).toEqual(["session.resume"]);
   });
 
-  it("falls back to a new session when the old one is gone", async () => {
-    const t = fakeTransport({ "session.resume": new Error("4006 unknown session") });
-    const s = new NativeChatSession(t, { onEvent: () => {} });
-    const id = await s.open("pruned");
+  describe("resume failure handling", () => {
+    // The fallback must be narrow. Catching every error meant a timeout, a
+    // dropped socket or a 500 silently created a duplicate session and a
+    // duplicate worker — the identity defect one layer up.
 
-    expect(id).toBe("live-1");
-    expect(t.calls.map((c) => c.method)).toEqual(["session.resume", "session.create"]);
+    it("creates exactly one replacement when the server says 4007", async () => {
+      const t = fakeTransport({
+        "session.resume": new GatewayRpcError(SESSION_NOT_FOUND, "session not found"),
+      });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      const id = await s.open("pruned");
+
+      expect(id).toBe("live-1");
+      expect(t.calls.map((c) => c.method)).toEqual(["session.resume", "session.create"]);
+      expect(t.calls.filter((c) => c.method === "session.create")).toHaveLength(1);
+    });
+
+    it.each([
+      ["a timeout", new Error("request timed out")],
+      ["a dropped socket", new Error("WebSocket closed")],
+      ["an authorization failure", new GatewayRpcError(4401, "unauthorized")],
+      ["a server error", new GatewayRpcError(5000, "internal error")],
+      ["an unrelated rpc error", new GatewayRpcError(4006, "session_id required")],
+    ])("does not create a session after %s", async (_label, err) => {
+      const t = fakeTransport({ "session.resume": err });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+
+      await expect(s.open("durable-1")).rejects.toThrow();
+      expect(t.calls.map((c) => c.method)).toEqual(["session.resume"]);
+      expect(s.state).toBe("error");
+    });
+  });
+
+  it("accepts a reused live id on a quick reconnect", async () => {
+    // Inside the orphan grace the gateway hands back the SAME live sid. The
+    // client must adopt whatever it returns rather than assuming a fresh one.
+    const t = fakeTransport({
+      "session.resume": { session_id: "live-1", resumed: "durable-1" },
+    });
+    const s = new NativeChatSession(t, { onEvent: () => {} });
+    await s.open("durable-1");
+
+    expect(s.id).toBe("live-1");
+    expect(s.resumeId).toBe("durable-1");
+  });
+
+  it("scopes events to the new live id after a cold reconnect", async () => {
+    const seen: string[] = [];
+    const t = fakeTransport();
+    const s = new NativeChatSession(t, { onEvent: (e) => seen.push(e.type) });
+    await s.open("durable-1");
+
+    // Old live sid must NOT reach the feed; the new one must.
+    t.emit("message.delta", ev("message.delta", "live-1"));
+    expect(seen).toEqual([]);
+    t.emit("message.delta", ev("message.delta", "live-2"));
+    expect(seen).toEqual(["message.delta"]);
   });
 
   it("reports an unusable gateway as an error rather than a half-open session", async () => {
@@ -375,5 +428,21 @@ describe("eventSessionId", () => {
     expect(eventSessionId({ type: "x" } as unknown as GatewayEvent)).toBeNull();
     expect(eventSessionId({ type: "x", session_id: "" } as unknown as GatewayEvent)).toBeNull();
     expect(eventSessionId({ type: "x", session_id: 7 } as unknown as GatewayEvent)).toBeNull();
+  });
+});
+
+describe("isSessionNotFound", () => {
+  it("recognises only the gateway's session-not-found code", () => {
+    expect(isSessionNotFound(new GatewayRpcError(4007, "session not found"))).toBe(true);
+  });
+
+  it("rejects other rpc codes, plain errors and non-errors", () => {
+    expect(isSessionNotFound(new GatewayRpcError(4006, "session_id required"))).toBe(false);
+    expect(isSessionNotFound(new GatewayRpcError(undefined, "session not found"))).toBe(false);
+    // A transport failure whose text happens to match must not qualify —
+    // message-sniffing is exactly the fragility the code exists to avoid.
+    expect(isSessionNotFound(new Error("session not found"))).toBe(false);
+    expect(isSessionNotFound("session not found")).toBe(false);
+    expect(isSessionNotFound(null)).toBe(false);
   });
 });
