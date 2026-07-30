@@ -38,6 +38,8 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
+import { useNativeChat } from "@/hooks/useNativeChat";
+import type { GatewayEvent } from "@hermes/shared";
 import { ChatHeaderRename } from "@/components/ChatHeaderRename";
 import { ChatScopeControl } from "@/components/ChatScopeControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
@@ -61,6 +63,7 @@ import {
   parseDashboardEventFrame,
   shouldApplyHydration,
   shouldHandleChannelEvent,
+  type ChatFeedEvent,
   type ChatFeedMessage,
   type ChatFeedState,
 } from "@/lib/chat-feed-model";
@@ -380,6 +383,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
    * server now refuses that connect, and this stops the client attempting it.
    */
   const [chatBlocked, setChatBlocked] = useState(false);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch on first activation.
     if (isActive) setChatEverShown(true);
@@ -552,6 +556,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
   const ptyTargetKey = `${scopedProfile ?? "default"}\0${resumeParam ?? "new"}`;
+
+  /**
+   * The native, PTY-free transport. Feeds the *same* `chatFeedReducer` the
+   * sidecar path feeds — the reducer never learns which transport delivered an
+   * event, which is why swapping them changes nothing above this line.
+   *
+   * Declared here rather than beside the other latches because it reads
+   * `scopedProfile`, and a const cannot be used before its declaration.
+   */
+  const nativeChat = useNativeChat(
+    useCallback((event: GatewayEvent) => {
+      setFeedState((state) =>
+        chatFeedReducer(state, event as unknown as ChatFeedEvent),
+      );
+      if (event.type === "message.start") setAgentRunning(true);
+      if (event.type === "message.complete" || event.type === "error") {
+        setAgentRunning(false);
+      }
+    }, []),
+    { enabled: chatEverShown && !chatBlocked, profile: scopedProfile ?? "default" },
+  );
   const ptyTargetKeyRef = useRef(ptyTargetKey);
   useLayoutEffect(() => {
     if (ptyTargetKeyRef.current === ptyTargetKey) return;
@@ -1511,6 +1536,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // refuses that connect anyway; checking here means the owner reads an
     // actionable sentence instead of watching a terminal that never opens.
     if (chatBlocked) return;
+    // Native mode drives chat over /api/ws with no pseudo-terminal at all.
+    // Returning here is what makes the flag real rather than decorative: no
+    // PTY is spawned, so no slash-worker exists solely to render chat.
+    if (nativeChat.active) return;
     if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;
@@ -2283,6 +2312,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ptyAttachIdentity,
     eventSocketReady,
     chatEverShown,
+    nativeChat.active,
     chatBlocked,
   ]);
 
