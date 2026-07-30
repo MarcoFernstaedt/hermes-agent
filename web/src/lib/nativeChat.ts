@@ -89,7 +89,21 @@ export function eventSessionId(ev: GatewayEvent): string | null {
 }
 
 export class NativeChatSession {
-  private sessionId: string | null = null;
+  /**
+   * The live transport identity. Changes on every reconnect, and is what
+   * `prompt.submit` and event filtering must use.
+   */
+  private liveId: string | null = null;
+  /**
+   * The durable identity. Survives the socket, and is the *only* thing
+   * `session.resume` accepts.
+   *
+   * Keeping one field for both is the defect the real-gateway soak found:
+   * resuming with a dead live sid returned "session not found", the fallback
+   * silently created a second session, and a refresh cost a duplicate
+   * slash-worker instead of reattaching.
+   */
+  private storedId: string | null = null;
   private status: NativeChatStatus = "idle";
   private unsubscribes: Array<() => void> = [];
   private closed = false;
@@ -101,8 +115,14 @@ export class NativeChatSession {
     this.options = options;
   }
 
+  /** The live transport session. Use for prompts and event scoping. */
   get id(): string | null {
-    return this.sessionId;
+    return this.liveId;
+  }
+
+  /** The durable session to hand back to `open()` after a refresh. */
+  get resumeId(): string | null {
+    return this.storedId;
   }
 
   get state(): NativeChatStatus {
@@ -132,31 +152,44 @@ export class NativeChatSession {
 
       if (resumeId) {
         try {
-          const res = await this.transport.request<{ session_id?: string }>(
-            "session.resume",
-            { session_id: resumeId, cols: this.options.cols ?? 80 },
-          );
-          this.sessionId = res?.session_id ?? resumeId;
+          const res = await this.transport.request<{
+            session_id?: string;
+            resumed?: string;
+          }>("session.resume", {
+            session_id: resumeId,
+            cols: this.options.cols ?? 80,
+          });
+          // Resume hands back a *fresh* live sid; the durable id is the one we
+          // asked with (echoed as `resumed`). Reusing the old live sid here
+          // would scope events to a transport that no longer exists.
+          if (res?.session_id) {
+            this.liveId = res.session_id;
+            this.storedId = res.resumed ?? resumeId;
+          }
         } catch {
-          // The session is gone (pruned, or from another profile). Falling back
-          // to a new one is right; failing the open would strand the owner on a
-          // dead id with no way back.
-          this.sessionId = null;
+          // Genuinely gone — pruned, expired, or from another profile. Falling
+          // back is right; failing would strand the owner on a dead id.
+          this.liveId = null;
+          this.storedId = null;
         }
       }
 
-      if (!this.sessionId) {
-        const res = await this.transport.request<{ session_id: string }>(
-          "session.create",
-          { cols: this.options.cols ?? 80 },
-        );
+      if (!this.liveId) {
+        const res = await this.transport.request<{
+          session_id: string;
+          stored_session_id?: string;
+        }>("session.create", { cols: this.options.cols ?? 80 });
         if (!res?.session_id) throw new Error("gateway did not return a session id");
-        this.sessionId = res.session_id;
+        this.liveId = res.session_id;
+        // A gateway that omits the durable id leaves nothing to resume with;
+        // recording the live one would guarantee a failed resume next refresh,
+        // so leave it null and let the next open create honestly.
+        this.storedId = res.stored_session_id ?? null;
       }
 
       this.subscribe();
       this.setStatus("ready");
-      return this.sessionId;
+      return this.liveId;
     } catch (err) {
       this.setStatus("error");
       throw err;
@@ -181,7 +214,7 @@ export class NativeChatSession {
           // was forwarded. `chat-feed-model` normalises to `sessionId` only
           // *after* parsing the frame, so this layer must use the wire name.
           const evSid = eventSessionId(ev);
-          if (evSid && this.sessionId && evSid !== this.sessionId) return;
+          if (evSid && this.liveId && evSid !== this.liveId) return;
           if (name === "message.start") this.setStatus("working");
           if (name === "message.complete" || name === "error") this.setStatus("ready");
           this.options.onEvent(ev);
@@ -197,25 +230,30 @@ export class NativeChatSession {
    */
   async submit(text: string): Promise<SubmitOutcome> {
     if (this.closed) throw new Error("session is closed");
-    if (!this.sessionId) throw new Error("session is not open");
+    if (!this.liveId) throw new Error("session is not open");
     const body = text.trim();
     if (!body) throw new Error("nothing to send");
 
-    const res = await this.transport.request<{ status?: string }>("prompt.submit", {
-      session_id: this.sessionId,
-      text: body,
-    });
+    const res = await this.transport.request<{ status?: string; queued?: boolean }>(
+      "prompt.submit",
+      { session_id: this.liveId, text: body },
+    );
+    // The gateway signals a mid-turn queue two ways depending on path: a
+// `status` string from the busy-submit handler, and a `queued: true` flag on
+    // the accepted response the real soak observed. Both mean the same thing to
+    // a caller — the message will run — so both map to "queued".
     const status = res?.status;
-    if (status === "queued" || status === "steered") return status;
+    if (status === "queued" || res?.queued === true) return "queued";
+    if (status === "steered") return "steered";
     this.setStatus("working");
     return "accepted";
   }
 
   /** Ask the gateway to wind down the live turn. Safe to call when idle. */
   async interrupt(): Promise<void> {
-    if (this.closed || !this.sessionId) return;
+    if (this.closed || !this.liveId) return;
     try {
-      await this.transport.request("session.interrupt", { session_id: this.sessionId });
+      await this.transport.request("session.interrupt", { session_id: this.liveId });
     } catch {
       // Interrupting an already-finished turn is not an error worth surfacing.
     }

@@ -40,11 +40,42 @@ def _is_registry_register_call(node: ast.AST) -> bool:
     )
 
 
-def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
+def _iter_import_time_statements(body: list) -> "list":
+    """Flatten statements that actually execute when the module is imported.
 
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+    Descends into module-level ``for`` / ``while`` / ``if`` / ``try`` / ``with``
+    bodies, because a ``registry.register()`` inside one of those *does* run on
+    import — but never into ``def`` or ``class``, because those only run when
+    called, which is the distinction the original check was protecting.
+
+    This matters more than it looks. Registration is very often written as a
+    loop over a tuple of tool specs, and treating that as "not registering"
+    silently hid five modules from the agent's catalogue — including the entire
+    Gmail and Calendar integrations, whose own comment reads "Self-register on
+    import (tools.registry.discover_builtin_tools imports this)" while
+    discovery skipped them.
+    """
+    out = []
+    for node in body:
+        out.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            nested = getattr(node, field, None)
+            if isinstance(nested, list):
+                out.extend(_iter_import_time_statements(nested))
+        for handler in getattr(node, "handlers", []) or []:
+            out.extend(_iter_import_time_statements(handler.body))
+    return out
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when importing the module would call ``registry.register(...)``.
+
+    Inspects every statement that runs at import time, including inside
+    module-level loops and try/except blocks, but never inside a function or
+    class body — a helper that calls ``registry.register()`` when *invoked* is
+    not a self-registering tool module.
 
     A cheap text prefilter avoids the ``ast.parse`` cost for files that do not
     mention both ``registry`` and ``register`` — a necessary condition for a
@@ -61,7 +92,10 @@ def _module_registers_tools(module_path: Path) -> bool:
     except SyntaxError:
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    return any(
+        _is_registry_register_call(stmt)
+        for stmt in _iter_import_time_statements(tree.body)
+    )
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:

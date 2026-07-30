@@ -794,3 +794,79 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestImportTimeRegistrationIsDiscovered:
+    """Registration written as a module-level loop still runs on import.
+
+    Treating it as "not registering" silently hid five tool modules from the
+    agent's catalogue — including the whole Gmail and Calendar integrations,
+    whose own comment reads "Self-register on import (discover_builtin_tools
+    imports this)" while discovery skipped them. The on-machine soak surfaced
+    this as "no typed email/calendar tools exist", when in fact they did.
+    """
+
+    def _detects(self, tmp_path, source: str) -> bool:
+        from tools.registry import _module_registers_tools
+
+        path = tmp_path / "mod.py"
+        path.write_text(source, encoding="utf-8")
+        return _module_registers_tools(path)
+
+    def test_plain_top_level_call(self, tmp_path):
+        assert self._detects(tmp_path, "registry.register(name='a')\n")
+
+    def test_registration_inside_a_module_level_loop(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "for n in NAMES:\n    registry.register(name=n)\n",
+        )
+
+    def test_registration_inside_a_module_level_try(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    registry.register(name='a')\nexcept Exception:\n    pass\n",
+        )
+
+    def test_registration_inside_an_except_handler(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    x = 1\nexcept Exception:\n    registry.register(name='a')\n",
+        )
+
+    def test_registration_inside_a_module_level_if(self, tmp_path):
+        assert self._detects(tmp_path, "if AVAILABLE:\n    registry.register(name='a')\n")
+
+    def test_registration_inside_a_loop_inside_a_try(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    for n in NAMES:\n        registry.register(name=n)\nexcept Exception:\n    pass\n",
+        )
+
+    def test_a_function_that_registers_when_called_is_not_a_tool_module(self, tmp_path):
+        # The distinction the original check was protecting, and still is: a
+        # helper that registers when *invoked* must not be imported eagerly.
+        assert not self._detects(
+            tmp_path,
+            "def setup():\n    registry.register(name='a')\n",
+        )
+
+    def test_a_method_that_registers_is_not_either(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            "class Thing:\n    def setup(self):\n        registry.register(name='a')\n",
+        )
+
+    def test_a_nested_function_inside_a_loop_is_still_not_import_time(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            "for n in NAMES:\n    def later():\n        registry.register(name=n)\n",
+        )
+
+    def test_the_real_gmail_and_calendar_modules_are_discovered(self):
+        from pathlib import Path
+
+        from tools.registry import _module_registers_tools
+
+        for module in ("tools/gmail_tools.py", "tools/calendar_tools.py"):
+            assert _module_registers_tools(Path(module)) is True, module
