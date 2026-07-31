@@ -6,12 +6,14 @@ class of lie as reporting "sent" because an approval was clicked.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
 
 from hermes_cli.actions.registry import Rollback
 from hermes_cli.undo.journal import (
+    DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS,
     UndoJournal,
     UndoNotPossible,
     permanence_sentence,
@@ -237,6 +239,202 @@ class TestFailedCompensationsStayVisible:
         with pytest.raises(UndoNotPossible):
             journal.undo(entry["id"], apply=lambda e: None, verify=lambda e: False)
         assert journal.stack() == []
+
+
+class TestTheClaimIsAtomic:
+    """Two callers, one reversal.
+
+    "Undo" is reachable from more than one place — the item card, the keyboard
+    shortcut, a second tab — and a read-then-write claim lets both callers pass
+    the status check before either writes. For an external compensation that is
+    two reversal requests to a provider; for a calendar restore it is the event
+    moved back twice.
+    """
+
+    def test_two_concurrent_callers_produce_exactly_one_reversal(self, journal):
+        entry = record(journal)
+
+        start = threading.Barrier(2)
+        applied: list[str] = []
+        applied_lock = threading.Lock()
+        refused: list[BaseException] = []
+
+        def apply(e):
+            with applied_lock:
+                applied.append(e["id"])
+            # Hold the reversal open so the second caller is inside `undo`
+            # while the first has claimed but not yet finished.
+            time.sleep(0.05)
+
+        def attempt():
+            start.wait(timeout=5)
+            try:
+                journal.undo(entry["id"], apply=apply)
+            except BaseException as exc:  # noqa: BLE001 - recorded, not swallowed
+                refused.append(exc)
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert applied == [entry["id"]], "the inverse ran more than once"
+        assert len(refused) == 1
+        assert isinstance(refused[0], UndoNotPossible)
+
+    def test_the_loser_is_told_it_is_already_in_progress(self, journal):
+        entry = record(journal)
+
+        seen: list[BaseException] = []
+
+        def apply(_e):
+            # Re-entering from inside the reversal is the same race, serialised.
+            try:
+                journal.undo(entry["id"], apply=lambda _x: None)
+            except BaseException as exc:  # noqa: BLE001
+                seen.append(exc)
+
+        journal.undo(entry["id"], apply=apply)
+        assert len(seen) == 1
+        assert isinstance(seen[0], UndoNotPossible)
+        assert "undoing" in str(seen[0])
+
+
+class TestCrashDuringReversalStaysVisible:
+    """A process that dies mid-reversal must not take the entry with it.
+
+    The killed entry is left `undoing` or `compensating`: not `done`, so it is
+    gone from the stack, and not `compensation_failed`, so it is absent from
+    the repair list too. That is the worst of the three states — a possible
+    half-reversed external change that nothing surfaces.
+    """
+
+    def _abandon(self, journal, entry, *, at):
+        """Simulate process death after the claim and before the outcome."""
+        def die(_e):
+            raise SystemExit("killed")
+
+        with pytest.raises(SystemExit):
+            journal.undo(entry["id"], apply=die, verify=lambda e: True, now=at)
+        # Force the abandoned in-flight state: the claim landed, the outcome
+        # never did.
+        journal._set_status(entry["id"], "compensating" if entry["rollback"]
+                            == Rollback.COMPENSATION.value else "undoing")
+        return entry
+
+    def test_an_in_flight_reversal_is_reported_while_it_is_fresh(self, journal):
+        entry = external(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+
+        in_flight = journal.in_flight(now=now)
+        assert [e["id"] for e in in_flight] == [entry["id"]]
+        # Still fresh, so not yet declared unknown — a live reversal is allowed
+        # to take a moment.
+        assert journal.needing_repair(now=now) == []
+
+    def test_a_stale_compensation_becomes_an_explicit_unknown(self, journal):
+        entry = external(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+
+        later = now + DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS + 1
+        repair = journal.needing_repair(now=later)
+        assert [e["id"] for e in repair] == [entry["id"]]
+        assert repair[0]["status"] == "reversal_unknown"
+        assert repair[0].needs_repair is True
+        # The words have to say what is actually true: we do not know.
+        assert "do not know" in repair[0]["outcome"]
+
+    def test_a_stale_inverse_becomes_unknown_too(self, journal):
+        entry = record(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+
+        later = now + DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS + 1
+        assert [e["id"] for e in journal.needing_repair(now=later)] == [entry["id"]]
+
+    def test_reconciling_does_not_steal_a_live_reversal(self, journal):
+        entry = external(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+
+        assert journal.reconcile(now=now + 1) == []
+        assert journal.get(entry["id"])["status"] == "compensating"
+
+    def test_an_unknown_reversal_is_not_offered_as_ordinary_undo(self, journal):
+        entry = record(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+        journal.reconcile(now=now + DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS + 1)
+
+        assert journal.stack() == []
+        with pytest.raises(UndoNotPossible, match="reversal unknown"):
+            journal.undo(entry["id"], apply=lambda e: None)
+
+    def test_reconciling_is_idempotent(self, journal):
+        entry = external(journal)
+        now = time.time()
+        self._abandon(journal, entry, at=now)
+        later = now + DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS + 1
+
+        assert len(journal.reconcile(now=later)) == 1
+        assert journal.reconcile(now=later + 1) == []
+        assert len(journal.needing_repair(now=later + 1)) == 1
+
+
+class TestFailureIsClassifiedByRollbackKind:
+    """An inverse that fails is not a failed compensation.
+
+    The distinction is the whole reason the registry makes an action declare
+    which of the three it is. Filing an internal restore under
+    `compensation_failed` tells the owner an external system is in a state we
+    could not reverse, which sends them looking at a provider that was never
+    involved.
+    """
+
+    def test_an_inverse_whose_verifier_says_it_did_not_take_is_undo_failed(self, journal):
+        entry = record(journal)
+        with pytest.raises(UndoNotPossible, match="did not take effect"):
+            journal.undo(entry["id"], apply=lambda e: None, verify=lambda e: False)
+
+        got = journal.get(entry["id"])
+        assert got["status"] == "undo_failed"
+        assert got["status"] != "compensation_failed"
+
+    def test_an_inverse_that_cannot_be_verified_is_unknown_not_failed(self, journal):
+        entry = record(journal)
+
+        def cannot_check(_e):
+            raise ConnectionError("state db unreadable")
+
+        with pytest.raises(UndoNotPossible, match="could not be verified"):
+            journal.undo(entry["id"], apply=lambda e: None, verify=cannot_check)
+
+        assert journal.get(entry["id"])["status"] == "reversal_unknown"
+
+    def test_both_inverse_failure_kinds_still_demand_repair(self, journal):
+        failed = record(journal, action_id="a.failed")
+        unknown = record(journal, action_id="a.unknown")
+        with pytest.raises(UndoNotPossible):
+            journal.undo(failed["id"], apply=lambda e: None, verify=lambda e: False)
+        with pytest.raises(UndoNotPossible):
+            journal.undo(
+                unknown["id"],
+                apply=lambda e: None,
+                verify=lambda e: (_ for _ in ()).throw(ConnectionError("nope")),
+            )
+
+        ids = {e["id"] for e in journal.needing_repair()}
+        assert ids == {failed["id"], unknown["id"]}
+        assert all(e.needs_repair for e in journal.needing_repair())
+
+    def test_a_compensation_is_still_classified_as_a_compensation(self, journal):
+        entry = external(journal)
+        with pytest.raises(UndoNotPossible):
+            journal.undo(entry["id"], apply=lambda e: None, verify=lambda e: False)
+        assert journal.get(entry["id"])["status"] == "compensation_failed"
 
 
 class TestPermanenceWording:

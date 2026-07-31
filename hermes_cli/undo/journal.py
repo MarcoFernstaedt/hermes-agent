@@ -15,6 +15,24 @@ because a decision was approved. So a compensation goes through
 ``compensating → verify → compensated | compensation_failed``, and a failed
 compensation stays visible and blocking, because the world is now in a state we
 tried and failed to reverse and only a person can fix it.
+
+Two consequences of that rule shape the rest of the module.
+
+**The claim to reverse is a write, not a read.** "Undo" is reachable from the
+item card, a keyboard shortcut and a second tab at once. Checking the status and
+then writing it lets two callers both pass the check, and the reversal runs
+twice — two restore requests to a provider, or an event moved back and then
+moved back again. The claim is a conditional ``UPDATE`` and only the caller that
+changed exactly one row proceeds.
+
+**An abandoned reversal is worse than a failed one.** A process killed between
+the claim and the outcome leaves the entry ``undoing`` or ``compensating``: no
+longer ``done``, so it is gone from the stack, and not ``compensation_failed``,
+so it is absent from the repair list too. Nothing surfaces a possibly
+half-reversed external change. So in-flight entries carry a ``claimed_at``, are
+readable while fresh, and are reconciled into an explicit
+``reversal_unknown`` — a state whose whole content is that we do not know —
+once they are too old to still be running.
 """
 from __future__ import annotations
 
@@ -35,6 +53,17 @@ from hermes_cli.actions.registry import Rollback
 #: so continuing to offer undo would promise something we cannot deliver.
 DEFAULT_RETENTION_SECONDS = 14 * 24 * 3600
 
+#: How long a claimed reversal may stay in flight before we stop assuming it is
+#: still running. Generous on purpose: reconciling a *live* reversal would
+#: declare an outcome unknown while the process that knows it is still working.
+DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS = 15 * 60
+
+#: Claimed, running, outcome not yet written.
+IN_FLIGHT_STATUSES = ("undoing", "compensating")
+
+#: The world may not match what the owner was told. Each needs a person.
+REPAIR_STATUSES = ("compensation_failed", "undo_failed", "reversal_unknown")
+
 
 class UndoNotPossible(RuntimeError):
     """Raised when an entry cannot be undone, with the reason in plain words."""
@@ -49,7 +78,11 @@ class JournalEntry(dict):
 
     @property
     def needs_repair(self) -> bool:
-        return self.get("status") == "compensation_failed"
+        return self.get("status") in REPAIR_STATUSES
+
+    @property
+    def in_flight(self) -> bool:
+        return self.get("status") in IN_FLIGHT_STATUSES
 
 
 class UndoJournal:
@@ -58,9 +91,11 @@ class UndoJournal:
         path: Path | str,
         *,
         retention_seconds: int = DEFAULT_RETENTION_SECONDS,
+        in_flight_timeout_seconds: int = DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS,
     ) -> None:
         self._path = Path(path)
         self._retention = retention_seconds
+        self._in_flight_timeout = in_flight_timeout_seconds
         self._lock = threading.Lock()
         self.migrate()
 
@@ -92,10 +127,20 @@ class UndoJournal:
                     status        TEXT NOT NULL DEFAULT 'done',
                     outcome       TEXT NOT NULL DEFAULT '',
                     created_at    REAL NOT NULL,
+                    -- When a reversal was claimed. An in-flight entry without
+                    -- this could never be told apart from one abandoned by a
+                    -- process that died, so reconciliation would have to guess.
+                    claimed_at    REAL,
                     undone_at     REAL
                 )
                 """
             )
+            existing = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(undo_journal)").fetchall()
+            }
+            if "claimed_at" not in existing:
+                conn.execute("ALTER TABLE undo_journal ADD COLUMN claimed_at REAL")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_undo_session ON undo_journal(session_id, created_at)"
             )
@@ -208,19 +253,80 @@ class UndoJournal:
                 return entry
         return None
 
-    def needing_repair(self) -> list[JournalEntry]:
-        """Failed compensations. These never age out of view.
+    def needing_repair(self, *, now: Optional[float] = None) -> list[JournalEntry]:
+        """Everything a person has to look at. These never age out of view.
 
-        The world is in a state we tried and failed to reverse; retention is
-        about whether an *undo is still possible*, not about whether a problem
-        stops mattering.
+        The world is in a state we tried and failed to reverse — or one we
+        cannot describe at all; retention is about whether an *undo is still
+        possible*, not about whether a problem stops mattering.
+
+        Reconciling first is what makes an abandoned reversal reachable. The
+        repair list is the screen this surfaces on, and an entry left behind by
+        a killed process has no other way to arrive here.
         """
+        self.reconcile(now=now)
+        placeholders = ",".join("?" for _ in REPAIR_STATUSES)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM undo_journal WHERE status = 'compensation_failed' "
-                "ORDER BY created_at DESC"
+                f"SELECT * FROM undo_journal WHERE status IN ({placeholders}) "
+                "ORDER BY created_at DESC",
+                list(REPAIR_STATUSES),
             ).fetchall()
         return [self._row(r) for r in rows]
+
+    def in_flight(self, *, now: Optional[float] = None) -> list[JournalEntry]:
+        """Reversals claimed and still plausibly running.
+
+        Fresh ones belong here rather than in the repair list: a reversal is
+        allowed to take a moment, and calling it unknown while it is working
+        would be its own false report.
+        """
+        ts = time.time() if now is None else now
+        cutoff = ts - self._in_flight_timeout
+        placeholders = ",".join("?" for _ in IN_FLIGHT_STATUSES)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM undo_journal WHERE status IN ({placeholders}) "
+                "AND COALESCE(claimed_at, created_at) >= ? ORDER BY claimed_at DESC",
+                [*IN_FLIGHT_STATUSES, cutoff],
+            ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def reconcile(self, *, now: Optional[float] = None) -> list[JournalEntry]:
+        """Resolve reversals abandoned by a process that never came back.
+
+        This is the crash path. Everything else in this module writes an
+        outcome; a killed process writes nothing, so the entry sits claimed
+        forever — out of the stack because it is not ``done``, out of the repair
+        list because it never failed. It gets moved to ``reversal_unknown``,
+        which is not a failure and not a success: for a compensation the
+        external system may be half-reversed, and saying anything more definite
+        than "we do not know" would be a guess dressed as a fact.
+
+        Returns the entries it changed, so a caller can log or notify.
+        """
+        ts = time.time() if now is None else now
+        cutoff = ts - self._in_flight_timeout
+        placeholders = ",".join("?" for _ in IN_FLIGHT_STATUSES)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM undo_journal WHERE status IN ({placeholders}) "
+                "AND COALESCE(claimed_at, created_at) < ?",
+                [*IN_FLIGHT_STATUSES, cutoff],
+            ).fetchall()
+            stale = [self._row(r) for r in rows]
+            for entry in stale:
+                conn.execute(
+                    "UPDATE undo_journal SET status = 'reversal_unknown', outcome = ? "
+                    "WHERE id = ? AND status = ?",
+                    (
+                        "the reversal was started and never finished — we do not "
+                        "know whether it took effect",
+                        entry["id"],
+                        entry["status"],
+                    ),
+                )
+        return [self.get(e["id"]) for e in stale]
 
     # -- undoing -----------------------------------------------------------
 
@@ -266,12 +372,22 @@ class UndoJournal:
                 "no verify function was supplied"
             )
 
-        self._set_status(entry_id, "compensating" if compensation else "undoing")
+        # From here the claim is the authority, not the status read above. Two
+        # callers can both reach this line believing the entry is `done`; only
+        # the one that changes a row is allowed to touch the world.
+        if not self._claim(entry_id, "compensating" if compensation else "undoing", ts):
+            raise UndoNotPossible(
+                f"already {self.get(entry_id)['status'].replace('_', ' ')}"
+            )
+
         try:
             apply(entry)
         except Exception as exc:
             self._set_status(
                 entry_id,
+                # An inverse runs inside our own transaction, so a raise means
+                # it rolled back and nothing changed — still offerable. A
+                # compensation is a request that may have half-landed.
                 "compensation_failed" if compensation else "done",
                 outcome=f"reversal failed: {exc}",
             )
@@ -282,7 +398,11 @@ class UndoJournal:
                 ok = bool(verify(entry))
             except Exception as exc:
                 self._set_status(
-                    entry_id, "compensation_failed",
+                    entry_id,
+                    # We could not look. For a compensation the provider is the
+                    # source of truth and it stays blocking either way; for an
+                    # inverse, unreachable is not the same as failed.
+                    "compensation_failed" if compensation else "reversal_unknown",
                     outcome=f"could not verify the reversal: {exc}",
                 )
                 raise UndoNotPossible(
@@ -290,7 +410,11 @@ class UndoJournal:
                 ) from exc
             if not ok:
                 self._set_status(
-                    entry_id, "compensation_failed",
+                    entry_id,
+                    # We looked, and the change is still there. Filing an
+                    # internal restore under `compensation_failed` would send
+                    # the owner to a provider that was never involved.
+                    "compensation_failed" if compensation else "undo_failed",
                     outcome="the source still shows the original change",
                 )
                 raise UndoNotPossible(
@@ -304,6 +428,22 @@ class UndoJournal:
             undone_at=ts,
         )
         return self.get(entry_id)
+
+    def _claim(self, entry_id: str, status: str, now: float) -> bool:
+        """Take exclusive ownership of a reversal. True only for the winner.
+
+        Conditional on the entry still being ``done``, so of any number of
+        concurrent callers exactly one can change a row, and the rest learn they
+        lost by being told nothing changed rather than by discovering it after
+        the reversal has already run twice.
+        """
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE undo_journal SET status = ?, claimed_at = ? "
+                "WHERE id = ? AND status = 'done'",
+                (status, now, entry_id),
+            )
+            return cur.rowcount == 1
 
     def _set_status(
         self,

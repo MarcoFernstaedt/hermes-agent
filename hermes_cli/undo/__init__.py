@@ -6,7 +6,10 @@ means the world actually changed back, which is why nothing here reports
 success before it has been verified.
 """
 from hermes_cli.undo.journal import (
+    DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS,
     DEFAULT_RETENTION_SECONDS,
+    IN_FLIGHT_STATUSES,
+    REPAIR_STATUSES,
     JournalEntry,
     UndoJournal,
     UndoNotPossible,
@@ -14,7 +17,10 @@ from hermes_cli.undo.journal import (
 )
 
 __all__ = [
+    "DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS",
     "DEFAULT_RETENTION_SECONDS",
+    "IN_FLIGHT_STATUSES",
+    "REPAIR_STATUSES",
     "JournalEntry",
     "UndoJournal",
     "UndoNotPossible",

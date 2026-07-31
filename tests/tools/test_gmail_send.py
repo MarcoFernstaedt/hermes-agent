@@ -188,6 +188,80 @@ class TestIdempotency:
         # failed rather than assuming it is the first.
         assert store.lookup(f"gmail_send:{fp}")["state"] == "failed"
 
+    def test_a_failed_send_can_be_retried_once_the_problem_is_fixed(self, home, monkeypatch):
+        """The failure path must not become a day-long ban on one message.
+
+        Suppressing a *successful* send is the point of the key. Suppressing a
+        failed one is the opposite: nothing was sent, and the owner is left
+        unable to send that exact message at all until the key expires.
+        """
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise RuntimeError("smtp exploded")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        assert errored(**ARGS)
+
+        outbox: list = []
+
+        class Working:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                outbox.append(raw)
+                return {"id": "msg-retry"}
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
+
+        out = call(**ARGS)
+        assert out["sent"] is True
+        assert out["message_id"] == "msg-retry"
+        assert len(outbox) == 1
+        # And it says what it is: a send that follows an attempt whose outcome
+        # was never confirmed, not a clean first send.
+        assert out["retry_after_failed_attempt"] is True
+        assert "smtp exploded" in out["previous_error"]
+
+    def test_a_retry_after_a_failure_is_still_suppressed_once_it_succeeds(
+        self, home, monkeypatch
+    ):
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise RuntimeError("smtp exploded")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        assert errored(**ARGS)
+
+        outbox: list = []
+
+        class Working:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                outbox.append(raw)
+                return {"id": "msg-retry"}
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
+        call(**ARGS)
+        third = call(**ARGS)
+
+        assert third["duplicate_suppressed"] is True
+        assert len(outbox) == 1
+
 
 class TestFingerprint:
     def test_any_change_to_the_message_changes_the_fingerprint(self):

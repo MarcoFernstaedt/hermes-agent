@@ -178,6 +178,16 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
             "an identical send is already in flight; not sending a second copy"
         )
 
+    # Won the claim, but possibly by reacquiring a failed attempt. Suppressing a
+    # *successful* send is the point of the key; suppressing a failed one would
+    # mean nothing went out and the owner cannot send that exact message until
+    # the key expires. The retry is allowed and is labelled as one, because a
+    # send that raised is not proof nothing was delivered — a timeout after
+    # delivery looks identical from here, and only the owner can judge that.
+    retry_of: dict[str, Any] | None = (
+        prior if prior and prior.get("state") == "failed" else None
+    )
+
     try:
         raw = build_raw_message(to=to, subject=subject, body=body)
         result = GmailClient().send_message(raw)
@@ -197,13 +207,22 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
         target=f"{len(to)} recipient(s)",
         detail={"subject": subject, "fingerprint": fingerprint[:16]},
     )
-    return tool_result({
+    payload: dict[str, Any] = {
         "sent": True,
         "message_id": message_id,
         "from": sender,
         "recipient_count": len(to),
         "note": "Sent. This cannot be undone.",
-    })
+    }
+    if retry_of is not None:
+        payload["retry_after_failed_attempt"] = True
+        payload["previous_error"] = str((retry_of.get("result") or {}).get("error") or "")
+        payload["note"] = (
+            "Sent. This cannot be undone. An earlier attempt at this exact "
+            "message failed; if that failure happened after delivery, the "
+            "recipient may now have two copies."
+        )
+    return tool_result(payload)
 
 
 def _audit(action: str, *, target: str, detail: dict) -> None:
