@@ -388,6 +388,103 @@ describe("NativeChatSession", () => {
       expect(t.calls).toEqual([]);
     });
   });
+
+  describe("respondApproval", () => {
+    it("sends the choice itself, scoped to the live session", async () => {
+      // The terminal path typed a menu digit whose meaning depended on how
+      // many rows the TUI drew. Here "deny" cannot arrive as anything else.
+      const t = fakeTransport({ "approval.respond": { resolved: 1 } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await s.respondApproval("deny");
+
+      expect(t.calls.at(-1)).toEqual({
+        method: "approval.respond",
+        params: { session_id: "live-1", choice: "deny", all: false },
+      });
+    });
+
+    it("forwards an approve-all", async () => {
+      const t = fakeTransport({ "approval.respond": { resolved: 3 } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await s.respondApproval("always", { all: true });
+
+      expect(t.calls.at(-1)?.params).toMatchObject({ all: true });
+    });
+
+    it("refuses before a session exists rather than answering nothing", async () => {
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await expect(s.respondApproval("once")).rejects.toThrow(/not open/);
+      expect(t.calls).toEqual([]);
+    });
+
+    it("propagates a rejection so the card is not cleared", async () => {
+      // Resolving the card on a failed send would show an answered approval
+      // the agent is still blocked on.
+      const t = fakeTransport({
+        "approval.respond": new Error("no pending approval"),
+      });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await expect(s.respondApproval("once")).rejects.toThrow(/no pending/);
+    });
+  });
+
+  describe("respondClarify", () => {
+    it("answers the request it was asked, by id", async () => {
+      const t = fakeTransport({ "clarify.respond": { status: "ok" } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await s.respondClarify("req-7", "blue");
+
+      expect(t.calls.at(-1)).toEqual({
+        method: "clarify.respond",
+        params: { session_id: "live-1", request_id: "req-7", answer: "blue" },
+      });
+    });
+
+    it("refuses without a request id", async () => {
+      // A positional answer can land on a different question that arrived
+      // between render and click.
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      const before = t.calls.length;
+      await expect(s.respondClarify("", "blue")).rejects.toThrow(/request/);
+      expect(t.calls.length).toBe(before);
+    });
+  });
+
+  describe("session.info", () => {
+    it("is forwarded, so the page needs no second session to read it", async () => {
+      // Under native chat the sidebar does not open a sidecar. If this event
+      // were dropped, the model and credential-warning surfaces would simply
+      // never populate.
+      const seen: string[] = [];
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, {
+        onEvent: (event) => seen.push(event.type),
+      });
+      await s.open();
+      t.emit("session.info", ev("session.info", "live-1"));
+
+      expect(seen).toContain("session.info");
+    });
+
+    it("is still scoped to this session", async () => {
+      const seen: string[] = [];
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, {
+        onEvent: (event) => seen.push(event.type),
+      });
+      await s.open();
+      t.emit("session.info", ev("session.info", "someone-else"));
+
+      expect(seen).toEqual([]);
+    });
+  });
 });
 
 describe("isNativeChatEnabled", () => {

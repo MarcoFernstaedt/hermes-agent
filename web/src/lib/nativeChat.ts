@@ -91,6 +91,11 @@ const FORWARDED: GatewayEventName[] = [
   "write_approval.failed",
   "clarify.request",
   "clarify.resolved",
+  // Not a feed event. Forwarded because it is the only place session-scoped
+  // signals (model, cwd, credential warnings, title) arrive — and under native
+  // chat there is no second session to read them from. See ChatSidebar's
+  // `ownsSession`.
+  "session.info",
   "error",
 ] as unknown as GatewayEventName[];
 
@@ -283,6 +288,45 @@ export class NativeChatSession {
     if (status === "steered") return "steered";
     this.setStatus("working");
     return "accepted";
+  }
+
+  /**
+   * Answer a pending approval.
+   *
+   * The PTY path answered by typing a menu digit into a terminal — a number
+   * whose meaning depends on how many options the TUI happened to render. Here
+   * the choice is the choice, so the gateway cannot mistake "deny" for
+   * "always allow" because a list was one row shorter than expected.
+   */
+  async respondApproval(
+    choice: "once" | "session" | "always" | "deny",
+    { all = false }: { all?: boolean } = {},
+  ): Promise<void> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    await this.transport.request("approval.respond", {
+      session_id: this.liveId,
+      choice,
+      all,
+    });
+  }
+
+  /**
+   * Answer a pending clarify question.
+   *
+   * Addressed by `request_id`, not by position. The terminal path sent arrow
+   * keys and an index, which silently answers the *wrong* question whenever a
+   * second request arrives between render and click.
+   */
+  async respondClarify(requestId: string, answer: string): Promise<void> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    if (!requestId) throw new Error("clarify answers need the request they answer");
+    await this.transport.request("clarify.respond", {
+      session_id: this.liveId,
+      request_id: requestId,
+      answer,
+    });
   }
 
   /** Ask the gateway to wind down the live turn. Safe to call when idle. */

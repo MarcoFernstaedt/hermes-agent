@@ -34,6 +34,11 @@ export interface NativeChat {
   durableId: string | null;
   submit(text: string): Promise<SubmitOutcome>;
   interrupt(): Promise<void>;
+  respondApproval(
+    choice: "once" | "session" | "always" | "deny",
+    opts?: { all?: boolean },
+  ): Promise<void>;
+  respondClarify(requestId: string, answer: string): Promise<void>;
   error: string | null;
 }
 
@@ -107,5 +112,36 @@ export function useNativeChat(
     await sessionRef.current?.interrupt();
   }, []);
 
-  return { active, status, liveId, durableId, submit, interrupt, error };
+  const respondApproval = useCallback(
+    async (
+      choice: "once" | "session" | "always" | "deny",
+      opts?: { all?: boolean },
+    ) => {
+      const session = sessionRef.current;
+      // Throwing rather than no-op'ing: the caller resolves the approval card
+      // on success, and silently succeeding here would clear a card whose
+      // decision never reached the agent.
+      if (!session) throw new Error("native chat is not connected");
+      await session.respondApproval(choice, opts);
+    },
+    [],
+  );
+
+  const respondClarify = useCallback(async (requestId: string, answer: string) => {
+    const session = sessionRef.current;
+    if (!session) throw new Error("native chat is not connected");
+    await session.respondClarify(requestId, answer);
+  }, []);
+
+  return {
+    active,
+    status,
+    liveId,
+    durableId,
+    submit,
+    interrupt,
+    respondApproval,
+    respondClarify,
+    error,
+  };
 }

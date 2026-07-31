@@ -45,7 +45,12 @@ import { sidecarSessionCreateParams } from "@/lib/chat-sidebar-session-params";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-interface SessionInfo {
+/**
+ * The session-scoped signals this panel shows. Exported so the page that owns
+ * the session can forward them here instead of the panel opening its own.
+ * Type-only, so React Fast Refresh is unaffected.
+ */
+export interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
@@ -64,6 +69,19 @@ interface ChatSidebarProps {
   /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string;
   className?: string;
+  /**
+   * Whether this sidebar may open a gateway session of its own.
+   *
+   * True on the PTY path, where the chat session lives inside a pseudo-terminal
+   * this component cannot see, so a small sidecar is the only way to get
+   * session-scoped signals. False under native chat, where the page already
+   * holds a session on `/api/ws` — and a sidecar there is a *second* session
+   * and a second slash worker per page load, which is exactly the leak native
+   * mode exists to remove. The signals arrive as `sessionInfo` instead.
+   */
+  ownsSession?: boolean;
+  /** Session-scoped signals from the page's own session, when it has one. */
+  sessionInfo?: SessionInfo;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
 }
@@ -72,6 +90,8 @@ export function ChatSidebar({
   channel,
   profile,
   className,
+  ownsSession = true,
+  sessionInfo,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
 }: ChatSidebarProps) {
@@ -145,6 +165,7 @@ export function ChatSidebar({
   }, [scopeKey]);
 
   useEffect(() => {
+    if (!ownsSession) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -193,7 +214,7 @@ export function ChatSidebar({
     };
     // `profile` is read from render; scope changes bump `version` → new `gw`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gw]);
+  }, [gw, ownsSession]);
 
   // Event subscription — receives the rebroadcast of every dispatcher
   // emit from the PTY child's gateway.  See /api/pub + /api/events in
@@ -268,11 +289,17 @@ export function ChatSidebar({
     setVersion((v) => v + 1);
   }, [channel]);
 
+  // Session-scoped signals come from whichever session actually exists: the
+  // sidecar this component opened, or — under native chat, where it opens
+  // none — the page's own. Derived rather than copied into state, so there is
+  // one source of truth and no effect to keep two of them in step.
+  const shownInfo = ownsSession ? info : { ...info, ...sessionInfo };
+
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  const modelName = effectiveModel || shownInfo.model || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  const banner = error ?? shownInfo.credential_warning ?? null;
 
   return (
     <aside
