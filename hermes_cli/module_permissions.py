@@ -18,10 +18,20 @@ Tiers
   auto-approved — the trusted-tools set is ignored for this tier. That
   invariant is enforced here and covered by a test.
 
-The registry is populated at import time by each module's ``tools.py`` calling
-``register_tool_permission``. Resolution reads the user's trusted-tools set
-(persisted in the settings store) and returns a decision the agent-tool
-dispatch consults before executing.
+The registry has two sources. Each module's ``tools.py`` may declare its own
+tiers at import time by calling ``register_tool_permission``; and
+``hermes_cli.tool_tiers`` declares the whole production catalogue, applied
+lazily on first lookup so there is no import-order rule to get wrong. The two
+must agree — ``register_tool_permission`` raises on a conflicting tier, so a
+module quietly downgrading a tool the catalogue classifies is a loud error
+rather than a silent hole.
+
+Resolution reads the user's trusted-tools set (persisted in the settings store)
+and returns a decision. That decision is consumed at ``registry.dispatch()``,
+which is the one place every tool call passes through: a tool that needs
+approval cannot reach its handler without a one-use capability, and a
+capability cannot exist without an authoritative human response. See
+``hermes_cli.tool_capability`` for the chain between the two.
 """
 
 from __future__ import annotations
@@ -44,6 +54,31 @@ class Decision(str, enum.Enum):
 
 _lock = threading.RLock()
 _registry: Dict[str, Tier] = {}
+_catalogue_applied = False
+
+
+def _ensure_catalogue() -> None:
+    """Load the declared tool catalogue once, on first use.
+
+    Lazily rather than at import so there is no ordering rule to get wrong: a
+    tier lookup that happens before ``tool_tiers`` would otherwise have been
+    imported gets the same answer as one that happens after. The registry lock
+    is re-entrant, so applying the catalogue from inside a lookup is fine.
+
+    A failure here leaves the registry as it was, which means every affected
+    tool falls back to ALWAYS_APPROVAL. That is the correct direction to fail.
+    """
+    global _catalogue_applied
+    with _lock:
+        if _catalogue_applied:
+            return
+        _catalogue_applied = True
+        try:
+            from hermes_cli.tool_tiers import apply_catalogue
+
+            apply_catalogue()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
 
 def register_tool_permission(tool_name: str, tier: Tier) -> None:
@@ -67,6 +102,7 @@ def get_tier(tool_name: str) -> Tier:
     """Return a tool's tier. Unregistered tools default to ALWAYS_APPROVAL —
     fail safe: an unknown tool is treated as the most restrictive, never the
     least."""
+    _ensure_catalogue()
     with _lock:
         return _registry.get(tool_name, Tier.ALWAYS_APPROVAL)
 
@@ -97,10 +133,16 @@ def can_be_trusted(tool_name: str) -> bool:
 
 def registered_permissions() -> Dict[str, str]:
     """Snapshot of tool -> tier for diagnostics / the settings UI."""
+    _ensure_catalogue()
     with _lock:
         return {name: tier.value for name, tier in sorted(_registry.items())}
 
 
 def _reset_for_tests() -> None:
+    global _catalogue_applied
     with _lock:
         _registry.clear()
+        # Also forget that the catalogue was applied, so a test that clears the
+        # registry gets a genuinely empty one rather than one that silently
+        # refills on the next lookup.
+        _catalogue_applied = False

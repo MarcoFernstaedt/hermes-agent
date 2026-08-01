@@ -226,16 +226,93 @@ class TestUnconnectedVendors:
 
 
 class TestBrowserOwnedCapabilities:
+    """Camera and location, corrected.
+
+    These used to report `configured: True` and "Start it from the page when
+    you want it". Neither was true — `web/src/` contains no
+    `getUserMedia({ video })` and no `navigator.geolocation` call, so the card
+    was describing a button that does not exist. What exists is a consent state
+    model with nothing wired to it yet.
+
+    The rewritten assertion is the one that will fail when that changes, which
+    is the point: the day something does ask the browser for the camera, this
+    test has to be revisited rather than quietly staying green.
+    """
+
     @pytest.mark.parametrize("key", ["camera", "location"])
-    def test_they_are_session_bound_and_never_claimed_proven(self, key):
+    def test_nothing_asks_for_them_yet_and_the_card_says_so(self, key):
         from hermes_cli.capability_adapters import all_capabilities
 
         status = next(s for s in all_capabilities() if s.key == key)
         # The server cannot know whether a device exists or a permission was
-        # granted — only the page can, when the owner asks.
+        # granted — only the page can, when the owner asks. And nothing asks.
         assert status.proven_at is None
-        assert status.state == STATE_UNPROVEN
+        assert status.state == STATE_NOT_CONFIGURED
+        assert status.configured is False
+        assert "not requested by anything yet" in status.detail.lower()
+
+    @pytest.mark.parametrize("key", ["camera", "location"])
+    def test_the_card_still_explains_how_a_grant_would_behave(self, key):
+        from hermes_cli.capability_adapters import all_capabilities
+
+        status = next(s for s in all_capabilities() if s.key == key)
         assert any("session" in n.lower() for n in status.notes)
+
+
+class TestVoiceIsReportedAsItActuallyWorks:
+    """The correction the review asked for, held by a test.
+
+    Two things were wrong. The adapter checked `faster_whisper` alone, so a
+    machine transcribing perfectly well through Groq or OpenAI was told to
+    "install faster-whisper to enable push-to-talk". And the surrounding
+    evidence claimed no browser capture path existed, when
+    `web/src/lib/use-dictation.ts` holds a complete one — `getUserMedia`,
+    `MediaRecorder`, and a POST to `/api/audio/transcribe`, wired into the
+    composer.
+    """
+
+    def test_a_remote_provider_key_counts_as_speech_to_text(self, monkeypatch):
+        import hermes_cli.capability_adapters as adapters
+
+        monkeypatch.setattr(adapters, "_is_importable", lambda m: m != "faster_whisper")
+        monkeypatch.setenv("GROQ_API_KEY", "present")
+        status = adapters.voice_status()
+        assert status.supported is True
+        assert "install faster-whisper" not in (status.next_action or "").lower()
+
+    def test_it_says_when_the_recording_leaves_the_machine(self, monkeypatch):
+        # The single fact an owner needs before pressing the button.
+        import hermes_cli.capability_adapters as adapters
+
+        monkeypatch.setattr(adapters, "_is_importable", lambda m: m != "faster_whisper")
+        monkeypatch.setenv("GROQ_API_KEY", "present")
+        notes = " ".join(adapters.voice_status().notes).lower()
+        assert "leaves this machine" in notes
+
+    def test_it_says_when_the_recording_does_not(self, monkeypatch):
+        import hermes_cli.capability_adapters as adapters
+
+        monkeypatch.setattr(adapters, "_is_importable", lambda m: True)
+        for key in ("GROQ_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        notes = " ".join(adapters.voice_status().notes).lower()
+        assert "does not leave this machine" in notes
+
+    def test_the_capture_path_is_described_however_it_is_configured(self, monkeypatch):
+        import hermes_cli.capability_adapters as adapters
+
+        monkeypatch.setattr(adapters, "_is_importable", lambda m: False)
+        monkeypatch.setattr(adapters.shutil, "which", lambda n: None)
+        for key in ("GROQ_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY",
+                    "ELEVENLABS_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY",
+                    "DEEPINFRA_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        status = adapters.voice_status()
+        notes = " ".join(status.notes).lower()
+        assert "nothing listens between presses" in notes
+        # Even with nothing installed, the composer still records — so the card
+        # must not imply there is no way to capture audio.
+        assert "capture is built into the composer" in status.detail.lower()
 
 
 class TestTheWholeSet:

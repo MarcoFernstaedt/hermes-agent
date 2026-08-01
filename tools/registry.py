@@ -282,8 +282,16 @@ def tool_gate_mode() -> str:
     return value if value in ("enforce", "observe", "off") else "observe"
 
 
-def _capability_refusal(name: str, args: dict, capability) -> "str | None":
+def _capability_refusal(
+    name: str, args: dict, capability, *, session_id: str = ""
+) -> "str | None":
     """The refusal message for a gated call, or None to proceed.
+
+    This is where the approval chain terminates. `hermes_cli.tool_capability`
+    asks the human when nothing has been approved yet, mints at the response
+    boundary, and this consumes — all before the handler is entered, and with
+    the arguments as they finally stand, which is the only version of them the
+    handler will ever see.
 
     Fails closed: any error establishing the capability is a refusal, because
     an exception in the permission layer must never read as permission.
@@ -292,12 +300,16 @@ def _capability_refusal(name: str, args: dict, capability) -> "str | None":
     if mode == "off":
         return None
     try:
-        from hermes_cli import execution_capability as cap
+        from hermes_cli import tool_capability
 
-        trusted = _trusted_tools()
-        if not cap.requires_capability(name, trusted):
-            return None
-        cap.consume(capability, tool_name=name, args=args)
+        tool_capability.authorise(
+            tool_name=name,
+            args=args,
+            session_id=session_id,
+            tool_call_id=_current_tool_call_id(),
+            token=capability,
+            trusted_tools=_trusted_tools(),
+        )
         return None
     except Exception as exc:
         message = (
@@ -305,6 +317,22 @@ def _capability_refusal(name: str, args: dict, capability) -> "str | None":
         )
         _audit_gate(name, message, enforced=mode == "enforce")
         return message if mode == "enforce" else None
+
+
+def _current_tool_call_id() -> str:
+    """The call the agent loop is inside, bound as a contextvar upstream.
+
+    A capability has to name which call it authorises, and the id already
+    travels with the approval hooks — reading it here avoids threading a new
+    argument through every middleware layer, and keeps the binding available
+    to any caller that reaches dispatch, not only the ones that remembered.
+    """
+    try:
+        from tools.approval import get_current_tool_call_id
+
+        return get_current_tool_call_id()
+    except Exception:
+        return ""
 
 
 def _trusted_tools() -> tuple:
@@ -767,7 +795,12 @@ class ToolRegistry:
         # `capability` is the one-use ticket minted when a human decided. No
         # ticket, wrong tool, changed arguments, replayed, or expired ⇒ the
         # handler is not called at all.
-        gate_refusal = _capability_refusal(name, args, kwargs.pop("capability", None))
+        gate_refusal = _capability_refusal(
+            name, args, kwargs.pop("capability", None),
+            # Read, not popped: the handler still needs it. Consent given in
+            # one conversation must not authorise a call in another.
+            session_id=str(kwargs.get("session_id") or ""),
+        )
         if gate_refusal is not None:
             return json.dumps({"error": gate_refusal, "refused": True})
 

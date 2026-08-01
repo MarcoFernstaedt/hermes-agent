@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -197,6 +198,17 @@ def reset_current_observability_context(
     turn_token, tool_token = tokens
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+def get_current_tool_call_id(default: str = "") -> str:
+    """The tool call this thread is inside, if the agent loop bound one.
+
+    The dispatch chokepoint needs it to say *which* call a decision was about,
+    and it is already bound here as a contextvar for the approval hooks — so
+    the correlation identity is available at the gate without threading a new
+    argument through every middleware layer.
+    """
+    return _approval_tool_call_id.get() or default
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -2647,6 +2659,7 @@ def _run_approval_gate(
     no_human_block_message: str = "",
     extra_approval_data: Optional[dict] = None,
     once_only: bool = False,
+    on_authoritative_response=None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2696,20 +2709,77 @@ def _run_approval_gate(
             irreversible actions, where a standing grant is the whole risk: an
             action that can be pre-approved once and then repeated unattended
             is an APPROVAL-tier action wearing a stricter label.
+        on_authoritative_response: Called at the exact point a positive
+            outcome is produced, with ``(choice, decided_by, receipt)``, and
+            **only** on paths where something actually authorised the action.
+            This is the trusted response boundary: it is where an execution
+            capability may be minted, and putting it here rather than at the
+            caller is what makes a pre-consent grant unspellable.
+
+            ``decided_by`` names the provenance, because five different code
+            paths in this function return ``approved: True`` and only two of
+            them are a person answering a prompt. It is one of
+            ``human_gateway``, ``human_cli``, ``standing_session``,
+            ``standing_permanent`` or ``owner_bypass``. The auto-approve paths
+            — a cron job under ``cron_mode: approve``, and the historical
+            non-interactive fall-open — call it **not at all**: nobody
+            consented, so there is nothing to mint, and a caller that requires
+            a capability will refuse.
+
+            Raising from the callback turns the approval into a refusal. That
+            is deliberate and is the fail-closed edge: if the evidence cannot
+            be recorded, the action does not happen.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
+    def _authorised(choice: str, decided_by: str) -> Optional[dict]:
+        """The trusted response boundary. Returns a refusal, or None to allow.
+
+        Called only where something actually authorised the action, and never
+        on the two auto-approve paths where nothing did. If recording the
+        evidence fails, the approval becomes a refusal — an action whose
+        consent cannot be written down does not happen.
+        """
+        if on_authoritative_response is None:
+            return None
+        try:
+            on_authoritative_response(choice, decided_by, uuid.uuid4().hex)
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Approval evidence could not be recorded for %s (%s): %s",
+                pattern_key, decided_by, exc,
+            )
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: this action was approved but the approval could "
+                    f"not be recorded ({exc}). It has NOT run. Ask again."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
     if not once_only and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
-        return {"approved": True, "message": None}
+        return _authorised("once", "owner_bypass") or {"approved": True, "message": None}
 
     session_key = get_current_session_key()
     if not once_only and is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
+        # A standing grant is still human consent — given earlier, and to a
+        # class of calls rather than to this one. Naming it separately is what
+        # lets a caller decide the two are not interchangeable.
+        with _lock:
+            permanent = any(
+                alias in _permanent_approved
+                for alias in _approval_key_aliases(pattern_key)
+            )
+        decided_by = "standing_permanent" if permanent else "standing_session"
+        return _authorised("session", decided_by) or {"approved": True, "message": None}
 
     if approval_callback is None:
         try:
@@ -2842,7 +2912,9 @@ def _run_approval_gate(
                     approve_session(session_key, pattern_key)
                     approve_permanent(pattern_key)
                     save_permanent_allowlist(_permanent_approved)
-            return {"approved": True, "message": None}
+            return _authorised(choice, "human_gateway") or {
+                "approved": True, "message": None
+            }
 
         # No notify callback (e.g. API server without an attached chat):
         # queue for /approve /deny review, agent sees approval_required.
@@ -2889,7 +2961,7 @@ def _run_approval_gate(
             approve_permanent(pattern_key)
             save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return _authorised(choice, "human_cli") or {"approved": True, "message": None}
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
@@ -2984,6 +3056,7 @@ def request_tool_approval(
     approval_callback=None,
     preview: Optional[dict] = None,
     once_only: bool = False,
+    on_authoritative_response=None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -3074,6 +3147,7 @@ def request_tool_approval(
         ),
         extra_approval_data={"preview": preview} if preview else None,
         once_only=once_only,
+        on_authoritative_response=on_authoritative_response,
     )
 
 

@@ -195,7 +195,44 @@ class TestAdditiveMigrationFromAnOlderSchema:
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(path)
-        assert store.settle("k", "invented", state="succeeded") is False
+        # `settle` is gone: settlement now names the state it expects to be in,
+        # because a single entry point that accepted any state let a stale
+        # owner assert either "nothing happened" or "the provider confirmed
+        # it". The legacy row is pre-dispatch and ownerless, so the only
+        # settlement that could apply to it is the pre-dispatch one — and an
+        # invented token must not satisfy it.
+        assert store.settle_pre_dispatch("k", "invented") is False
+        assert store.lookup("k")["state"] == "in_flight"
+
+    def test_an_ownerless_legacy_row_cannot_be_settled_as_dispatched_either(
+        self, tmp_path
+    ):
+        """Guessing a token must not work on any settlement path.
+
+        The pre-dispatch check above passes for two reasons — wrong owner and
+        wrong expected state — and a test that only exercises one of them
+        would keep passing if the owner fence were removed. This one puts the
+        row in `dispatching` so the state matches and only the token is wrong.
+        """
+        path = tmp_path / "idem.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE idempotency (key TEXT PRIMARY KEY, state TEXT NOT NULL, "
+            "result TEXT, claimed_at REAL NOT NULL, settled_at REAL)"
+        )
+        conn.execute(
+            "INSERT INTO idempotency (key, state, claimed_at) "
+            "VALUES ('k', 'dispatching', 1.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(path)
+        assert store.settle_dispatched("k", "invented", state="succeeded") is False
+        assert store.settle_reconciled("k", "invented", state="failed") is False
+        assert store.lookup("k")["state"] == "dispatching"
 
 
 @pytest.mark.parametrize("label", ["undo-journal", "phase1-idempotency-store"])

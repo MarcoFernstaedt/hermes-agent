@@ -92,7 +92,7 @@ class TestNonAutoToolsNeedACapability:
         args = {"q": 1}
         token = cap.mint(
             tool_name="probe_tool", tool_call_id="call-1", args=args,
-            source=cap.SOURCE_HUMAN,
+            source=cap.SOURCE_HUMAN, receipt="human_cli:once:r1",
         ).token
         assert reg.dispatch("probe_tool", args, capability=token) == "ran"
         assert len(calls) == 1
@@ -104,7 +104,7 @@ class TestACapabilityIsBoundAndSingleUse:
         reg, calls = gated(Tier.ALWAYS_APPROVAL)
         args = {"q": 1}
         token = cap.mint(tool_name="probe_tool", tool_call_id="c1", args=args,
-                         source=cap.SOURCE_HUMAN).token
+                         source=cap.SOURCE_HUMAN, receipt="human_cli:once:r1").token
 
         assert reg.dispatch("probe_tool", args, capability=token) == "ran"
         assert refused(reg.dispatch("probe_tool", args, capability=token))
@@ -114,14 +114,15 @@ class TestACapabilityIsBoundAndSingleUse:
         # Approving one call must not execute a different one.
         reg, calls = gated(Tier.ALWAYS_APPROVAL)
         token = cap.mint(tool_name="probe_tool", tool_call_id="c1",
-                         args={"to": "bob"}, source=cap.SOURCE_HUMAN).token
+                         args={"to": "bob"}, source=cap.SOURCE_HUMAN,
+                         receipt="human_cli:once:r1").token
         assert refused(reg.dispatch("probe_tool", {"to": "eve"}, capability=token))
         assert calls == []
 
     def test_a_capability_for_another_tool_is_refused(self, gated):
         reg, calls = gated(Tier.ALWAYS_APPROVAL)
         token = cap.mint(tool_name="other_tool", tool_call_id="c1", args={},
-                         source=cap.SOURCE_HUMAN).token
+                         source=cap.SOURCE_HUMAN, receipt="human_cli:once:r1").token
         assert refused(reg.dispatch("probe_tool", {}, capability=token))
         assert calls == []
 
@@ -129,7 +130,8 @@ class TestACapabilityIsBoundAndSingleUse:
         reg, calls = gated(Tier.ALWAYS_APPROVAL)
         args = {"q": 1}
         c = cap.mint(tool_name="probe_tool", tool_call_id="c1", args=args,
-                     source=cap.SOURCE_HUMAN, now=1000.0)
+                     source=cap.SOURCE_HUMAN, receipt="human_cli:once:r1",
+                     now=1000.0)
         with pytest.raises(cap.CapabilityError, match="expired"):
             cap.consume(c.token, tool_name="probe_tool", args=args,
                         now=1000.0 + cap.DEFAULT_TTL_SECONDS + 1)
@@ -147,17 +149,40 @@ class TestMintingRequiresIdentity:
         # decision belonged to, and a capability matching any call is not one.
         with pytest.raises(cap.CapabilityError, match="the call it authorises"):
             cap.mint(tool_name="probe_tool", tool_call_id="", args={},
-                     source=cap.SOURCE_HUMAN)
+                     source=cap.SOURCE_HUMAN, receipt="human_cli:once:r1")
 
     def test_an_unknown_source_is_refused(self):
         with pytest.raises(cap.CapabilityError, match="unknown capability source"):
             cap.mint(tool_name="probe_tool", tool_call_id="c1", args={},
-                     source="vibes")
+                     source="vibes", receipt="human_cli:once:r1")
 
     def test_every_source_is_recorded_for_the_audit(self):
-        for source in (cap.SOURCE_HUMAN, cap.SOURCE_TRUSTED_TOOL, cap.SOURCE_STANDING):
-            c = cap.mint(tool_name="t", tool_call_id="c", args={}, source=source)
+        for source in (
+            cap.SOURCE_HUMAN, cap.SOURCE_TRUSTED_TOOL,
+            cap.SOURCE_STANDING, cap.SOURCE_OWNER_BYPASS,
+        ):
+            c = cap.mint(tool_name="t", tool_call_id="c", args={}, source=source,
+                         tier="approval", receipt=f"{source}:once:r")
             assert c.source == source
+
+    def test_a_capability_without_a_receipt_is_refused(self):
+        # An approval nobody can be traced back to is not evidence of one.
+        with pytest.raises(cap.CapabilityError, match="identity of the response"):
+            cap.mint(tool_name="t", tool_call_id="c", args={},
+                     source=cap.SOURCE_HUMAN, receipt="")
+
+    def test_an_always_approval_tool_cannot_be_minted_from_a_standing_grant(self):
+        """The rule the strictest tier exists for, held in the broker itself.
+
+        A caller that forgets it — or a future caller that never knew it —
+        cannot mint a standing grant for a tool the owner declared always-ask.
+        """
+        for source in (cap.SOURCE_STANDING, cap.SOURCE_OWNER_BYPASS,
+                       cap.SOURCE_TRUSTED_TOOL):
+            with pytest.raises(cap.CapabilityError, match="only a person"):
+                cap.mint(tool_name="gmail_send", tool_call_id="c", args={},
+                         source=source, tier="always_approval",
+                         receipt=f"{source}:once:r")
 
 
 class TestTrustedTools:
@@ -212,7 +237,7 @@ class TestFailClosed:
         # A caller that forgets to check a boolean executes anyway; this is the
         # one check where forgetting must not be survivable.
         with pytest.raises(cap.CapabilityError):
-            cap.consume(None, tool_name="t", args={})
+            cap.consume(None, tool_name="t", args={}, tool_call_id="c")
 
 
 class TestObserveMode:
