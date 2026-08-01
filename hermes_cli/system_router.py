@@ -56,6 +56,26 @@ def create_system_router(authorize: Authorize) -> APIRouter:
 
         return collect_hub_context()
 
+    @router.get("/capabilities")
+    def read_capability_status(request: Request) -> dict:
+        """What each integration's state actually is — six answers, not one.
+
+        Behind `authorize` because the shape of a deployment (which vendors are
+        configured, which credentials exist) is itself worth protecting, even
+        though no credential *value* can reach this response: the payload has
+        no field one could arrive in, and the tests assert that by searching
+        the whole serialization for each known secret.
+
+        Nothing here performs a network call or a mutation. Every adapter
+        reports what it can determine locally and leaves the rest unknown, and
+        unknown is reported as unproven rather than as fine.
+        """
+        authorize(request)
+        from hermes_cli.capability_adapters import all_capabilities
+        from hermes_cli.capability_status import summarize
+
+        return summarize(all_capabilities())
+
     @router.get("/chat-readiness")
     def read_chat_readiness(request: Request) -> dict:
         """Whether opening chat will reach a prompt, or trigger a build first.

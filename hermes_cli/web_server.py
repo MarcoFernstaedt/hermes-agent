@@ -871,6 +871,45 @@ async def _token_auth_seam(request: Request, call_next):
     return await token_auth_middleware(request, call_next)
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Defence-in-depth headers, sized to a Tailnet-only deployment.
+
+    Registered LAST so it runs FIRST and, more importantly, *last on the way
+    out* — it is the outermost wrapper, so it sees every response including the
+    ones the auth gates short-circuit. Registered earlier it sat inside those
+    gates, and a 401 came back with no `nosniff` and no referrer policy at all:
+    the responses most worth protecting were the only ones unprotected.
+
+    `setdefault` throughout, so a route that deliberately chose its own policy
+    keeps it. The WebSocket upgrade path is skipped entirely — headers on a 101
+    are ignored at best and rejected by an intermediary at worst, and a chat
+    that will not connect is a broken dashboard.
+    """
+    response = await call_next(request)
+    from hermes_cli.security_headers import (
+        is_secure_request,
+        security_headers,
+        should_apply,
+    )
+
+    if not should_apply(request.url.path):
+        return response
+
+    content_type = response.headers.get("content-type", "")
+    for name, value in security_headers(
+        secure=is_secure_request(
+            request.url.scheme,
+            request.headers.get("x-forwarded-proto", ""),
+        ),
+        # The document policies only mean something for a document; attaching
+        # a CSP to every JSON response costs bytes and constrains nothing.
+        is_html="text/html" in content_type,
+    ).items():
+        response.headers.setdefault(name, value)
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
