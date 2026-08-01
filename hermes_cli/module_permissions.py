@@ -53,32 +53,39 @@ class Decision(str, enum.Enum):
 
 
 _lock = threading.RLock()
+#: Tiers a module registered at runtime. Cleared by `_reset_for_tests`.
 _registry: Dict[str, Tier] = {}
-_catalogue_applied = False
+#: Tiers derived from an owner's *declaration* rather than from code — the
+#: capability tools, whose names are not knowable until a capability is
+#: written. Kept apart from `_registry` because clearing them is never right:
+#: they are a property of what the owner declared, and `_register()` runs once
+#: at import, so a reset used to lose them for the rest of the process and
+#: every generated read tool silently became always-approval.
+_declared: Dict[str, Tier] = {}
+_catalogue_cache: Dict[str, Tier] | None = None
 
 
-def _ensure_catalogue() -> None:
-    """Load the declared tool catalogue once, on first use.
+def _catalogue() -> Dict[str, Tier]:
+    """The declared production catalogue, as a lookup.
 
-    Lazily rather than at import so there is no ordering rule to get wrong: a
-    tier lookup that happens before ``tool_tiers`` would otherwise have been
-    imported gets the same answer as one that happens after. The registry lock
-    is re-entrant, so applying the catalogue from inside a lookup is fine.
+    Consulted on every miss rather than copied into the registry once. The
+    first version applied it behind a one-shot flag, which made the answer
+    depend on whether anything had cleared the registry since — a hazard with
+    no upside, because the catalogue is static data and re-reading it is a dict
+    lookup. A tier that can change depending on what ran earlier is not a tier.
 
-    A failure here leaves the registry as it was, which means every affected
-    tool falls back to ALWAYS_APPROVAL. That is the correct direction to fail.
+    A failure to load leaves this empty, so every affected tool falls back to
+    ALWAYS_APPROVAL. That is the correct direction to fail.
     """
-    global _catalogue_applied
-    with _lock:
-        if _catalogue_applied:
-            return
-        _catalogue_applied = True
+    global _catalogue_cache
+    if _catalogue_cache is None:
         try:
-            from hermes_cli.tool_tiers import apply_catalogue
+            from hermes_cli.tool_tiers import catalogue
 
-            apply_catalogue()
+            _catalogue_cache = catalogue()
         except Exception:  # pragma: no cover - defensive
-            pass
+            _catalogue_cache = {}
+    return _catalogue_cache
 
 
 def register_tool_permission(tool_name: str, tier: Tier) -> None:
@@ -88,6 +95,15 @@ def register_tool_permission(tool_name: str, tier: Tier) -> None:
     changing the tier of an already-registered tool raises, because a silent
     tier change could downgrade a destructive tool.
     """
+    # The catalogue counts as an existing declaration, so a module quietly
+    # disagreeing with it is a loud import error rather than a silent hole —
+    # and it stays loud whether or not anything has cleared the registry.
+    declared = _catalogue().get(tool_name)
+    if declared is not None and declared != tier:
+        raise ValueError(
+            f"tool {tool_name!r} already registered as {declared.value!r}; "
+            f"refusing to change to {tier.value!r}"
+        )
     with _lock:
         existing = _registry.get(tool_name)
         if existing is not None and existing != tier:
@@ -98,13 +114,38 @@ def register_tool_permission(tool_name: str, tier: Tier) -> None:
         _registry[tool_name] = tier
 
 
+def declare_tool_permission(tool_name: str, tier: Tier) -> None:
+    """Declare a tier for a tool generated from an owner's declaration.
+
+    Same conflict rules as `register_tool_permission`; the difference is
+    lifetime. These outlive a registry reset because they describe what was
+    declared, not what a process happened to register.
+    """
+    declared = _catalogue().get(tool_name)
+    if declared is not None and declared != tier:
+        raise ValueError(
+            f"tool {tool_name!r} already registered as {declared.value!r}; "
+            f"refusing to change to {tier.value!r}"
+        )
+    with _lock:
+        existing = _declared.get(tool_name)
+        if existing is not None and existing != tier:
+            raise ValueError(
+                f"tool {tool_name!r} already declared as {existing.value!r}; "
+                f"refusing to change to {tier.value!r}"
+            )
+        _declared[tool_name] = tier
+
+
 def get_tier(tool_name: str) -> Tier:
     """Return a tool's tier. Unregistered tools default to ALWAYS_APPROVAL —
     fail safe: an unknown tool is treated as the most restrictive, never the
     least."""
-    _ensure_catalogue()
     with _lock:
-        return _registry.get(tool_name, Tier.ALWAYS_APPROVAL)
+        registered = _registry.get(tool_name) or _declared.get(tool_name)
+    if registered is not None:
+        return registered
+    return _catalogue().get(tool_name, Tier.ALWAYS_APPROVAL)
 
 
 def resolve(tool_name: str, trusted_tools: Iterable[str] = ()) -> Decision:
@@ -133,16 +174,16 @@ def can_be_trusted(tool_name: str) -> bool:
 
 def registered_permissions() -> Dict[str, str]:
     """Snapshot of tool -> tier for diagnostics / the settings UI."""
-    _ensure_catalogue()
     with _lock:
-        return {name: tier.value for name, tier in sorted(_registry.items())}
+        merged = {**_catalogue(), **_declared, **_registry}
+    return {name: tier.value for name, tier in sorted(merged.items())}
 
 
 def _reset_for_tests() -> None:
-    global _catalogue_applied
+    """Clear runtime registrations. The catalogue is data, not state.
+
+    A test that resets this gets the declared tiers back, because those are not
+    something the process accumulated — they are what the build says.
+    """
     with _lock:
         _registry.clear()
-        # Also forget that the catalogue was applied, so a test that clears the
-        # registry gets a genuinely empty one rather than one that silently
-        # refills on the next lookup.
-        _catalogue_applied = False

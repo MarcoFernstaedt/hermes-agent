@@ -48,7 +48,7 @@ export function projectOutcomes(
 ): OutcomeCandidate[] {
   if (!data) return [];
   const out: OutcomeCandidate[] = [];
-  const { guardrails, review, jobs, capabilities, health } = data.sections;
+  const { guardrails, review, jobs, capabilities, progress, health } = data.sections;
 
   // A halted agent first, always: nothing else on this page can proceed while
   // it holds, so ranking it against ordinary work would bury the one item that
@@ -109,6 +109,30 @@ export function projectOutcomes(
       dueAt: due.date,
       committed: true,
       safeToStart: false,
+    });
+  }
+
+  // The routines the owner keeps, from Progress — which is the only record of
+  // them. Now used to rank review items, job packets, dated fields and
+  // platform health and say nothing at all about the day the owner had already
+  // written down, which made "what needs me?" answer with everything except
+  // the part they were most likely to act on.
+  //
+  // An income routine outranks the rest, because the income gate is what
+  // constrains the day rather than merely filling it: until it is open, the
+  // optional work below is optional in name only.
+  for (const routine of progress?.incomplete ?? []) {
+    out.push({
+      id: `progress:${routine.id}`,
+      title: routine.name,
+      source: "progress",
+      consequence: routine.income ? "high" : "moderate",
+      // A missed routine is not recoverable by doing it twice tomorrow; that
+      // is the whole premise of keeping one. But it is a day, not a career.
+      recovery: "days",
+      income: routine.income,
+      // Entirely the owner's own business, in their own tracker.
+      safeToStart: true,
     });
   }
 

@@ -24,26 +24,82 @@ from hermes_cli import tool_tiers
 
 
 @pytest.fixture(scope="module")
-def loaded_tools() -> set[str]:
-    """The real production tool surface, not a fixture standing in for one."""
-    import model_tools  # noqa: F401  — importing is what registers the tools
-    from tools.registry import registry
+def build_surface() -> dict:
+    """The real production tool surface, enumerated in a *fresh* process.
 
-    return set(registry.get_all_tool_names())
+    Not by importing here. The tool registry and the permission registry are
+    both process-global and every test that points `HERMES_HOME` somewhere new,
+    or monkeypatches a declaration, adds to them — so in a shared-process run
+    this fixture would see the union of everything any earlier test happened to
+    register, which is not "the build" and not something this file can be
+    responsible for.
+
+    A subprocess is what the canonical runner already does per file, and it is
+    the only way to ask "what does a cold start load, and does all of it have a
+    tier" without the answer depending on test order.
+    """
+    import json
+    import subprocess
+    import sys
+
+    probe = (
+        "import json, model_tools;"
+        "from tools.registry import registry;"
+        "from hermes_cli.module_permissions import registered_permissions;"
+        "print(json.dumps({'tools': registry.get_all_tool_names(),"
+        " 'tiers': registered_permissions()}))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 class TestTheCatalogueMatchesTheBuild:
-    def test_every_loaded_tool_has_a_declared_tier(self, loaded_tools):
-        undeclared = sorted(loaded_tools - set(tool_tiers.catalogue()))
+    def test_every_loaded_tool_has_a_declared_tier(self, build_surface):
+        """From either source: this file, or the module that owns the tool.
+
+        Checking only the static catalogue was wrong, and running the whole
+        suite in one process is what showed it. Capability tools
+        (`contact_list`, `task_advance`, …) are generated from owner-written
+        declarations and declare their own tiers as they are built, so they can
+        never appear in this file — the set of them is not knowable until the
+        owner writes a capability.
+        """
+        undeclared = sorted(
+            set(build_surface["tools"]) - set(build_surface["tiers"])
+        )
         assert undeclared == [], (
             f"{len(undeclared)} tools fall back to the ALWAYS_APPROVAL default "
             f"instead of declaring a tier: {undeclared}"
         )
 
+    def test_owner_declared_capability_tools_carry_their_own_tiers(self):
+        """Building a capability tool is what declares its tier.
+
+        It used to happen only in `_register()`, which runs once at import
+        against whatever declarations existed then. Any later rebuild — a
+        reload after a capability is authored, a profile switch — produced
+        tools the permission layer had never heard of, and an unheard-of tool
+        is ALWAYS_APPROVAL: safe, and unusable, because every generated *read*
+        would have prompted.
+        """
+        from hermes_cli.module_permissions import Tier, get_tier
+        from tools.capability_tools import build_tools
+
+        generated = build_tools()
+        if not generated:
+            pytest.skip("no capabilities declared in this build")
+        for name, _toolset, _schema, _handler, tier in generated:
+            expected = Tier.AUTO if tier == "auto" else Tier.APPROVAL
+            assert get_tier(name) is expected, name
+
     def test_the_catalogue_has_no_entries_for_tools_that_do_not_exist(
-        self, loaded_tools
+        self, build_surface
     ):
-        stale = sorted(set(tool_tiers.catalogue()) - loaded_tools)
+        stale = sorted(set(tool_tiers.catalogue()) - set(build_surface["tools"]))
         assert stale == [], f"declared but not registered by the build: {stale}"
 
     def test_no_tool_is_declared_at_two_tiers(self):
@@ -56,15 +112,22 @@ class TestTheCatalogueMatchesTheBuild:
 
 class TestTheCatalogueIsActuallyApplied:
     def test_a_lookup_sees_it_without_anyone_importing_it_first(self):
-        """No import-order rule to get wrong.
+        """No import-order rule to get wrong, and no one-shot flag either.
 
-        The catalogue loads lazily on first lookup, so a tier read early in
-        startup gets the same answer as one read late.
+        The first version applied the catalogue behind a "have we done this
+        yet" flag, so the answer depended on whether anything had cleared the
+        registry since. Running the suite in one process caught it: a reset
+        left `web_search` reading as ALWAYS_APPROVAL. A tier that changes with
+        what ran earlier is not a tier, so the catalogue is now consulted on
+        every miss.
         """
         from hermes_cli import module_permissions
 
         module_permissions._reset_for_tests()
         assert get_tier("web_search") is Tier.AUTO
+        # And again, to show it is not a one-shot refill either.
+        module_permissions._reset_for_tests()
+        assert get_tier("read_file") is Tier.AUTO
 
     def test_a_module_may_not_quietly_downgrade_a_catalogue_entry(self):
         """Conflicts are loud.

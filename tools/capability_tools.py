@@ -267,20 +267,52 @@ def build_tools(capabilities: list[dict[str, Any]] | None = None) -> list[tuple]
                                 "required": ["id", "to"]}},
                 _make_advance(cap), "approval",
             ))
+    _declare_tiers(tools)
     return tools
+
+
+def _declare_tiers(tools: list[tuple]) -> None:
+    """Record each generated tool's tier as it is built.
+
+    Here rather than only in `_register()` because `_register()` runs once, at
+    import, against whatever declarations existed then. Any later path that
+    rebuilds the tool set — a reload after a capability is authored, a profile
+    switch, a test that points the home elsewhere — produced tools the
+    permission layer had never heard of, and an unheard-of tool is
+    ALWAYS_APPROVAL. That is safe and unusable: every generated *read* would
+    have prompted.
+
+    Declaring at build time means the tier arrives with the tool, whatever
+    built it.
+    """
+    try:
+        from hermes_cli.module_permissions import Tier, declare_tool_permission
+    except Exception:
+        return
+    for name, _toolset, _schema, _handler, tier in tools:
+        try:
+            declare_tool_permission(name, Tier.AUTO if tier == "auto" else Tier.APPROVAL)
+        except Exception:
+            # A conflicting declaration is the catalogue's business to shout
+            # about; it must not stop tool generation.
+            pass
 
 
 def _register() -> None:
     try:
-        from hermes_cli.module_permissions import Tier, register_tool_permission
+        # `declare_`, not `register_`: these tiers come from the owner's
+        # declaration, and this function runs once at import. A registry reset
+        # used to wipe them with no way to get them back, which quietly turned
+        # every generated read tool into an always-approval one.
+        from hermes_cli.module_permissions import Tier, declare_tool_permission
     except Exception:
-        register_tool_permission = None  # type: ignore
+        declare_tool_permission = None  # type: ignore
         Tier = None  # type: ignore
 
     for name, toolset, schema, handler, tier in build_tools():
-        if register_tool_permission is not None and Tier is not None:
+        if declare_tool_permission is not None and Tier is not None:
             try:
-                register_tool_permission(name, Tier.AUTO if tier == "auto" else Tier.APPROVAL)
+                declare_tool_permission(name, Tier.AUTO if tier == "auto" else Tier.APPROVAL)
             except Exception:
                 pass
         try:

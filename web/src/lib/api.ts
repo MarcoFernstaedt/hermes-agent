@@ -603,6 +603,38 @@ export interface HubHealthSection extends HubContextSection {
   problems: string[];
 }
 
+/**
+ * Today's routines, straight from the Progress store.
+ *
+ * Now had no Progress in it at all — it ranked review items, job packets,
+ * dated capability fields and platform health, and said nothing about the
+ * routines the owner actually keeps. There is exactly one record of those and
+ * it is this one, so whatever Now says about them comes from here rather than
+ * from a second definition of "done" that could disagree with the Progress
+ * screen about the same day.
+ */
+export interface HubProgressSection extends HubContextSection {
+  day?: string;
+  routines?: { completed: number; total: number };
+  income_gate?: { open: boolean; message: string };
+  /** Only the unfinished ones. A completed routine does not need the owner. */
+  incomplete?: Array<{
+    id: number;
+    name: string;
+    category: string;
+    value: number;
+    target: number;
+    unit: string;
+    income: boolean;
+  }>;
+  /**
+   * What the owner wrote last night about today. Their words — the only line
+   * on Now that is a stated intention rather than a derived one, which is
+   * exactly why it is null when they did not write one.
+   */
+  intention?: string | null;
+}
+
 export interface HubContext {
   generated_at: string;
   generated_at_epoch: number;
@@ -613,6 +645,7 @@ export interface HubContext {
     review?: HubReviewSection;
     guardrails?: HubGuardrailsSection;
     capabilities?: HubCapabilitiesSection;
+    progress?: HubProgressSection;
     health?: HubHealthSection;
   };
 }

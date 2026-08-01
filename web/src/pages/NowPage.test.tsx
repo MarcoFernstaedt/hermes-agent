@@ -209,3 +209,92 @@ describe("today's three", () => {
     expect(auditA11y(render(withWork))).toEqual([]);
   });
 });
+
+describe("Progress is what Now says about the day", () => {
+  /**
+   * Now had no Progress in it at all. It ranked review items, job packets,
+   * dated capability fields and platform health, and said nothing about the
+   * routines the owner actually keeps — so "what needs me?" answered with
+   * everything except the part of the day they had already written down.
+   *
+   * There is exactly one record of those routines. Now reads it rather than
+   * computing a second view of the same day that could disagree with the
+   * Progress screen.
+   */
+  const progress = (over: Record<string, unknown> = {}) =>
+    context({
+      progress: {
+        available: true,
+        day: "2026-07-29",
+        routines: { completed: 2, total: 5 },
+        income_gate: { open: false, message: "Income gate closed." },
+        incomplete: [
+          {
+            id: 1, name: "One direct income action", category: "income",
+            value: 0, target: 1, unit: "check", income: true,
+          },
+          {
+            id: 4, name: "Move body", category: "health",
+            value: 0, target: 1, unit: "check", income: false,
+          },
+        ],
+        intention: null,
+        ...over,
+      },
+    });
+
+  it("states routine completion in words", () => {
+    expect(render(progress())).toContain("2 of 5 routines done.");
+  });
+
+  it("says whether the income gate is met", () => {
+    expect(render(progress())).toContain("Income gate not met yet.");
+    expect(
+      render(progress({ income_gate: { open: true, message: "" } })),
+    ).toContain("Income gate met.");
+  });
+
+  it("puts unfinished routines into the ranking", () => {
+    const html = render(progress());
+    expect(html).toContain("One direct income action");
+    expect(html).toContain("Move body");
+  });
+
+  it("shows the owner's own words about today when they wrote them", () => {
+    const html = render(progress({ intention: "Finish the packet for Acme." }));
+    expect(html).toContain("Finish the packet for Acme.");
+  });
+
+  it("invents nothing when they did not", () => {
+    // No placeholder, no "set an intention" prompt. An absent thing is absent.
+    expect(render(progress())).not.toContain("Last night you wrote");
+  });
+
+  it("renders no routine section at all when Progress is unavailable", () => {
+    const html = render(
+      context({ progress: { available: false, reason: "progress store not initialised" } }),
+    );
+    expect(html).not.toContain("Routines and income");
+    // And says so where unavailable sources are named, rather than silently
+    // looking like a day with no routines.
+    expect(html).toContain("progress");
+  });
+
+  it("reads in the order nowOrder declares", () => {
+    // For a screen-reader user the reading order *is* the design. Asserting the
+    // rendered DOM rather than the data model is the point: `nowOrder` existed
+    // with nothing rendering from it, so the order it declared was a claim
+    // nothing checked.
+    const html = render(progress());
+    const rendered = [...html.matchAll(/data-now-section="([a-z]+)"/g)].map((m) => m[1]);
+    expect(rendered).toEqual(["outcome", "gate"]);
+  });
+
+  it("drops a section with nothing to say rather than rendering it empty", () => {
+    // An empty card still costs a screen-reader user a heading, a landmark and
+    // a swipe to discover it says nothing — every morning.
+    const html = render(context());
+    const rendered = [...html.matchAll(/data-now-section="([a-z]+)"/g)].map((m) => m[1]);
+    expect(rendered).not.toContain("gate");
+  });
+});
