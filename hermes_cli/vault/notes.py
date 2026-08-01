@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -176,8 +177,14 @@ def _backup(path: Path) -> Optional[Path]:
     if not path.exists():
         return None
     d = _backups_dir()
+    # `%S` + pid is not unique: two writes to the same note inside one second
+    # from one process produced the same filename, so the second backup
+    # overwrote the first. Harmless while backups were only a safety net;
+    # actively wrong now that an undo entry points at one — two entries would
+    # share a path and the older undo would restore the newer content. A short
+    # random suffix makes each snapshot its own file.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = d / f"{path.stem}.{stamp}.{os.getpid()}.bak"
+    dest = d / f"{path.stem}.{stamp}.{os.getpid()}.{uuid.uuid4().hex[:8]}.bak"
     shutil.copy2(path, dest)
     # Keep only the most recent few backups for this note stem.
     existing = sorted(d.glob(f"{path.stem}.*.bak"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -187,6 +194,30 @@ def _backup(path: Path) -> Optional[Path]:
         except OSError:
             pass
     return dest
+
+
+def _record_undo(
+    rel: str, backup: Optional[Path], existed: bool, *, action_id: str
+) -> None:
+    """Record how to reverse this write. Never blocks the write itself.
+
+    Imported lazily so `notes` keeps no import-time dependency on the journal,
+    and wrapped because a journal that cannot record must not cost the owner a
+    save. The failure mode is a lost undo, which is visible in the stack; the
+    alternative is a refused write, which is worse and is not this module's
+    call to make.
+    """
+    try:
+        from hermes_cli.undo.actions import record_vault_write
+
+        record_vault_write(
+            rel=rel,
+            backup_path=str(backup) if backup else None,
+            existed=existed,
+            action_id=action_id,
+        )
+    except Exception:
+        pass
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -211,7 +242,13 @@ def write_note(
     if expected_mtime is not None and path.exists():
         if path.stat().st_mtime > expected_mtime + 1e-6:
             raise VaultConflict(rel)
-    _backup(path)
+    existed = path.exists()
+    backup = _backup(path)
+    # Recorded *before* the write, so there is no window in which the note has
+    # changed and nothing knows how to change it back. The backup already
+    # exists on disk at this point, so the undo is a promise we can keep at the
+    # moment we make it.
+    _record_undo(rel, backup, existed, action_id="vault.write")
     _atomic_write(path, content)
     return {"path": rel, "mtime": path.stat().st_mtime, "bytes": len(content.encode("utf-8"))}
 
@@ -219,9 +256,11 @@ def write_note(
 def append_to_note(rel: str, text: str, *, root: Path | None = None) -> Dict[str, Any]:
     """Append text to a note, creating it if missing. Atomic + backup."""
     path = resolve_in_vault(rel, root=root)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existed = path.exists()
+    existing = path.read_text(encoding="utf-8") if existed else ""
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
-    _backup(path)
+    backup = _backup(path)
+    _record_undo(rel, backup, existed, action_id="vault.append")
     _atomic_write(path, existing + sep + text)
     return {"path": rel, "mtime": path.stat().st_mtime}
 
@@ -291,5 +330,10 @@ def create_note(rel: str, content: str = "", *, root: Path | None = None) -> Dic
         path = path.with_suffix(".md")
     if path.exists():
         raise VaultExists(rel)
+    # `create_note` is what the agent's `vault_create` tool calls, and it wrote
+    # without journaling — so the one path an agent actually takes was the one
+    # path with no undo. There is no backup because there was no prior version;
+    # the inverse of a create is a delete.
+    _record_undo(rel_to_vault(path, root=root), None, False, action_id="vault.create")
     _atomic_write(path, content)
     return {"path": rel_to_vault(path, root=root), "mtime": path.stat().st_mtime}
