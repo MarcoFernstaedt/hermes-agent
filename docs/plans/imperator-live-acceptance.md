@@ -1,15 +1,78 @@
-# Live acceptance: native chat and `gmail_send`
+# Live acceptance
 
 Everything below runs against a real runtime on the owner's machine. It exists
-because two review cycles found defects that no test in this repository could
-have found — the fixtures encoded the same assumptions as the code, so they
-agreed with it and both were wrong together. The unit tests are the floor; this
-is the check.
+because every review cycle so far has found defects that no test in this
+repository could have found — the fixtures encoded the same assumptions as the
+code, so they agreed with it and both were wrong together. The unit tests are
+the floor; this is the check.
 
 Nothing here sends mail without an explicit approval, and no step prints a
 secret value.
 
----
+## What this evidence is bound to
+
+Branch `claude/imperator-dashboard-mobile-xw09ri`, ending at commit
+`a0b1297b4d278b2ec61d6b59fb584bba89e18ec2`, tree
+`3133a5489da55da20fbf57dca2f20e6eac858367`. That is the last *code* commit;
+this document is committed on top of it, so the tree recorded above is the one
+every claim below was verified against. If `git rev-parse HEAD~1` does not
+match it, this document has drifted and should be regenerated rather than
+trusted.
+
+The five commits it covers, oldest first:
+
+| commit | tree | what |
+| --- | --- | --- |
+| `b7f2b8cc3` | `57c1b4ae1` | idempotency settlement fencing; malformed provider responses are ambiguous |
+| `ab1310a4e` | `ae54fc8f7` | the approval-to-capability chain; the full tier catalogue |
+| `4e87ed696` | `395de3826` | vault undo hash contract |
+| `633576265` | `2686ac9fe` | native reconnect, prompt idempotency, new-chat scoping |
+| `a0b1297b4` | `3133a5489` | Now reads Progress; persisted override; ordered sections |
+
+## What is NOT claimed
+
+Stated plainly, because a "PASS" that quietly covers less than it appears to is
+worse than a FAIL.
+
+* **The tool gate is `observe`, not `enforce`.** `HERMES_TOOL_GATE_MODE`
+  defaults to `observe`. The approval chain works end to end and has tests that
+  exercise it through the real gateway transport, but no production traffic has
+  run through it in `enforce`. Turning it on is a decision to make against live
+  traffic with someone watching, not in a commit.
+* **`HERMES_APPROVAL_INTEGRITY` is `observe`.** Unchanged.
+* **Nothing here has been deployed, restarted, or run against live services.**
+  No live credentials were used, no message was sent, no Gmail state was
+  modified, and the shared venv was not touched.
+* **The active gateway mapping was not altered.** It still points at
+  `release/owner-main-4c21` @ `4c21fd39c98456b6f195901712fed83e90d77241`. The
+  separate `release/owner-main-fab8` @ `fab8f79c9` worktree is clean and is not
+  the active mapping. Reported, not changed.
+* **A source-review PASS does not authorise deployment.**
+
+## Corrections to earlier evidence
+
+Two claims in the previous version of this document were wrong, and the code
+they described has been corrected along with them.
+
+**Voice.** Earlier evidence said no browser capture path existed.
+`web/src/lib/use-dictation.ts` contains a complete one — `getUserMedia`,
+`MediaRecorder`, and a POST to `/api/audio/transcribe` — wired into the chat
+composer and used by `ChatBubbleFeed.tsx`. The microphone is opened per press
+and its tracks stopped when the press ends; there is no always-listening mode
+and no server-side device access. The capability adapter also checked
+`faster_whisper` alone, so a machine transcribing perfectly well through Groq
+or OpenAI was told to "install faster-whisper to enable push-to-talk". Six
+providers are supported and the local model is only the default. The card now
+states the fact an owner needs before pressing the button: whether the
+recording leaves the machine.
+
+**Camera and location.** These reported `configured: true` and offered "Start
+it from the page when you want it". There is no `getUserMedia({ video })` and
+no `navigator.geolocation` call anywhere in `web/src/`. What exists is
+`web/src/lib/sensorConsent.ts`, a consent state model with nothing wired to it.
+They now report not-configured and say so, and the test asserting otherwise has
+been rewritten so that the day something does ask for the camera, it has to be
+revisited rather than quietly staying green.
 
 ## 0. Preconditions
 
@@ -220,11 +283,96 @@ Ask the agent to send a test message to an address you control.
 
 ---
 
+## 6. The approval-to-capability chain
+
+The part with no live-traffic evidence, and the reason the gate is still
+`observe`. Run this against a real gateway session.
+
+1. **A gated tool asks.** With `HERMES_TOOL_GATE_MODE=enforce` in a *scratch*
+   session, call an ALWAYS_APPROVAL tool. An `approval.request` reaches the
+   client and the agent thread blocks. Report the frame.
+2. **Answering runs it, once.** Answer `once`. The handler runs exactly one
+   time. Call the same tool again: a **second** card appears. One approval must
+   not license a retry loop.
+3. **Denying stops it before the handler.** Report that the handler was not
+   entered — not that it returned an error.
+4. **Silence is not consent.** Let a card time out. The call is refused.
+5. **A standing grant does not reach the strictest tier.** Answer `session` for
+   an APPROVAL-tier tool; the next call runs without a card. Do the same for an
+   ALWAYS_APPROVAL tool; it asks again.
+6. **The tier catalogue.** `python -c "from hermes_cli.module_permissions
+   import registered_permissions as r; print(len(r()))"` — expect every loaded
+   tool covered. The declared split is 57 auto / 32 approval / 15
+   always-approval across the 104 tools this build loads. Read
+   `hermes_cli/tool_tiers.py` and disagree with specific lines; each AUTO entry
+   is a claim, and registering a tool can only ever relax it.
+7. **`terminal` is APPROVAL, deliberately.** Confirm the dangerous-command gate
+   still fires underneath it — the tier asks about the shell once, that gate
+   asks about `rm -rf` every time.
+8. **Then leave the gate in `observe`.** Do not flip the default.
+
+---
+
+## 7. Prompt idempotency
+
+1. Send a prompt, kill the socket before the acknowledgement arrives, let the
+   client reconnect and resend. **One** turn runs. The second response carries
+   `duplicate: true`.
+2. Send two genuinely different messages. Both run.
+3. Make a submission fail (a busy subagent). Retry after it clears: the retry
+   is a real submission, not a silent "queued, duplicate" that waits forever.
+
+---
+
+## 8. Reconnect and new chat
+
+1. Open native chat, then drop the socket *after* it is working (kill the
+   gateway, or disable wifi). A reconnect is attempted, bounded, and the status
+   reads `reconnecting` rather than staying `ready`.
+2. Exhaust the retries. Held messages stop showing as "sending".
+3. Compose a message while the socket is down, then hit **New chat** before it
+   reconnects. The held message is **dropped**, not delivered into the new
+   conversation minutes later.
+
+---
+
+## 9. Now and Progress
+
+1. With routines incomplete, Now states completion and the income gate in
+   words, sourced from the Progress store — the numbers must match the Progress
+   screen exactly.
+2. Complete a routine in Progress. Now's count changes; the completed routine
+   disappears from the ranking rather than appearing as done.
+3. Write a "tomorrow" line in last night's reflection. Now shows it verbatim.
+   Clear it: the line is absent, not an empty placeholder.
+4. Press "Start with this instead", then reload. The override survives.
+5. Wait for the day to roll over (or set the clock forward). The override is
+   gone and Imperator's suggestion is back.
+6. Answer the review item the override pointed at. The override stops
+   suppressing the suggestion for what remains.
+
+---
+
+## 10. Vault undo conflict
+
+1. Have the agent write a note. Edit that note in Obsidian. Undo. It is
+   **refused**, the note keeps the Obsidian edit, and the entry stays offerable.
+2. Force the undo. The older version is restored and what it overwrote is
+   itself backed up.
+3. Delete the backup a journal entry points at and undo: refused, note
+   untouched.
+4. Replace a backup's contents with different bytes and undo: refused as
+   `backup_changed`, not silently restored.
+
+---
+
 ## What to report back
 
 For each numbered step: pass, or the observed behaviour with the RPC frames or
 log lines that show it. Counts where the step asks for counts —
-"looks right" is what let three of these defects through.
+"looks right" is what let the earlier defects through.
 
-Do not merge to `main`, deploy, restart production, or change
-`HERMES_APPROVAL_INTEGRITY_MODE` from `observe`.
+Do not merge to `main`, deploy, restart production, change
+`HERMES_APPROVAL_INTEGRITY` or `HERMES_TOOL_GATE_MODE` from `observe`, alter
+the active gateway mapping, or run any of this against live credentials or a
+live mailbox.
