@@ -9,6 +9,7 @@ instead of silently clobbering an Obsidian edit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -196,10 +197,33 @@ def _backup(path: Path) -> Optional[Path]:
     return dest
 
 
+def content_digest(text: str) -> str:
+    """SHA-256 of a note's bytes. The unit the undo contract is written in."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _record_undo(
-    rel: str, backup: Optional[Path], existed: bool, *, action_id: str
+    rel: str,
+    backup: Optional[Path],
+    existed: bool,
+    *,
+    action_id: str,
+    preimage_sha256: Optional[str] = None,
+    postimage_sha256: Optional[str] = None,
 ) -> None:
     """Record how to reverse this write. Never blocks the write itself.
+
+    The two hashes are what make the reversal safe rather than merely possible.
+    ``preimage_sha256`` is what the note contained before, so the restore can
+    check the backup on disk is still the version it was promised.
+    ``postimage_sha256`` is what this write is about to put there, so the
+    restore can check nothing has changed the note since — and refuse if
+    something has.
+
+    The vault is Obsidian's. Between a write and an undo the owner may have
+    opened that note and typed in it, and a restore that overwrote those
+    keystrokes would be this app deciding it knows better than the person using
+    it. The hash is how the app finds out, rather than assuming.
 
     Imported lazily so `notes` keeps no import-time dependency on the journal,
     and wrapped because a journal that cannot record must not cost the owner a
@@ -215,6 +239,8 @@ def _record_undo(
             backup_path=str(backup) if backup else None,
             existed=existed,
             action_id=action_id,
+            preimage_sha256=preimage_sha256,
+            postimage_sha256=postimage_sha256,
         )
     except Exception:
         pass
@@ -243,12 +269,17 @@ def write_note(
         if path.stat().st_mtime > expected_mtime + 1e-6:
             raise VaultConflict(rel)
     existed = path.exists()
+    previous = path.read_text(encoding="utf-8") if existed else ""
     backup = _backup(path)
     # Recorded *before* the write, so there is no window in which the note has
     # changed and nothing knows how to change it back. The backup already
     # exists on disk at this point, so the undo is a promise we can keep at the
     # moment we make it.
-    _record_undo(rel, backup, existed, action_id="vault.write")
+    _record_undo(
+        rel, backup, existed, action_id="vault.write",
+        preimage_sha256=content_digest(previous) if existed else None,
+        postimage_sha256=content_digest(content),
+    )
     _atomic_write(path, content)
     return {"path": rel, "mtime": path.stat().st_mtime, "bytes": len(content.encode("utf-8"))}
 
@@ -260,8 +291,13 @@ def append_to_note(rel: str, text: str, *, root: Path | None = None) -> Dict[str
     existing = path.read_text(encoding="utf-8") if existed else ""
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
     backup = _backup(path)
-    _record_undo(rel, backup, existed, action_id="vault.append")
-    _atomic_write(path, existing + sep + text)
+    written = existing + sep + text
+    _record_undo(
+        rel, backup, existed, action_id="vault.append",
+        preimage_sha256=content_digest(existing) if existed else None,
+        postimage_sha256=content_digest(written),
+    )
+    _atomic_write(path, written)
     return {"path": rel, "mtime": path.stat().st_mtime}
 
 
@@ -334,6 +370,9 @@ def create_note(rel: str, content: str = "", *, root: Path | None = None) -> Dic
     # without journaling — so the one path an agent actually takes was the one
     # path with no undo. There is no backup because there was no prior version;
     # the inverse of a create is a delete.
-    _record_undo(rel_to_vault(path, root=root), None, False, action_id="vault.create")
+    _record_undo(
+        rel_to_vault(path, root=root), None, False, action_id="vault.create",
+        postimage_sha256=content_digest(content),
+    )
     _atomic_write(path, content)
     return {"path": rel_to_vault(path, root=root), "mtime": path.stat().st_mtime}

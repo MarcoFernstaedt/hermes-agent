@@ -229,6 +229,183 @@ class TestUndoLast:
         assert (vault / "note.md").read_text(encoding="utf-8") == "v1"
 
 
+class TestTheUndoRefusesToOverwriteSomethingItDidNotWrite:
+    """The vault is Obsidian's, and the owner types in it.
+
+    Between an agent write and an undo, the note may have been edited by the
+    person the undo is supposedly for. Restoring the backup then destroys their
+    edit — silently, because the undo has no reason to think anything is wrong.
+    The contract is: record what this write put there, and refuse if that is
+    not what is there now.
+    """
+
+    def test_an_edit_after_the_write_blocks_the_undo(self, vault):
+        from hermes_cli.undo.actions import VaultUndoConflict, undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+
+        # The owner opens it in Obsidian and types.
+        (vault / "note.md").write_text("agent version, then mine", encoding="utf-8")
+
+        with pytest.raises(VaultUndoConflict):
+            undo_last(root=vault)
+        assert (vault / "note.md").read_text(encoding="utf-8") == "agent version, then mine"
+
+    def test_the_refusal_says_what_it_found_instead(self, vault):
+        from hermes_cli.undo.actions import VaultUndoConflict, undo_last
+        from hermes_cli.vault.notes import content_digest
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        (vault / "note.md").write_text("mine", encoding="utf-8")
+
+        with pytest.raises(VaultUndoConflict) as caught:
+            undo_last(root=vault)
+
+        report = caught.value.report
+        assert report["kind"] == "changed_since"
+        assert report["rel"] == "note.md"
+        assert report["expected_sha256"] == content_digest("agent version")
+        assert report["actual_sha256"] == content_digest("mine")
+
+    def test_a_refused_undo_is_still_offerable(self, vault):
+        # A conflict is the undo working, not the undo breaking. It must not
+        # consume the entry it declined to act on.
+        from hermes_cli.undo.actions import VaultUndoConflict, journal, undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        (vault / "note.md").write_text("mine", encoding="utf-8")
+
+        with pytest.raises(VaultUndoConflict):
+            undo_last(root=vault)
+
+        stack = journal().stack()
+        assert len(stack) == 1
+        assert stack[0]["status"] == "done"
+
+    def test_the_owner_can_choose_the_older_version_anyway(self, vault):
+        from hermes_cli.undo.actions import undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        (vault / "note.md").write_text("mine", encoding="utf-8")
+
+        entry = undo_last(root=vault, force=True)
+        assert entry["status"] == "undone"
+        assert (vault / "note.md").read_text(encoding="utf-8") == "original"
+
+    def test_forcing_backs_up_what_it_is_about_to_overwrite(self, vault):
+        # Forcing is a decision the owner is allowed to change their mind about.
+        from pathlib import Path
+
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.undo.actions import undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        (vault / "note.md").write_text("mine", encoding="utf-8")
+        undo_last(root=vault, force=True)
+
+        backups = Path(get_hermes_home()) / "vault-backups"
+        saved = [p.read_text(encoding="utf-8") for p in backups.glob("note.*.bak")]
+        assert "mine" in saved
+
+    def test_a_note_deleted_after_the_write_blocks_the_undo(self, vault):
+        from hermes_cli.undo.actions import VaultUndoConflict, undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        (vault / "note.md").unlink()
+
+        with pytest.raises(VaultUndoConflict) as caught:
+            undo_last(root=vault)
+        assert caught.value.report["note_exists"] is False
+        assert not (vault / "note.md").exists()
+
+    def test_an_untouched_note_undoes_normally(self, vault):
+        # The check must not refuse the ordinary case.
+        from hermes_cli.undo.actions import undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+        assert undo_last(root=vault)["status"] == "undone"
+        assert (vault / "note.md").read_text(encoding="utf-8") == "original"
+
+    def test_a_create_that_was_edited_afterwards_is_not_deleted(self, vault):
+        # The worst version of this bug: the agent makes a note, the owner
+        # writes something into it, and undo removes the file.
+        from hermes_cli.undo.actions import VaultUndoConflict, undo_last
+
+        write("brand-new.md", "stub")
+        (vault / "brand-new.md").write_text("stub plus my notes", encoding="utf-8")
+
+        with pytest.raises(VaultUndoConflict):
+            undo_last(root=vault)
+        assert (vault / "brand-new.md").read_text(encoding="utf-8") == "stub plus my notes"
+
+    def test_an_append_records_both_hashes(self, vault):
+        from hermes_cli.undo.actions import journal
+        from hermes_cli.vault import notes
+
+        (vault / "log.md").write_text("line one\n", encoding="utf-8")
+        notes.append_to_note("log.md", "line two")
+
+        payload = journal().stack()[0]["inverse_payload"]
+        assert payload["preimage_sha256"] == notes.content_digest("line one\n")
+        assert payload["postimage_sha256"] == notes.content_digest(
+            (vault / "log.md").read_text(encoding="utf-8")
+        )
+
+
+class TestTheBackupItselfIsChecked:
+    def test_a_backup_that_is_not_the_recorded_version_is_refused(self, vault):
+        """A path that resolves is not proof it resolves to the same bytes.
+
+        Backups are pruned and filenames are reused across runs. Restoring
+        whatever happens to be at the recorded path would put arbitrary content
+        into the note under the name of an undo.
+        """
+        from pathlib import Path
+
+        from hermes_cli.undo.actions import VaultUndoConflict, journal, undo_last
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        write("note.md", "agent version")
+
+        backup = Path(journal().stack()[0]["inverse_payload"]["backup"])
+        backup.write_text("something else entirely", encoding="utf-8")
+
+        with pytest.raises(VaultUndoConflict) as caught:
+            undo_last(root=vault)
+        assert caught.value.report["kind"] == "backup_changed"
+        assert (vault / "note.md").read_text(encoding="utf-8") == "agent version"
+
+
+class TestEntriesRecordedBeforeTheContract:
+    def test_they_still_undo(self, vault):
+        """The journal already holds entries with no hashes.
+
+        Refusing those would break undo for everything recorded before this
+        change — a correctness improvement that removes the feature is not one.
+        """
+        from hermes_cli.undo.actions import journal, record_vault_write, undo_entry
+        from hermes_cli.vault.notes import _backup
+
+        (vault / "note.md").write_text("original", encoding="utf-8")
+        backup = _backup(vault / "note.md")
+        entry = record_vault_write(
+            rel="note.md", backup_path=str(backup), existed=True,
+        )
+        (vault / "note.md").write_text("changed", encoding="utf-8")
+
+        assert "postimage_sha256" not in (entry["inverse_payload"] or {})
+        assert undo_entry(entry["id"], root=vault)["status"] == "undone"
+        assert (vault / "note.md").read_text(encoding="utf-8") == "original"
+        assert journal().stack() == []
+
+
 class TestTheProductionCallGraph:
     def test_the_tool_handler_path_journals_too(self, vault):
         """Not just the low-level function — the surface the agent calls.
