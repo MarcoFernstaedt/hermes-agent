@@ -165,3 +165,134 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("terminal", "curl PUT", rule_key="ext")
         assert res == {"approved": True, "message": None}
+
+
+class TestOnceOnly:
+    """`once_only` — approval that cannot be turned into a standing grant.
+
+    ALWAYS_APPROVAL means what it says: *this* action, *this* time. An
+    irreversible action that can be pre-approved, session-cached or
+    yolo-bypassed is an APPROVAL-tier action wearing a stricter label.
+    """
+
+    def test_a_cached_session_grant_does_not_short_circuit_it(self, monkeypatch):
+        prompted = []
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(
+            approval, "prompt_dangerous_approval",
+            lambda *a, **k: (prompted.append(1), "once")[1],
+        )
+        res = request_tool_approval("gmail_send", "send", once_only=True)
+        assert res["approved"] is True
+        assert prompted == [1], "a prior grant must not answer for this send"
+
+    def test_yolo_does_not_bypass_it(self, monkeypatch):
+        prompted = []
+        monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(
+            approval, "prompt_dangerous_approval",
+            lambda *a, **k: (prompted.append(1), "once")[1],
+        )
+        res = request_tool_approval("gmail_send", "send", once_only=True)
+        assert res["approved"] is True
+        assert prompted == [1], "--yolo must not send mail unasked"
+
+    def test_a_session_answer_is_not_persisted(self, monkeypatch):
+        # The card should not offer it, but a CLI prompt still can — so the
+        # refusal to persist has to live here, not only in the UI.
+        calls = {"session": [], "permanent": []}
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "always")
+        monkeypatch.setattr(approval, "approve_session",
+                            lambda sk, pk: calls["session"].append(pk))
+        monkeypatch.setattr(approval, "approve_permanent",
+                            lambda pk: calls["permanent"].append(pk))
+        monkeypatch.setattr(approval, "save_permanent_allowlist", lambda x: None)
+
+        res = request_tool_approval("gmail_send", "send", once_only=True)
+        assert res["approved"] is True
+        assert calls == {"session": [], "permanent": []}
+
+    def test_it_still_fails_closed_with_no_human(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "env_var_enabled", lambda v: False)
+        res = request_tool_approval("gmail_send", "send", once_only=True)
+        assert res["approved"] is False
+
+    def test_cron_approve_mode_cannot_auto_approve_it(self, monkeypatch):
+        """`cron_mode: approve` is a standing grant by another name."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "env_var_enabled",
+                            lambda v: v == "HERMES_CRON_SESSION")
+        monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
+        res = request_tool_approval("gmail_send", "send", once_only=True)
+        assert res["approved"] is False
+        assert "cron" in res["message"].lower()
+
+
+class TestApprovalPreviewReachesTheCard:
+    """The structured preview has to arrive with the approval request.
+
+    A card that shows only a one-line description cannot be the thing the
+    owner judges an irreversible send by — they need the sender, every
+    recipient, the subject and the body.
+    """
+
+    def _gateway(self, monkeypatch, captured: dict):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        monkeypatch.setattr(
+            approval, "_gateway_notify_cbs", {"test-session": lambda *a, **k: True},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            approval, "_await_gateway_decision",
+            lambda sk, cb, data, surface="gateway": (
+                captured.update(data),
+                {"resolved": 1, "choice": "once"},
+            )[1],
+        )
+
+    def test_the_preview_travels_with_the_request(self, monkeypatch):
+        captured: dict = {}
+        self._gateway(monkeypatch, captured)
+        preview = {"from": "m@x.com", "to": ["a@x.com"], "subject": "S"}
+        res = request_tool_approval(
+            "gmail_send", "send an email", preview=preview, once_only=True
+        )
+        assert res["approved"] is True
+        assert captured["preview"] == preview
+
+    def test_a_once_only_card_does_not_offer_a_standing_grant(self, monkeypatch):
+        captured: dict = {}
+        self._gateway(monkeypatch, captured)
+        request_tool_approval("gmail_send", "send", once_only=True)
+
+        assert captured["allow_permanent"] is False
+        assert captured["choices"] == ["once", "deny"]
+
+    def test_an_ordinary_request_keeps_the_full_choice_set(self, monkeypatch):
+        captured: dict = {}
+        self._gateway(monkeypatch, captured)
+        request_tool_approval("write_file", "write to ~/.ssh")
+
+        assert captured["allow_permanent"] is True
+        assert "choices" not in captured
+
+    def test_extra_data_cannot_overwrite_the_allowlist_key(self, monkeypatch):
+        # A caller-supplied key would let a preview redirect which pattern the
+        # decision is recorded against.
+        captured: dict = {}
+        self._gateway(monkeypatch, captured)
+        request_tool_approval(
+            "gmail_send", "send", rule_key="real-key",
+            preview={"pattern_key": "something-else"},
+        )
+        assert captured["pattern_key"] == "plugin_rule:real-key"

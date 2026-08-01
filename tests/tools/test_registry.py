@@ -794,3 +794,141 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestImportTimeRegistrationIsDiscovered:
+    """Registration written as a module-level loop still runs on import.
+
+    Treating it as "not registering" silently hid five tool modules from the
+    agent's catalogue — including the whole Gmail and Calendar integrations,
+    whose own comment reads "Self-register on import (discover_builtin_tools
+    imports this)" while discovery skipped them. The on-machine soak surfaced
+    this as "no typed email/calendar tools exist", when in fact they did.
+    """
+
+    def _detects(self, tmp_path, source: str) -> bool:
+        from tools.registry import _module_registers_tools
+
+        path = tmp_path / "mod.py"
+        path.write_text(source, encoding="utf-8")
+        return _module_registers_tools(path)
+
+    def test_plain_top_level_call(self, tmp_path):
+        assert self._detects(tmp_path, "registry.register(name='a')\n")
+
+    def test_registration_inside_a_module_level_loop(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "for n in NAMES:\n    registry.register(name=n)\n",
+        )
+
+    def test_registration_inside_a_module_level_try(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    registry.register(name='a')\nexcept Exception:\n    pass\n",
+        )
+
+    def test_registration_inside_an_except_handler(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    x = 1\nexcept Exception:\n    registry.register(name='a')\n",
+        )
+
+    def test_registration_inside_a_module_level_if(self, tmp_path):
+        assert self._detects(tmp_path, "if AVAILABLE:\n    registry.register(name='a')\n")
+
+    def test_registration_inside_a_loop_inside_a_try(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            "try:\n    for n in NAMES:\n        registry.register(name=n)\nexcept Exception:\n    pass\n",
+        )
+
+    def test_registration_inside_a_module_level_match(self, tmp_path):
+        # `ast.Match` keeps its branches under cases[*].body, not `body`, so a
+        # generic walk misses them. Caught in review, not by me.
+        assert self._detects(
+            tmp_path,
+            'match MODE:\n    case "enabled":\n        registry.register(name="a")\n',
+        )
+
+    def test_registration_in_a_match_wildcard_case(self, tmp_path):
+        assert self._detects(
+            tmp_path,
+            'match MODE:\n    case _:\n        registry.register(name="a")\n',
+        )
+
+    def test_a_function_defined_inside_a_match_case_is_not_import_time(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            'match MODE:\n    case "x":\n        def later():\n            registry.register(name="a")\n',
+        )
+
+    def test_a_function_that_registers_when_called_is_not_a_tool_module(self, tmp_path):
+        # The distinction the original check was protecting, and still is: a
+        # helper that registers when *invoked* must not be imported eagerly.
+        assert not self._detects(
+            tmp_path,
+            "def setup():\n    registry.register(name='a')\n",
+        )
+
+    def test_a_method_that_registers_is_not_either(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            "class Thing:\n    def setup(self):\n        registry.register(name='a')\n",
+        )
+
+    def test_a_nested_function_inside_a_loop_is_still_not_import_time(self, tmp_path):
+        assert not self._detects(
+            tmp_path,
+            "for n in NAMES:\n    def later():\n        registry.register(name=n)\n",
+        )
+
+    def test_the_real_hidden_modules_are_discovered(self):
+        """Gmail, Calendar and Vault were all invisible. Review found Vault —
+        13 tools appeared in the catalogue delta, not the 7 I predicted."""
+        from pathlib import Path
+
+        from tools.registry import _module_registers_tools
+
+        for module in (
+            "tools/gmail_tools.py",
+            "tools/calendar_tools.py",
+            "tools/vault_tools.py",
+        ):
+            assert _module_registers_tools(Path(module)) is True, module
+
+    def test_newly_exposed_write_tools_carry_an_approval_tier(self):
+        """Discovery widened the live tool surface. Every write among the newly
+        visible tools must gate, and anything unregistered must fail safe."""
+        import tools.calendar_tools  # noqa: F401
+        import tools.gmail_tools  # noqa: F401
+        import tools.vault_tools  # noqa: F401
+        from hermes_cli.module_permissions import Tier, get_tier
+
+        for name in (
+            "gmail_draft",
+            "calendar_create_event",
+            "calendar_create_task",
+            "vault_append",
+            "vault_create",
+        ):
+            assert get_tier(name) is Tier.APPROVAL, name
+
+        # Stricter still, and rightly so: replace destroys existing content
+        # where append does not, so it can never be blanket-allowed for a
+        # session. (Both the review and I had this down as APPROVAL; the code
+        # is the one that was correct.)
+        assert get_tier("vault_replace") is Tier.ALWAYS_APPROVAL
+
+        for name in (
+            "gmail_search",
+            "gmail_read",
+            "calendar_list_events",
+            "calendar_find_free_time",
+            "vault_search",
+            "vault_read",
+        ):
+            assert get_tier(name) is Tier.AUTO, name
+
+        # Fail-safe: an unknown tool is never silently permitted.
+        assert get_tier("definitely_not_registered") is Tier.ALWAYS_APPROVAL

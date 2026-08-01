@@ -38,9 +38,14 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
+import { useNativeChat } from "@/hooks/useNativeChat";
+import type { GatewayEvent } from "@hermes/shared";
 import { ChatHeaderRename } from "@/components/ChatHeaderRename";
 import { ChatScopeControl } from "@/components/ChatScopeControl";
-import { ChatSidebar } from "@/components/ChatSidebar";
+import {
+  ChatSidebar,
+  type SessionInfo as NativeSessionInfo,
+} from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -61,9 +66,15 @@ import {
   parseDashboardEventFrame,
   shouldApplyHydration,
   shouldHandleChannelEvent,
+  type ChatFeedEvent,
   type ChatFeedMessage,
   type ChatFeedState,
 } from "@/lib/chat-feed-model";
+import {
+  composerReady,
+  createChatTransport,
+  type SendOutcome,
+} from "@/lib/chatTransport";
 import { submitWriteApproval } from "@/lib/write-approval-flow";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
@@ -380,6 +391,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
    * server now refuses that connect, and this stops the client attempting it.
    */
   const [chatBlocked, setChatBlocked] = useState(false);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch on first activation.
     if (isActive) setChatEverShown(true);
@@ -552,6 +564,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
   const ptyTargetKey = `${scopedProfile ?? "default"}\0${resumeParam ?? "new"}`;
+  // Session-scoped signals from the page's own native session, handed to the
+  // sidebar so it does not open a second session to obtain them.
+  const [nativeSessionInfo, setNativeSessionInfo] = useState<NativeSessionInfo>({});
+
+  /**
+   * The native, PTY-free transport. Feeds the *same* `chatFeedReducer` the
+   * sidecar path feeds — the reducer never learns which transport delivered an
+   * event, which is why swapping them changes nothing above this line.
+   *
+   * Declared here rather than beside the other latches because it reads
+   * `scopedProfile`, and a const cannot be used before its declaration.
+   */
+  const nativeChat = useNativeChat(
+    useCallback((event: GatewayEvent) => {
+      if (event.type === "session.info") {
+        // Not a feed event. It carries the session-scoped signals the sidebar
+        // used to open a whole second session to read.
+        const payload = (event as { payload?: NativeSessionInfo }).payload;
+        if (payload) setNativeSessionInfo((prev) => ({ ...prev, ...payload }));
+        return;
+      }
+      setFeedState((state) =>
+        chatFeedReducer(state, event as unknown as ChatFeedEvent),
+      );
+      if (event.type === "message.start") setAgentRunning(true);
+      if (event.type === "message.complete" || event.type === "error") {
+        setAgentRunning(false);
+      }
+    }, []),
+    { enabled: chatEverShown && !chatBlocked, profile: scopedProfile ?? "default" },
+  );
   const ptyTargetKeyRef = useRef(ptyTargetKey);
   useLayoutEffect(() => {
     if (ptyTargetKeyRef.current === ptyTargetKey) return;
@@ -1046,6 +1089,63 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return true;
   }, []);
 
+  const sendPtyRaw = useCallback((bytes: string): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(bytes);
+    return true;
+  }, []);
+
+  /**
+   * Every chat action's route to a transport.
+   *
+   * Rebuilt exactly when the routing could change — the native session's
+   * `active`/`status`, or the PTY's connection state — and stable otherwise.
+   * A transport captured once and never rebuilt would freeze the mode into
+   * every memoised handler, so the composer would keep sending to the terminal
+   * after native chat connected: the failure this replaces, reintroduced by
+   * the fix for it.
+   */
+  const {
+    active: nativeActive,
+    status: nativeStatus,
+    submit: nativeSubmit,
+    interrupt: nativeInterrupt,
+    respondApproval: nativeRespondApproval,
+    respondClarify: nativeRespondClarify,
+  } = nativeChat;
+  const readNative = useCallback(
+    () => ({
+      active: nativeActive,
+      status: nativeStatus,
+      submit: nativeSubmit,
+      interrupt: nativeInterrupt,
+      respondApproval: nativeRespondApproval,
+      respondClarify: nativeRespondClarify,
+    }),
+    [
+      nativeActive,
+      nativeStatus,
+      nativeSubmit,
+      nativeInterrupt,
+      nativeRespondApproval,
+      nativeRespondClarify,
+    ],
+  );
+  const readPty = useCallback(
+    () => ({
+      sendText: (text: string) => sendPtyText(text),
+      sendRaw: sendPtyRaw,
+      open: ptyState === "open",
+      ended: ptyState === "ended",
+    }),
+    [sendPtyText, sendPtyRaw, ptyState],
+  );
+  const transport = useMemo(
+    () => createChatTransport({ native: readNative, pty: readPty }),
+    [readNative, readPty],
+  );
+
   // Messages composed while the agent was mid-run, waiting to start their
   // own turn. Flushed one per run-completion by the effect below.
   const queuedSendsRef = useRef<QueuedSend[]>([]);
@@ -1089,77 +1189,83 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setComposer("");
     clearDraft(ptyTargetKeyRef.current);
 
-    let sent = false;
-    if (activeClarify && activeClarify.choices?.length) {
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        // Move to "Other", confirm, then paste the free-form answer.
-        ws.send("\x1b[B".repeat(activeClarify.choices.length));
-        ws.send("\r");
-        window.setTimeout(() => sendPtyText(text), 50);
-        sent = true;
+    const ctx = {
+      agentRunning,
+      isSlashCommand,
+      answeringClarify: Boolean(activeClarify),
+    };
+
+    void (async () => {
+      let outcome: SendOutcome;
+
+      if (activeClarify && activeClarify.choices?.length) {
+        // A free-form answer to an open question. On the terminal that means
+        // steering the menu to "Other" first; natively the text *is* the
+        // answer, so `openClarifyFreeText` is a no-op that reports success.
+        if (!transport.openClarifyFreeText(activeClarify.choices.length)) {
+          outcome = "failed";
+        } else {
+          if (transport.mode() === "pty") {
+            // Let the menu settle before pasting into it.
+            await new Promise((resolve) => window.setTimeout(resolve, 50));
+          }
+          outcome = await transport.send(text, ctx);
+        }
+      } else {
+        // `shouldQueueSend` still decides whether this *is* a queued send —
+        // it drives the bubble's "Queued" label. How the queueing happens is
+        // the transport's business: the terminal prefixes `/queue`, the
+        // gateway queues a mid-turn `prompt.submit` on its own.
+        outcome = await transport.send(text, ctx);
       }
-    } else if (
-      shouldQueueSend({
-        agentRunning,
-        isSlashCommand,
-        answeringClarify: Boolean(activeClarify),
-      })
-    ) {
-      // Mid-run: hand the message to the agent's own /queue so it queues
-      // server-side and starts its own turn after the current one, instead of
-      // steering the active turn or holding it in the browser. The bubble
-      // shows "Queued" until the agent goes idle.
-      sent = sendPtyText(`/queue ${text}`);
-      if (!sent && ptyStateRef.current !== "ended") {
-        // Socket down: replay the /queue command on reconnect.
-        pendingReconnectSendsRef.current.push({ id, text: `/queue ${text}` });
+
+      if (outcome === "failed") {
+        // Socket down. If a reconnect is expected, hold the message (bubble
+        // stays "sending") and let ws.onopen flush it — never silently drop.
+        // Only give up when the session has truly ended.
+        const willReconnect =
+          transport.mode() === "native" || ptyStateRef.current !== "ended";
+        if (willReconnect) {
+          const queued = shouldQueueSend(ctx) && transport.mode() === "pty";
+          pendingReconnectSendsRef.current.push({
+            id,
+            text: queued ? `/queue ${text}` : text,
+          });
+        } else {
+          markOptimisticFailed(id);
+        }
         return;
       }
-    } else {
-      sent = sendPtyText(text);
-    }
 
-    if (!sent) {
-      // Socket down. If a reconnect is expected, hold the message (bubble
-      // stays "sending") and let ws.onopen flush it — never silently drop.
-      // Only give up when the session has truly ended.
-      if (ptyStateRef.current !== "ended") {
-        pendingReconnectSendsRef.current.push({ id, text });
-      } else {
-        markOptimisticFailed(id);
-      }
-      return;
-    }
-
-    // Slash commands are dispatched straight to the PTY and usually produce
-    // no assistant reply to acknowledge the bubble, so settle it to "sent"
-    // now that it's on the wire. Plain messages keep "sending" until the
-    // agent's response acknowledges them.
-    if (isSlashCommand) {
-      setFeedState((state) => ({
-        ...state,
-        messages: state.messages.map((message) =>
-          message.id === id ? { ...message, status: "sent" } : message,
-        ),
-      }));
-    }
-
-    if (activeClarify) {
-      setFeedState((state) => {
-        const resolved = chatFeedReducer(state, {
-          type: "clarify.resolved",
-          payload: { answer: text },
-        });
-        return {
-          ...resolved,
-          messages: resolved.messages.map((message) =>
+      // Slash commands are dispatched straight through and usually produce no
+      // assistant reply to acknowledge the bubble, so settle it to "sent" now
+      // that it's on the wire. Plain messages keep "sending" until the agent's
+      // response acknowledges them.
+      if (isSlashCommand) {
+        setFeedState((state) => ({
+          ...state,
+          messages: state.messages.map((message) =>
             message.id === id ? { ...message, status: "sent" } : message,
           ),
-        };
-      });
-    }
-  }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, sendPtyText]);
+        }));
+      }
+
+      if (activeClarify) {
+        setFeedState((state) => {
+          const resolved = chatFeedReducer(state, {
+            type: "clarify.resolved",
+            payload: { answer: text },
+          });
+          return {
+            ...resolved,
+            messages: resolved.messages.map((message) =>
+              message.id === id ? { ...message, status: "sent" } : message,
+            ),
+          };
+        });
+      }
+    })();
+  }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, transport]);
 
   // Flush the send queue one message per idle transition: the first queued
   // message goes out when the current run completes; its own completion
@@ -1168,17 +1274,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     const next = takeNextQueuedSend(queuedSendsRef.current, agentRunning);
     if (!next) return;
-    if (sendPtyText(next.text)) {
+    void transport.resend(next.text).then((outcome) => {
+      if (outcome === "failed") {
+        markOptimisticFailed(next.id);
+        return;
+      }
       setFeedState((state) => ({
         ...state,
         messages: state.messages.map((message) =>
           message.id === next.id ? { ...message, status: "sending" } : message,
         ),
       }));
-    } else {
-      markOptimisticFailed(next.id);
+    });
+  }, [agentRunning, markOptimisticFailed, transport]);
+
+  // The PTY flushes held messages from `ws.onopen`. Native chat has no such
+  // hook — the socket is inside the session — so a message composed while the
+  // native session was down would sit "sending" forever. Flush on the same
+  // signal the composer re-opens on: the session becoming ready again.
+  useEffect(() => {
+    if (!nativeChat.active || nativeChat.status !== "ready") return;
+    const pending = pendingReconnectSendsRef.current;
+    if (!pending.length) return;
+    pendingReconnectSendsRef.current = [];
+    for (const item of pending) {
+      void transport.resend(item.text).then((outcome) => {
+        if (outcome === "failed") markOptimisticFailed(item.id);
+      });
     }
-  }, [agentRunning, markOptimisticFailed, sendPtyText]);
+  }, [nativeChat.active, nativeChat.status, transport, markOptimisticFailed]);
 
   // Once the agent finishes its current turn, any messages we handed to its
   // /queue are now in flight on the agent side — settle their bubbles from
@@ -1199,22 +1323,60 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [agentRunning]);
 
   const stopAgent = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send("\x03");
-  }, []);
+    void transport.stop();
+  }, [transport]);
+
+  /**
+   * Image attach on the native path.
+   *
+   * The PTY build installs its own handler inside the terminal effect, which
+   * native mode returns from before reaching. Without this, the attach button
+   * uploads the file and then does nothing at all — the quietest possible
+   * failure. `/image <path>` is a slash command the agent handles either way;
+   * only the route to it differs.
+   */
+  useEffect(() => {
+    if (!nativeChat.active) return;
+    let disposed = false;
+    imageAttachRef.current = (files: File[]) => {
+      if (!files.length) return;
+      void (async () => {
+        try {
+          for (const file of files) {
+            const uploaded = await uploadChatImage(file, scopedProfile);
+            if (disposed) return;
+            const outcome = await transport.resend(`/image ${uploaded.path}`);
+            if (outcome === "failed") {
+              setBanner("Image uploaded, but chat is not connected — try again.");
+              return;
+            }
+          }
+        } catch (err) {
+          setBanner(
+            `Image upload failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+    };
+    return () => {
+      disposed = true;
+      imageAttachRef.current = () => undefined;
+    };
+  }, [nativeChat.active, scopedProfile, transport]);
 
   const retryMessage = useCallback(
     (message: ChatFeedMessage) => {
-      if (!sendPtyText(message.text)) return;
-      setFeedState((state) => ({
-        ...state,
-        messages: state.messages.map((item) =>
-          item.id === message.id ? { ...item, status: "sending" } : item,
-        ),
-      }));
+      void transport.resend(message.text).then((outcome) => {
+        if (outcome === "failed") return;
+        setFeedState((state) => ({
+          ...state,
+          messages: state.messages.map((item) =>
+            item.id === message.id ? { ...item, status: "sending" } : item,
+          ),
+        }));
+      });
     },
-    [sendPtyText],
+    [transport],
   );
 
   const answerApproval = useCallback(
@@ -1222,17 +1384,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       choice: "once" | "session" | "always" | "deny",
       message: ChatFeedMessage,
     ) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(approvalChoiceKey(choice, message.allowPermanent !== false));
-      setFeedState((state) =>
-        chatFeedReducer(state, {
-          type: "approval.resolved",
-          payload: { choice },
-        }),
-      );
+      void transport
+        .approve(choice, {
+          // The terminal answers by typing a menu digit; `approvalChoiceKey`
+          // is what maps a choice to the right row. Natively the choice
+          // travels as itself and the key is unused.
+          menuKey: approvalChoiceKey(choice, message.allowPermanent !== false),
+        })
+        .then((delivered) => {
+          // Resolve the card only once the decision is on the wire. Clearing
+          // it on a failed send would show the owner an answered approval that
+          // the agent is still blocked on.
+          if (!delivered) return;
+          setFeedState((state) =>
+            chatFeedReducer(state, {
+              type: "approval.resolved",
+              payload: { choice },
+            }),
+          );
+        });
     },
-    [],
+    [transport],
   );
 
   const answerWriteApproval = useCallback(
@@ -1251,18 +1423,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [scopedProfile],
   );
 
-  const answerClarify = useCallback((answer: string, message: ChatFeedMessage) => {
-    const ws = wsRef.current;
-    const index = message.choices?.indexOf(answer) ?? -1;
-    if (!ws || ws.readyState !== WebSocket.OPEN || index < 0) return;
-    ws.send(String(index + 1));
-    setFeedState((state) =>
-      chatFeedReducer(state, {
-        type: "clarify.resolved",
-        payload: { answer },
-      }),
-    );
-  }, []);
+  const answerClarify = useCallback(
+    (answer: string, message: ChatFeedMessage) => {
+      void transport
+        .clarify({
+          answer,
+          // Natively the answer is addressed to the request it answers, so a
+          // second question arriving between render and click cannot swallow
+          // it. The terminal has only the position to go on.
+          requestId: message.requestId,
+          choices: message.choices,
+        })
+        .then((delivered) => {
+          if (!delivered) return;
+          setFeedState((state) =>
+            chatFeedReducer(state, {
+              type: "clarify.resolved",
+              payload: { answer },
+            }),
+          );
+        });
+    },
+    [transport],
+  );
 
   useEffect(() => {
     // Same ownership rule as the header end slot: the hidden chat host
@@ -1511,6 +1694,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // refuses that connect anyway; checking here means the owner reads an
     // actionable sentence instead of watching a terminal that never opens.
     if (chatBlocked) return;
+    // Native mode drives chat over /api/ws with no pseudo-terminal at all.
+    // Returning here is what makes the flag real rather than decorative: no
+    // PTY is spawned, so no slash-worker exists solely to render chat.
+    if (nativeChat.active) return;
     if (!eventSocketReady) return;
     const host = hostRef.current;
     if (!host) return;
@@ -2283,6 +2470,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ptyAttachIdentity,
     eventSocketReady,
     chatEverShown,
+    nativeChat.active,
     chatBlocked,
   ]);
 
@@ -2387,7 +2575,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null;
   const visibleBanner = banner ?? reconnectBanner;
   const showReconnectOverlay =
-    ptyState === "reconnecting" || (ptyState === "closed" && !banner);
+    !nativeChat.active &&
+    (ptyState === "reconnecting" || (ptyState === "closed" && !banner));
+  /**
+   * Whether the composer may send.
+   *
+   * Under native chat the PTY state machine is frozen at its initial
+   * "connecting" — no terminal is ever built — so gating on `ptyState` left the
+   * composer disabled for the entire life of a working native session. That is
+   * the acceptance failure: connected, and unable to send.
+   */
+  const composerEnabled = composerReady({
+    native: nativeChat,
+    ptyOpen: ptyState === "open",
+  });
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -2455,6 +2656,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <ChatSidebar
                 channel={channel}
                 profile={scopedProfile}
+                ownsSession={!nativeChat.active}
+                sessionInfo={nativeSessionInfo}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
               />
@@ -2503,7 +2706,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <ChatBubbleFeed
             messages={feedState.messages}
             composer={composer}
-            disabled={ptyState !== "open"}
+            disabled={!composerEnabled}
             writeApprovalDisabled={false}
             hydrating={hydrationsInFlight > 0}
             hasOlderHistory={olderHistory.available}
@@ -2543,7 +2746,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          {ptyState === "ended" && (
+          {!nativeChat.active && ptyState === "ended" && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
                 Session ended.
@@ -2571,6 +2774,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <ChatSidebar
                 channel={channel}
                 profile={scopedProfile}
+                ownsSession={!nativeChat.active}
+                sessionInfo={nativeSessionInfo}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
               />
