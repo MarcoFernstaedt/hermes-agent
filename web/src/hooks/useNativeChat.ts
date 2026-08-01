@@ -34,7 +34,15 @@ export interface NativeChat {
   liveId: string | null;
   /** Durable session, stable across refresh. */
   durableId: string | null;
-  submit(text: string): Promise<SubmitOutcome>;
+  /**
+   * Send a prompt.
+   *
+   * ``clientToken`` is the idempotency key for *this message*: mint it once
+   * when the message is composed and pass the same value on every retry, so a
+   * resend after a lost acknowledgement cannot become a second turn. Callers
+   * that have no id of their own can use `newClientToken()`.
+   */
+  submit(text: string, clientToken?: string): Promise<SubmitOutcome>;
   interrupt(): Promise<void>;
   respondApproval(
     choice: "once" | "session" | "always" | "deny",
@@ -50,6 +58,17 @@ export interface NativeChat {
    * under a heading that said it was new.
    */
   startNew(): void;
+  /**
+   * Monotonic counter bumped every time a genuinely new session begins.
+   *
+   * "New chat" is not only a transport concern. Anything the caller is holding
+   * on behalf of the *old* session — messages queued while the agent was busy,
+   * sends held back during a reconnect, optimistic rows still showing as
+   * sending — belongs to a conversation that no longer exists, and delivering
+   * them into the new one would put the owner's old words under a heading that
+   * says the chat is new. Callers watch this and drop that state.
+   */
+  generation: number;
   /** Try again after retries were exhausted. Visible, owner-initiated. */
   retry(): void;
   /**
@@ -83,9 +102,15 @@ export function useNativeChat(
   const [liveId, setLiveId] = useState<string | null>(null);
   const [durableId, setDurableId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Bumped by `startNew`; a dependency of the open effect, so incrementing it
-  // tears the session down and builds another.
+  // Bumped by `startNew` *and* by a reconnect; a dependency of the open effect,
+  // so incrementing it tears the session down and builds another.
   const [generation, setGeneration] = useState(0);
+  // Bumped only by `startNew`. The two are different questions: `generation`
+  // asks "should the effect rebuild the transport", and a reconnect answers
+  // yes; `sessionGeneration` asks "is this a different conversation", and a
+  // reconnect answers no. Conflating them would make every dropped socket
+  // discard the messages waiting to be sent over it.
+  const [sessionGeneration, setSessionGeneration] = useState(0);
   const retryTimerRef = useRef<number | null>(null);
   // Set alongside it, and consumed by the effect: a deliberate new chat must
   // not resume the id it just discarded.
@@ -114,11 +139,42 @@ export function useNativeChat(
     if (!active) return;
 
     let disposed = false;
+
+    /**
+     * Schedule another open, or give up. One budget for both reasons a
+     * connection can be missing — a first attempt that failed and a working
+     * one that died — because they are the same outage seen at two moments,
+     * and giving each its own allowance would double the time the owner spends
+     * watching a spinner.
+     */
+    const scheduleReconnect = (): void => {
+      if (disposed) return;
+      if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus("error");
+        setGaveUp(true);
+        return;
+      }
+      const delay = RECONNECT_BASE_MS * 2 ** attemptRef.current;
+      attemptRef.current += 1;
+      setStatus("reconnecting");
+      retryTimerRef.current = window.setTimeout(() => {
+        if (!disposed) setGeneration((n) => n + 1);
+      }, delay);
+    };
+
     const session = new NativeChatSession(new GatewayClient(), {
       onEvent: (ev) => sinkRef.current(ev),
       onHistory: (messages) => historyRef.current?.(messages),
       onStatusChange: (s) => {
         if (!disposed) setStatus(s);
+      },
+      // The socket died after a successful open. Retrying only a rejected
+      // `open()` left this case unhandled: the feed stopped and went on
+      // looking connected, because nothing was awaiting anything.
+      onDrop: () => {
+        if (disposed) return;
+        setError("the connection dropped");
+        scheduleReconnect();
       },
     });
     sessionRef.current = session;
@@ -151,19 +207,11 @@ export function useNativeChat(
         // "sending" for the rest of the session, which is worse — the owner
         // believes it was delivered.
         //
-        // Note this retries the *open*, never the send: a fresh session is not
-        // a reason to re-run a prompt whose fate is unknown.
-        if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
-          setStatus("error");
-          setGaveUp(true);
-          return;
-        }
-        const delay = RECONNECT_BASE_MS * 2 ** attemptRef.current;
-        attemptRef.current += 1;
-        setStatus("reconnecting");
-        retryTimerRef.current = window.setTimeout(() => {
-          if (!disposed) setGeneration((n) => n + 1);
-        }, delay);
+        // Note this retries the *open*, never the send. Resending is the
+        // caller's decision and it is safe now: `submit` carries an
+        // idempotency key, so a message re-sent after an unknown outcome
+        // cannot become a second turn.
+        scheduleReconnect();
       });
 
     return () => {
@@ -194,14 +242,25 @@ export function useNativeChat(
     setLiveId(null);
     setDurableId(null);
     setError(null);
+    // A deliberate new chat starts with a full retry budget and no memory of
+    // having given up on the old one.
+    attemptRef.current = 0;
+    setGaveUp(false);
+    // Both counters: the transport must rebuild, and callers must be told this
+    // is a different conversation so they can drop what they were holding for
+    // the old one.
+    setSessionGeneration((n) => n + 1);
     setGeneration((n) => n + 1);
   }, [profile]);
 
-  const submit = useCallback(async (text: string): Promise<SubmitOutcome> => {
-    const session = sessionRef.current;
-    if (!session) throw new Error("native chat is not connected");
-    return session.submit(text);
-  }, []);
+  const submit = useCallback(
+    async (text: string, clientToken?: string): Promise<SubmitOutcome> => {
+      const session = sessionRef.current;
+      if (!session) throw new Error("native chat is not connected");
+      return session.submit(text, clientToken);
+    },
+    [],
+  );
 
   const interrupt = useCallback(async () => {
     await sessionRef.current?.interrupt();
@@ -238,6 +297,7 @@ export function useNativeChat(
     respondApproval,
     respondClarify,
     startNew,
+    generation: sessionGeneration,
     retry,
     gaveUp,
     error,

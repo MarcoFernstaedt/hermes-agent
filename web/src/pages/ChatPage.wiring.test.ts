@@ -77,3 +77,85 @@ describe("native transport wiring", () => {
     expect(hook).toMatch(/const active = enabled && isNativeChatEnabled\(\);/);
   });
 });
+
+describe("a new chat does not deliver the old chat's held messages", () => {
+  /**
+   * The leak, and what investigating it actually found.
+   *
+   * `startFreshDashboardChat` clears the projection and rotates the session,
+   * but a message held for a reconnecting socket survives all of that — the
+   * flush fires on the next `ready` and delivers the owner's words from the
+   * old chat into the new one, minutes later, under a heading that says the
+   * chat is new.
+   *
+   * Two of the three things the review asked to clear turned out not to need
+   * it. `queuedSendsRef` has no producer anywhere in the app: mid-run queueing
+   * moved to the gateway (native) and to the `/queue` prefix (terminal), so
+   * the local queue is always empty and clearing it clears nothing. Optimistic
+   * rows are already discarded with the feed by `resetFreshChatProjection`,
+   * which the only caller of `startNew` runs. The held sends were the real one.
+   *
+   * The fix tags each held send with the conversation it belongs to rather
+   * than clearing a buffer from the handler — which only covers one button,
+   * and which the React compiler rejects outright because the handler is
+   * declared above the buffer it would have to reach.
+   */
+  it("the hook exposes a generation that only a new session bumps", () => {
+    expect(hook).toMatch(/const \[sessionGeneration, setSessionGeneration\]/);
+    const startNew = hook.slice(hook.indexOf("const startNew ="));
+    expect(startNew).toContain("setSessionGeneration((n) => n + 1)");
+    const scheduleReconnect = hook.slice(
+      hook.indexOf("const scheduleReconnect"),
+      hook.indexOf("const session = new NativeChatSession"),
+    );
+    expect(scheduleReconnect).not.toContain("setSessionGeneration");
+  });
+
+  it("held sends are tagged with the conversation that composed them", () => {
+    expect(chatPage).toContain("session: nativeChat.generation,");
+  });
+
+  it("every flush of held sends is scoped to the current conversation", () => {
+    // Native reconnect, native give-up, and the terminal's own reopen.
+    expect(chatPage.split("partitionBySession(").length - 1).toBe(3);
+  });
+
+  it("the queue flush skips messages from a replaced conversation", () => {
+    expect(chatPage).toMatch(
+      /takeNextQueuedSend\(\s*queuedSendsRef\.current,\s*agentRunning,\s*nativeChat\.generation,/,
+    );
+  });
+
+  it("the flush effects observe the generation, so a change re-runs them", () => {
+    // Otherwise the stale entries would sit in the buffer until something
+    // unrelated happened to re-fire the effect.
+    expect(chatPage.split("nativeChat.generation,").length - 1).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("reconnect covers a socket that dies after it opened", () => {
+  it("the hook handles a drop, not only a rejected open", () => {
+    expect(hook).toMatch(/onDrop: \(\) => \{/);
+    expect(hook).toContain("scheduleReconnect()");
+  });
+
+  it("both reasons share one retry budget", () => {
+    // Two budgets would double the time the owner spends watching a spinner
+    // for what is one outage seen at two moments.
+    const occurrences = hook.split("scheduleReconnect()").length - 1;
+    expect(occurrences).toBe(2);
+    expect(hook.split("MAX_RECONNECT_ATTEMPTS").length - 1).toBe(2);
+  });
+});
+
+describe("sends carry an idempotency key", () => {
+  it("the composer passes the optimistic row's id", () => {
+    expect(chatPage).toContain("await transport.send(text, ctx, id)");
+  });
+
+  it("every resend path passes the same id it sent with", () => {
+    expect(chatPage).toContain("transport.resend(next.text, next.id)");
+    expect(chatPage).toContain("transport.resend(item.text, item.id)");
+    expect(chatPage).toContain("transport.resend(message.text, message.id)");
+  });
+});

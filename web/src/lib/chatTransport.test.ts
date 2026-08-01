@@ -36,8 +36,8 @@ function fakes(
   const native: NativeSide = {
     active: over.nativeActive ?? true,
     status: over.nativeStatus ?? "ready",
-    async submit(text) {
-      nativeCalls.push(["submit", text]);
+    async submit(text, clientToken) {
+      nativeCalls.push(["submit", text, clientToken]);
       if (over.submitThrows) throw new Error("socket down");
       return over.submitOutcome ?? "accepted";
     },
@@ -81,7 +81,7 @@ describe("submission", () => {
   it("goes to the native session and never touches the terminal", async () => {
     const { transport, nativeCalls, ptyCalls } = fakes();
     expect(await transport.send("ship it", plain)).toBe("sent");
-    expect(nativeCalls).toEqual([["submit", "ship it"]]);
+    expect(nativeCalls).toEqual([["submit", "ship it", undefined]]);
     expect(ptyCalls).toEqual([]);
   });
 
@@ -128,7 +128,7 @@ describe("the /queue prefix belongs to the terminal only", () => {
     // begins with "/queue". The agent would answer that instead.
     const { transport, nativeCalls } = fakes({ submitOutcome: "queued" });
     await transport.send("later", { ...plain, agentRunning: true });
-    expect(nativeCalls).toEqual([["submit", "later"]]);
+    expect(nativeCalls).toEqual([["submit", "later", undefined]]);
   });
 
   it("leaves slash commands and clarify answers unprefixed on both paths", () => {
@@ -336,5 +336,45 @@ describe("mode", () => {
     expect(transport.mode()).toBe("pty");
     native.active = true;
     expect(transport.mode()).toBe("native");
+  });
+});
+
+describe("the idempotency key", () => {
+  /**
+   * A message whose acknowledgement was lost has an unknown fate. Without a
+   * key the client must choose between dropping it and duplicating it; with
+   * one it can resend and let the gateway decide which situation it is in.
+   *
+   * The key is the optimistic row's id because that id already identifies one
+   * composed message across every attempt to deliver it. A fresh value per
+   * attempt would make each retry a new prompt — the exact duplicate the key
+   * exists to prevent.
+   */
+  it("travels with a native send", async () => {
+    const { transport, nativeCalls } = fakes();
+    await transport.send("hello", plain, "user-1");
+    expect(nativeCalls).toContainEqual(["submit", "hello", "user-1"]);
+  });
+
+  it("travels with a resend, unchanged", async () => {
+    const { transport, nativeCalls } = fakes();
+    await transport.send("hello", plain, "user-1");
+    await transport.resend("hello", "user-1");
+    const tokens = nativeCalls
+      .filter((c) => c[0] === "submit")
+      .map((c) => c[2]);
+    expect(tokens).toEqual(["user-1", "user-1"]);
+  });
+
+  it("is optional, so a caller without one still sends", async () => {
+    const { transport, nativeCalls } = fakes();
+    await transport.send("hello", plain);
+    expect(nativeCalls).toContainEqual(["submit", "hello", undefined]);
+  });
+
+  it("is not sent down the terminal path, which has no notion of one", async () => {
+    const { transport, ptyCalls } = fakes({ nativeActive: false });
+    await transport.send("hello", plain, "user-1");
+    expect(ptyCalls).toEqual([["sendText", "hello"]]);
   });
 });

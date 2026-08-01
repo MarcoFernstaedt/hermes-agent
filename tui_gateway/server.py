@@ -1,4 +1,5 @@
 import atexit
+import collections
 import concurrent.futures
 import contextlib
 import contextvars
@@ -9468,6 +9469,97 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+#: How many client tokens a session remembers. A reconnect resubmits the
+#: message it was unsure about, not the last two hundred, so this only has to
+#: outlive one drop — but it is cheap and a browser that queued several while
+#: offline sends them all at once.
+_SUBMIT_TOKEN_MEMORY = 64
+
+#: The value stored while a token's first submission is still being handled.
+_SUBMIT_IN_FLIGHT = object()
+
+#: Its own lock, not the session's. `history_lock` is a plain `threading.Lock`
+#: and two of the release sites sit *inside* a block already holding it, so
+#: reusing it would deadlock the handler on its own error paths. The table is
+#: tiny and touched twice per submission, so one process-wide lock costs
+#: nothing and cannot participate in a cycle: nothing here ever takes
+#: `history_lock`.
+_submit_token_lock = threading.Lock()
+
+
+def _claim_submit_token(session: dict, token: str):
+    """First caller for ``token`` claims it; later ones get what to say instead.
+
+    Returns None when this caller should go ahead and submit, or a response dict
+    when it must not — either the recorded outcome of the first submission, or
+    an acknowledgement that the first one is still running.
+
+    This is what makes a resubmit safe. A prompt whose acknowledgement was lost
+    to a dropped socket has an unknown fate: it may have reached the agent and
+    it may not, and the client cannot tell the two apart. Without a key the
+    client has to choose between losing the message and sending it twice. With
+    one it can just send it again, and the gateway decides which of those two
+    situations it is actually in.
+    """
+    if not token:
+        # An empty key is not a key. The handler already guards this, but a
+        # helper that filed every tokenless submission under "" would make them
+        # all collide with each other — one blank entry claiming to be the
+        # outcome of whatever ran first.
+        return None
+    with _submit_token_lock:
+        seen = session.get("_submit_tokens")
+        if seen is None:
+            seen = collections.OrderedDict()
+            session["_submit_tokens"] = seen
+        if token in seen:
+            seen.move_to_end(token)
+            recorded = seen[token]
+            if recorded is _SUBMIT_IN_FLIGHT:
+                # The original is still being handled. Saying "accepted" would
+                # be a second promise about one message; saying "queued" is
+                # true — it is going to run, and it is not running yet.
+                return {"status": "queued", "duplicate": True}
+            return dict(recorded, duplicate=True)
+        seen[token] = _SUBMIT_IN_FLIGHT
+        while len(seen) > _SUBMIT_TOKEN_MEMORY:
+            seen.popitem(last=False)
+    return None
+
+
+def _record_submit_outcome(session: dict, token: str, result: dict) -> dict:
+    """Remember what this submission decided, so a replay repeats it."""
+    if not token:
+        return result
+    try:
+        with _submit_token_lock:
+            seen = session.get("_submit_tokens")
+            if isinstance(seen, collections.OrderedDict) and token in seen:
+                seen[token] = dict(result)
+    except Exception:
+        pass
+    return result
+
+
+def _release_submit_token(session: dict, token: str) -> None:
+    """Forget a claim that never produced an outcome.
+
+    A submission that errored out did not happen, so holding the token would
+    make the retry a no-op — the client would resend, get "queued, duplicate",
+    and wait forever for a turn nobody started.
+    """
+    if not token:
+        return
+    try:
+        with _submit_token_lock:
+            seen = session.get("_submit_tokens")
+            if isinstance(seen, collections.OrderedDict):
+                if seen.get(token) is _SUBMIT_IN_FLIGHT:
+                    seen.pop(token, None)
+    except Exception:
+        pass
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -9479,6 +9571,16 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+
+    # Idempotency. The client mints one token per composed message and presents
+    # the same one on every resubmission of it, so a reconnect that could not
+    # tell whether its prompt landed can simply send it again.
+    raw_token = params.get("client_token")
+    token = raw_token.strip()[:128] if isinstance(raw_token, str) else ""
+    if token:
+        replay = _claim_submit_token(session, token)
+        if replay is not None:
+            return _ok(rid, replay)
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -9499,6 +9601,10 @@ def _(rid, params: dict) -> dict:
                 break
         busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
         if busy_response is not None:
+            if token and isinstance(busy_response.get("result"), dict):
+                _record_submit_outcome(session, token, busy_response["result"])
+            elif token:
+                _release_submit_token(session, token)
             return busy_response
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
@@ -9511,11 +9617,15 @@ def _(rid, params: dict) -> dict:
         # transcript, stale fork). After the run completes, submitting is fine:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            # Refused, so nothing happened, so the token must not stick — a
+            # retry after the subagent finishes has to be a real submission.
+            _release_submit_token(session, token)
             return _err(rid, 4009, "subagent still running — wait for it to finish")
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
+                _release_submit_token(session, token)
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
@@ -9525,6 +9635,7 @@ def _(rid, params: dict) -> dict:
             # truncating history to everything before it and persisting that loss
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
+                _release_submit_token(session, token)
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -9542,6 +9653,8 @@ def _(rid, params: dict) -> dict:
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
+            if token and isinstance(isolated_response.get("result"), dict):
+                _record_submit_outcome(session, token, isolated_response["result"])
             return isolated_response
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s",
@@ -9584,7 +9697,7 @@ def _(rid, params: dict) -> dict:
     # `running` flag (a turn that died without clearing it) and recover the latter.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming"})
+    return _ok(rid, _record_submit_outcome(session, token, {"status": "streaming"}))
 
 
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:

@@ -52,8 +52,21 @@ export interface NativeChatTransport {
   connect(): Promise<void>;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
   on(event: GatewayEventName, handler: (ev: GatewayEvent) => void): () => void;
+  /**
+   * Connection state, for the drop that happens *after* a successful open.
+   *
+   * Retrying a rejected `open()` covered only the case where the socket never
+   * came up. The far more common one is a session that opened fine and then
+   * lost its connection an hour later — laptop lid, wifi handover, gateway
+   * restart — and that produced no retry at all, because nothing was awaiting
+   * anything. The feed simply stopped, still looking connected.
+   */
+  onState(handler: (state: TransportState) => void): () => void;
   close(): void;
 }
+
+/** The transport's own view of its socket. Mirrors `ConnectionState`. */
+export type TransportState = "idle" | "connecting" | "open" | "closed" | "error";
 
 export type NativeChatStatus =
   | "idle"
@@ -69,6 +82,25 @@ export type NativeChatStatus =
 
 /** What the gateway did with a prompt. `queued` is a success, not a failure. */
 export type SubmitOutcome = "accepted" | "queued" | "steered";
+
+/**
+ * A fresh idempotency key for one composed message.
+ *
+ * Mint it when the message is composed — not when it is sent — because the
+ * point is that every *send of the same message* carries the same value. A
+ * token minted per attempt would make each retry look like a new prompt, which
+ * is exactly the duplicate it exists to prevent.
+ */
+export function newClientToken(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // Non-secure contexts have no randomUUID. Uniqueness within one session is
+    // all this needs, and a collision would only ever suppress a message the
+    // owner sent twice on purpose in the same millisecond.
+    return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
 
 /** One stored turn, as `session.resume` returns it. */
 export interface ResumedMessage {
@@ -92,6 +124,16 @@ export interface NativeChatOptions {
    */
   onHistory?(messages: ResumedMessage[]): void;
   onStatusChange?(status: NativeChatStatus): void;
+  /**
+   * The connection went away after it had been working.
+   *
+   * Separate from `onStatusChange` because it is a request, not a report: the
+   * owner of the retry budget has to decide whether to reopen, and this
+   * controller deliberately does not — a session that reconnects itself on a
+   * schedule nobody can see is how one outage becomes an unbounded reconnect
+   * storm.
+   */
+  onDrop?(): void;
   /** Terminal-width hint the gateway uses for its own formatting. */
   cols?: number;
 }
@@ -256,6 +298,7 @@ export class NativeChatSession {
       }
 
       this.subscribe();
+      this.watchConnection();
       this.setStatus("ready");
       return this.liveId;
     } catch (err) {
@@ -292,11 +335,47 @@ export class NativeChatSession {
   }
 
   /**
+   * Watch for the socket dying under a session that had opened successfully.
+   *
+   * Only a *transition away from open* counts. `closed` before the connection
+   * was ever up is the open path's business, and reporting a drop there would
+   * double-count one failure against a retry budget.
+   */
+  private watchConnection(): void {
+    let wasOpen = false;
+    this.unsubscribes.push(
+      this.transport.onState((state) => {
+        if (this.closed) return;
+        if (state === "open") {
+          wasOpen = true;
+          return;
+        }
+        if (!wasOpen) return;
+        if (state === "closed" || state === "error") {
+          wasOpen = false;
+          this.setStatus("reconnecting");
+          this.options.onDrop?.();
+        }
+      }),
+    );
+  }
+
+  /**
    * Send a prompt. A mid-turn send is queued by the gateway rather than
    * rejected, so `queued` and `steered` are successful outcomes and the caller
    * should render the message as pending, not failed.
+   *
+   * ``clientToken`` is the idempotency key. The caller mints one per composed
+   * message and presents the same one every time it resends that message, so a
+   * submission whose acknowledgement was lost to a dropped socket can simply be
+   * sent again: the gateway recognises the token and replays what it decided
+   * the first time rather than running the prompt twice.
+   *
+   * Without it, a lost ack leaves the client choosing between dropping the
+   * message and duplicating it, and there is no third option that does not
+   * involve guessing.
    */
-  async submit(text: string): Promise<SubmitOutcome> {
+  async submit(text: string, clientToken?: string): Promise<SubmitOutcome> {
     if (this.closed) throw new Error("session is closed");
     if (!this.liveId) throw new Error("session is not open");
     const body = text.trim();
@@ -304,7 +383,11 @@ export class NativeChatSession {
 
     const res = await this.transport.request<{ status?: string; queued?: boolean }>(
       "prompt.submit",
-      { session_id: this.liveId, text: body },
+      {
+        session_id: this.liveId,
+        text: body,
+        ...(clientToken ? { client_token: clientToken } : {}),
+      },
     );
     // The gateway signals a mid-turn queue two ways depending on path: a
 // `status` string from the busy-submit handler, and a `queued: true` flag on

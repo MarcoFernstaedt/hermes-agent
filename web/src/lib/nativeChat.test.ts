@@ -7,7 +7,9 @@ import {
   eventSessionId,
   isNativeChatEnabled,
   isSessionNotFound,
+  newClientToken,
   type NativeChatTransport,
+  type TransportState,
 } from "./nativeChat";
 import { GatewayRpcError } from "@hermes/shared";
 import type { GatewayEvent, GatewayEventName } from "@hermes/shared";
@@ -32,9 +34,13 @@ function fakeTransport(overrides: Partial<Record<string, unknown>> = {}) {
     ...overrides,
   };
 
+  const stateHandlers: Array<(state: TransportState) => void> = [];
+
   const transport: NativeChatTransport & {
     calls: typeof calls;
     emit(name: string, ev: GatewayEvent): void;
+    /** Drive the socket's own lifecycle, the way the real client reports it. */
+    setState(state: TransportState): void;
     isClosed(): boolean;
   } = {
     calls,
@@ -56,11 +62,21 @@ function fakeTransport(overrides: Partial<Record<string, unknown>> = {}) {
         );
       };
     },
+    onState: (handler: (state: TransportState) => void) => {
+      stateHandlers.push(handler);
+      return () => {
+        const i = stateHandlers.indexOf(handler);
+        if (i >= 0) stateHandlers.splice(i, 1);
+      };
+    },
     close: () => {
       closed = true;
     },
     emit(name, ev) {
       for (const h of handlers.get(name) ?? []) h(ev);
+    },
+    setState(state) {
+      for (const h of [...stateHandlers]) h(state);
     },
     isClosed: () => closed,
   };
@@ -646,5 +662,168 @@ describe("isSessionNotFound", () => {
     expect(isSessionNotFound(new Error("session not found"))).toBe(false);
     expect(isSessionNotFound("session not found")).toBe(false);
     expect(isSessionNotFound(null)).toBe(false);
+  });
+});
+
+describe("a connection that dies after it was working", () => {
+  /**
+   * The gap the review found: retrying a rejected `open()` covers only the
+   * socket that never came up. A session that connected fine and lost its
+   * connection an hour later produced no retry at all — nothing was awaiting
+   * anything, so nothing noticed. The feed stopped and went on looking
+   * connected.
+   */
+  it("reports a drop once the socket closes under a live session", async () => {
+    const transport = fakeTransport();
+    const drops: number[] = [];
+    const session = new NativeChatSession(transport, {
+      onEvent: () => {},
+      onDrop: () => drops.push(1),
+    });
+    await session.open();
+
+    transport.setState("open");
+    transport.setState("closed");
+
+    expect(drops).toHaveLength(1);
+    expect(session.state).toBe("reconnecting");
+  });
+
+  it("treats an error state as a drop too", async () => {
+    const transport = fakeTransport();
+    const drops: number[] = [];
+    const session = new NativeChatSession(transport, {
+      onEvent: () => {},
+      onDrop: () => drops.push(1),
+    });
+    await session.open();
+    transport.setState("open");
+    transport.setState("error");
+    expect(drops).toHaveLength(1);
+  });
+
+  it("does not report a drop for a socket that was never up", async () => {
+    // Otherwise one failure is counted twice against the retry budget: once by
+    // the rejected open, once by the close that followed it.
+    const transport = fakeTransport();
+    const drops: number[] = [];
+    const session = new NativeChatSession(transport, {
+      onEvent: () => {},
+      onDrop: () => drops.push(1),
+    });
+    await session.open();
+    transport.setState("connecting");
+    transport.setState("closed");
+    expect(drops).toEqual([]);
+  });
+
+  it("reports each outage once, not once per state change", async () => {
+    const transport = fakeTransport();
+    const drops: number[] = [];
+    const session = new NativeChatSession(transport, {
+      onEvent: () => {},
+      onDrop: () => drops.push(1),
+    });
+    await session.open();
+    transport.setState("open");
+    transport.setState("closed");
+    transport.setState("error");
+    transport.setState("closed");
+    expect(drops).toHaveLength(1);
+  });
+
+  it("stops reporting once the session is closed", async () => {
+    const transport = fakeTransport();
+    const drops: number[] = [];
+    const session = new NativeChatSession(transport, {
+      onEvent: () => {},
+      onDrop: () => drops.push(1),
+    });
+    await session.open();
+    transport.setState("open");
+    session.close();
+    transport.setState("closed");
+    expect(drops).toEqual([]);
+  });
+});
+
+describe("prompt idempotency", () => {
+  /**
+   * A prompt whose acknowledgement was lost has an unknown fate: it may have
+   * reached the agent and it may not. Without a key the client must choose
+   * between losing the message and sending it twice. With one it can just send
+   * it again and let the gateway decide which situation it is in.
+   */
+  it("carries the token the caller minted", async () => {
+    const transport = fakeTransport();
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    await session.submit("hello", "tok-1");
+
+    const submit = transport.calls.find((c) => c.method === "prompt.submit");
+    expect(submit?.params?.client_token).toBe("tok-1");
+  });
+
+  it("sends the same token on a resend, so it is one message", async () => {
+    const transport = fakeTransport();
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    await session.submit("hello", "tok-1");
+    await session.submit("hello", "tok-1");
+
+    const tokens = transport.calls
+      .filter((c) => c.method === "prompt.submit")
+      .map((c) => c.params?.client_token);
+    expect(tokens).toEqual(["tok-1", "tok-1"]);
+  });
+
+  it("omits the field entirely when no token is given", async () => {
+    // Rather than sending an empty string, which the gateway would have to
+    // decide the meaning of.
+    const transport = fakeTransport();
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    await session.submit("hello");
+
+    const submit = transport.calls.find((c) => c.method === "prompt.submit");
+    expect(submit?.params && "client_token" in submit.params).toBe(false);
+  });
+
+  it("reads the gateway's duplicate acknowledgement as queued, not accepted", async () => {
+    const transport = fakeTransport({
+      "prompt.submit": { status: "queued", duplicate: true },
+    });
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    expect(await session.submit("hello", "tok-1")).toBe("queued");
+  });
+});
+
+describe("newClientToken", () => {
+  it("gives a different value each time", () => {
+    const seen = new Set(Array.from({ length: 50 }, () => newClientToken()));
+    expect(seen.size).toBe(50);
+  });
+
+  it("still works where randomUUID is unavailable", () => {
+    const original = globalThis.crypto;
+    // Non-secure contexts have no randomUUID; a throwing stub is the same
+    // shape as its absence for this code's purposes.
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {
+        randomUUID: () => {
+          throw new Error("not available");
+        },
+      },
+    });
+    try {
+      expect(newClientToken()).toMatch(/^t-/);
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: original,
+      });
+    }
   });
 });

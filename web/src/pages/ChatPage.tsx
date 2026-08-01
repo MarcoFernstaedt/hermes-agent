@@ -82,6 +82,7 @@ import {
 import { submitWriteApproval } from "@/lib/write-approval-flow";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  partitionBySession,
   shouldQueueSend,
   takeNextQueuedSend,
   type QueuedSend,
@@ -1250,7 +1251,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // it drives the bubble's "Queued" label. How the queueing happens is
         // the transport's business: the terminal prefixes `/queue`, the
         // gateway queues a mid-turn `prompt.submit` on its own.
-        outcome = await transport.send(text, ctx);
+        // The optimistic row's id doubles as the idempotency key. It already
+        // identifies one composed message across every attempt to deliver it,
+        // which is exactly what the key has to mean — so a resend after a lost
+        // acknowledgement cannot become a second turn.
+        outcome = await transport.send(text, ctx, id);
       }
 
       if (outcome === "failed") {
@@ -1264,6 +1269,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           pendingReconnectSendsRef.current.push({
             id,
             text: queued ? `/queue ${text}` : text,
+            // Tagged, so a flush after "new chat" can tell that this message
+            // belongs to a conversation that no longer exists.
+            session: nativeChat.generation,
           });
         } else {
           markOptimisticFailed(id);
@@ -1299,16 +1307,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         });
       }
     })();
-  }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, transport]);
+  }, [agentRunning, composer, feedState.activeClarifyId, feedState.messages, markOptimisticFailed, nativeChat.generation, transport]);
 
   // Flush the send queue one message per idle transition: the first queued
   // message goes out when the current run completes; its own completion
   // re-fires this effect for the next one, preserving order and keeping
   // each message a fresh turn rather than a steer.
   useEffect(() => {
-    const next = takeNextQueuedSend(queuedSendsRef.current, agentRunning);
+    const next = takeNextQueuedSend(
+      queuedSendsRef.current,
+      agentRunning,
+      nativeChat.generation,
+    );
     if (!next) return;
-    void transport.resend(next.text).then((outcome) => {
+    void transport.resend(next.text, next.id).then((outcome) => {
       if (outcome === "failed") {
         markOptimisticFailed(next.id);
         return;
@@ -1320,7 +1332,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         ),
       }));
     });
-  }, [agentRunning, markOptimisticFailed, transport]);
+  }, [agentRunning, markOptimisticFailed, nativeChat.generation, transport]);
 
   // The PTY flushes held messages from `ws.onopen`. Native chat has no such
   // hook — the socket is inside the session — so a message composed while the
@@ -1331,12 +1343,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const pending = pendingReconnectSendsRef.current;
     if (!pending.length) return;
     pendingReconnectSendsRef.current = [];
-    for (const item of pending) {
-      void transport.resend(item.text).then((outcome) => {
+    // Only this conversation's. Anything held for a session "new chat"
+    // replaced is dropped rather than delivered: its bubble went with the old
+    // feed, so sending it would put the owner's earlier words into a chat that
+    // says it is new, with nothing on screen that explains where they came
+    // from.
+    const { flush } = partitionBySession(pending, nativeChat.generation);
+    for (const item of flush) {
+      void transport.resend(item.text, item.id).then((outcome) => {
         if (outcome === "failed") markOptimisticFailed(item.id);
       });
     }
-  }, [nativeChat.active, nativeChat.status, transport, markOptimisticFailed]);
+  }, [
+    nativeChat.active,
+    nativeChat.status,
+    nativeChat.generation,
+    transport,
+    markOptimisticFailed,
+  ]);
 
   // Reconnect gave up. Everything held for a socket that is not coming back
   // must stop showing as "sending" — an optimistic row that never resolves is
@@ -1347,8 +1371,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const pending = pendingReconnectSendsRef.current;
     if (!pending.length) return;
     pendingReconnectSendsRef.current = [];
-    for (const item of pending) markOptimisticFailed(item.id);
-  }, [nativeChat.active, nativeChat.gaveUp, markOptimisticFailed]);
+    // Same split: a stale message has no bubble left to mark.
+    const { flush } = partitionBySession(pending, nativeChat.generation);
+    for (const item of flush) markOptimisticFailed(item.id);
+  }, [
+    nativeChat.active,
+    nativeChat.gaveUp,
+    nativeChat.generation,
+    markOptimisticFailed,
+  ]);
 
   // Once the agent finishes its current turn, any messages we handed to its
   // /queue are now in flight on the agent side — settle their bubbles from
@@ -1412,7 +1443,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   const retryMessage = useCallback(
     (message: ChatFeedMessage) => {
-      void transport.resend(message.text).then((outcome) => {
+      // Same key as the original attempt: this is a retry of one message,
+      // not a new one, and the gateway has to be able to tell.
+      void transport.resend(message.text, message.id).then((outcome) => {
         if (outcome === "failed") return;
         setFeedState((state) => ({
           ...state,
@@ -2272,7 +2305,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (pendingReconnectSendsRef.current.length) {
         const pending = pendingReconnectSendsRef.current;
         pendingReconnectSendsRef.current = [];
-        pending.forEach((item, index) => {
+        // The terminal path holds messages too, and a "new chat" between the
+        // drop and the reopen makes them just as stale.
+        const { flush } = partitionBySession(pending, nativeChatRef.current?.generation ?? 0);
+        flush.forEach((item, index) => {
           window.setTimeout(() => {
             if (!sendPtyText(item.text)) markOptimisticFailed(item.id);
           }, 120 + index * 60);

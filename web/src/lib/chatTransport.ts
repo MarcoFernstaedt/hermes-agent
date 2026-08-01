@@ -47,7 +47,7 @@ export type ApprovalChoice = "once" | "session" | "always" | "deny";
 export interface NativeSide {
   active: boolean;
   status: NativeChatStatus;
-  submit(text: string): Promise<SubmitOutcome>;
+  submit(text: string, clientToken?: string): Promise<SubmitOutcome>;
   interrupt(): Promise<void>;
   respondApproval(choice: ApprovalChoice, opts?: { all?: boolean }): Promise<void>;
   respondClarify(requestId: string, answer: string): Promise<void>;
@@ -122,9 +122,16 @@ export interface ChatTransport {
   /** "native" when the native session owns this page's chat, else "pty". */
   mode(): "native" | "pty";
   ready(): boolean;
-  send(text: string, ctx: SendContext): Promise<SendOutcome>;
+  /**
+   * ``messageId`` is the idempotency key, and it is the optimistic row's own
+   * id on purpose: that id already identifies one composed message across
+   * every attempt to deliver it, which is exactly what the key has to mean. A
+   * fresh value per attempt would make each retry a new prompt, which is the
+   * duplicate the key exists to prevent.
+   */
+  send(text: string, ctx: SendContext, messageId?: string): Promise<SendOutcome>;
   /** A plain resend with no queue semantics — retry and queue-flush use this. */
-  resend(text: string): Promise<SendOutcome>;
+  resend(text: string, messageId?: string): Promise<SendOutcome>;
   stop(): Promise<void>;
   approve(
     choice: ApprovalChoice,
@@ -159,9 +166,12 @@ export function createChatTransport(sources: ChatTransportSources): ChatTranspor
   const ptySend = (text: string): SendOutcome =>
     sources.pty().sendText(text) ? "sent" : "failed";
 
-  const nativeSend = async (text: string): Promise<SendOutcome> => {
+  const nativeSend = async (
+    text: string,
+    messageId?: string,
+  ): Promise<SendOutcome> => {
     try {
-      const outcome = await sources.native().submit(text);
+      const outcome = await sources.native().submit(text, messageId);
       // `queued` and `steered` both mean the gateway accepted it and it will
       // run. Only a throw means nothing was delivered.
       return outcome === "queued" ? "queued" : "sent";
@@ -176,13 +186,13 @@ export function createChatTransport(sources: ChatTransportSources): ChatTranspor
     ready: () =>
       composerReady({ native: sources.native(), ptyOpen: sources.pty().open }),
 
-    async send(text, ctx) {
-      if (mode() === "native") return nativeSend(text);
+    async send(text, ctx, messageId) {
+      if (mode() === "native") return nativeSend(text, messageId);
       return ptySend(wireText(text, "pty", ctx));
     },
 
-    async resend(text) {
-      if (mode() === "native") return nativeSend(text);
+    async resend(text, messageId) {
+      if (mode() === "native") return nativeSend(text, messageId);
       return ptySend(text);
     },
 
