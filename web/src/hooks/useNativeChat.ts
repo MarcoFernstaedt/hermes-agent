@@ -50,8 +50,20 @@ export interface NativeChat {
    * under a heading that said it was new.
    */
   startNew(): void;
+  /** Try again after retries were exhausted. Visible, owner-initiated. */
+  retry(): void;
+  /**
+   * True once bounded reconnect has given up. The caller must stop showing
+   * held messages as "sending" — an optimistic row that never resolves is a
+   * message the owner believes was delivered.
+   */
+  gaveUp: boolean;
   error: string | null;
 }
+
+/** Bounded: retrying forever hides a real outage behind a spinner. */
+const MAX_RECONNECT_ATTEMPTS = 4;
+const RECONNECT_BASE_MS = 500;
 
 export function useNativeChat(
   onEvent: (event: GatewayEvent) => void,
@@ -74,9 +86,12 @@ export function useNativeChat(
   // Bumped by `startNew`; a dependency of the open effect, so incrementing it
   // tears the session down and builds another.
   const [generation, setGeneration] = useState(0);
+  const retryTimerRef = useRef<number | null>(null);
   // Set alongside it, and consumed by the effect: a deliberate new chat must
   // not resume the id it just discarded.
   const forceFreshRef = useRef(false);
+  const [gaveUp, setGaveUp] = useState(false);
+  const attemptRef = useRef(0);
 
   const sessionRef = useRef<NativeChatSession | null>(null);
   // The event sink is held in a ref so a re-created callback does not tear the
@@ -122,19 +137,53 @@ export function useNativeChat(
         saveDurableSessionId(session.resumeId, profile);
         setError(null);
       })
+      .then(() => {
+        // A successful open clears the retry budget, so a later drop gets its
+        // own full allowance rather than inheriting an exhausted one.
+        attemptRef.current = 0;
+        setGaveUp(false);
+      })
       .catch((err: unknown) => {
         if (disposed) return;
-        // A failed open is reported, not retried into a fresh session — the
-        // narrow-fallback rule holds here too.
         setError(err instanceof Error ? err.message : String(err));
+        // Bounded reconnect. Retrying forever hides an outage behind a
+        // spinner; not retrying at all leaves every held message showing
+        // "sending" for the rest of the session, which is worse — the owner
+        // believes it was delivered.
+        //
+        // Note this retries the *open*, never the send: a fresh session is not
+        // a reason to re-run a prompt whose fate is unknown.
+        if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          setStatus("error");
+          setGaveUp(true);
+          return;
+        }
+        const delay = RECONNECT_BASE_MS * 2 ** attemptRef.current;
+        attemptRef.current += 1;
+        setStatus("reconnecting");
+        retryTimerRef.current = window.setTimeout(() => {
+          if (!disposed) setGeneration((n) => n + 1);
+        }, delay);
       });
 
     return () => {
       disposed = true;
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
       session.close();
       sessionRef.current = null;
     };
   }, [active, profile, generation]);
+
+  const retry = useCallback(() => {
+    attemptRef.current = 0;
+    setGaveUp(false);
+    setError(null);
+    setStatus("connecting");
+    setGeneration((n) => n + 1);
+  }, []);
 
   const startNew = useCallback(() => {
     // Cleared *before* the rebuild so the effect cannot read a stale id, and
@@ -189,6 +238,8 @@ export function useNativeChat(
     respondApproval,
     respondClarify,
     startNew,
+    retry,
+    gaveUp,
     error,
   };
 }

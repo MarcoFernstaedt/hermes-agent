@@ -1338,6 +1338,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
   }, [nativeChat.active, nativeChat.status, transport, markOptimisticFailed]);
 
+  // Reconnect gave up. Everything held for a socket that is not coming back
+  // must stop showing as "sending" — an optimistic row that never resolves is
+  // a message the owner believes was delivered, and the whole point of the
+  // optimistic row is that it eventually tells the truth.
+  useEffect(() => {
+    if (!nativeChat.active || !nativeChat.gaveUp) return;
+    const pending = pendingReconnectSendsRef.current;
+    if (!pending.length) return;
+    pendingReconnectSendsRef.current = [];
+    for (const item of pending) markOptimisticFailed(item.id);
+  }, [nativeChat.active, nativeChat.gaveUp, markOptimisticFailed]);
+
   // Once the agent finishes its current turn, any messages we handed to its
   // /queue are now in flight on the agent side — settle their bubbles from
   // "queued" to "sent". Their replies stream back as normal assistant bubbles.
@@ -2607,7 +2619,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           lastCloseCode ? ` (code ${lastCloseCode})` : ""
         }. Reconnecting...`
       : null;
-  const visibleBanner = banner ?? reconnectBanner;
+  // Native reconnect state, in words. `reconnecting` is not `connecting`: the
+  // owner needs to know a previous attempt failed, and `gaveUp` needs to name
+  // the action that resumes things.
+  const nativeBanner =
+    nativeChat.active && nativeChat.status === "reconnecting"
+      ? "Chat connection lost. Reconnecting…"
+      : nativeChat.active && nativeChat.gaveUp
+        ? "Chat is not connected. Unsent messages were not delivered."
+        : null;
+  const visibleBanner = banner ?? nativeBanner ?? reconnectBanner;
   const showReconnectOverlay =
     !nativeChat.active &&
     (ptyState === "reconnecting" || (ptyState === "closed" && !banner));

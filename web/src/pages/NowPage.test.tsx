@@ -119,3 +119,93 @@ describe("NowView", () => {
     expect(auditA11y(html)).toEqual([]);
   });
 });
+
+
+/**
+ * The ranked outcomes, rendered by the *real* `NowView`.
+ *
+ * `nowOrder.ts` and `outcomeRanking.ts` were previously tested in isolation
+ * while the page rendered its old composition and imported neither — the
+ * contract was asserted and unenforced. These render the shipped component
+ * against a real payload, which is the only version of the check that can
+ * catch that.
+ */
+describe("today's three", () => {
+  const withWork = context({
+    review: {
+      available: true,
+      counts: { pending: 1 },
+      pending: [
+        { id: "r1", kind: "write", title: "Approve the invoice reply", risk: "high", source: "gmail" },
+      ],
+    },
+    jobs: {
+      available: true,
+      counts: {},
+      next_actions: [
+        { id: 7, company: "Acme", role: "Engineer", fit_score: 0.8 },
+      ],
+    },
+  });
+
+  function render(data: HubContext) {
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        <NowView data={data} error={false} refreshing={false} onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+  }
+
+  it("shows the projected outcomes on the page", () => {
+    const html = render(withWork);
+    expect(html).toContain("Approve the invoice reply");
+    expect(html).toContain("Engineer");
+  });
+
+  it("marks exactly one recommendation, in words rather than colour", () => {
+    const html = render(withWork);
+    const marks = html.match(/Imperator suggests starting here/g) ?? [];
+    expect(marks).toHaveLength(1);
+  });
+
+  it("shows why the recommendation ranked first", () => {
+    // A recommendation the owner cannot interrogate is obeyed without thought
+    // or ignored entirely.
+    const html = render(withWork);
+    expect(html).toMatch(/consequence is severe|you committed to it/);
+  });
+
+  it("states each item's work state in words", () => {
+    const html = render(withWork);
+    expect(html).toMatch(/Waiting for you|Not started|Imperator is working/);
+  });
+
+  it("offers a native keyboard-operable control to replace the recommendation", () => {
+    const html = render(withWork);
+    expect(html).toMatch(/<button[^>]*type="button"[^>]*>Start with this instead<\/button>/);
+  });
+
+  it("renders nothing at all when there is no real work", () => {
+    // No placeholder row, no "get started" prompt — an empty hub is empty.
+    const html = render(context());
+    expect(html).not.toContain("Today");
+    expect(html).not.toContain("Imperator suggests starting here");
+  });
+
+  it("says three of nine when it considered more than it shows", () => {
+    const many = context({
+      review: {
+        available: true,
+        counts: { pending: 9 },
+        pending: Array.from({ length: 9 }, (_, i) => ({
+          id: `r${i}`, kind: "write", title: `Decision ${i}`, risk: "low", source: "x",
+        })),
+      },
+    });
+    expect(render(many)).toContain("3 of 9");
+  });
+
+  it("passes the accessibility audit with outcomes present", () => {
+    expect(auditA11y(render(withWork))).toEqual([]);
+  });
+});

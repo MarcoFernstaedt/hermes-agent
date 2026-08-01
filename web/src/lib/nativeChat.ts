@@ -58,9 +58,13 @@ export interface NativeChatTransport {
 export type NativeChatStatus =
   | "idle"
   | "connecting"
+  /** A retry is pending after a failed open. Distinct from `connecting` so the
+   *  UI can say "reconnecting" rather than implying a first attempt. */
+  | "reconnecting"
   | "ready"
   | "working"
   | "closed"
+  /** Retries are exhausted. Nothing further happens without the owner. */
   | "error";
 
 /** What the gateway did with a prompt. `queued` is a success, not a failure. */

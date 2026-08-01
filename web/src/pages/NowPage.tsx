@@ -12,6 +12,12 @@ import {
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { HubContext } from "@/lib/api";
+import { projectOutcomes } from "@/lib/nowOutcomes";
+import {
+  WORK_STATE_LABEL,
+  rankOutcomes,
+  workStateFor,
+} from "@/lib/outcomeRanking";
 import { cn } from "@/lib/utils";
 
 /**
@@ -68,6 +74,12 @@ export function NowView({
   refreshing: boolean;
   onRefresh: () => void;
 }) {
+  // The top three, ranked from real projected state. `override` is Marco's
+  // replacement and beats the score outright — the point of an override is
+  // that his judgement wins, so the page must not quietly re-rank around it.
+  const [override, setOverride] = useState<string | null>(null);
+  const ranking = rankOutcomes(projectOutcomes(data), { overrideId: override });
+
   const jobs = data?.sections.jobs;
   const review = data?.sections.review;
   const guardrails = data?.sections.guardrails;
@@ -106,6 +118,71 @@ export function NowView({
         </div>
       ) : (
         <>
+          {ranking.top.length > 0 && (
+            <section aria-labelledby="outcomes-h" className="flex flex-col gap-2">
+              <h3 id="outcomes-h" className="text-sm font-semibold text-midground">
+                Today&rsquo;s three
+                {ranking.consideredCount > ranking.top.length && (
+                  <span className="ml-2 font-normal text-text-tertiary">
+                    {ranking.top.length} of {ranking.consideredCount}
+                  </span>
+                )}
+              </h3>
+              <ul className="flex flex-col gap-2">
+                {ranking.top.map((item) => {
+                  const state = workStateFor(item);
+                  return (
+                    <li
+                      key={item.id}
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-sm",
+                        item.recommended
+                          ? "border-primary/40 bg-primary/10"
+                          : "border-current/10",
+                      )}
+                    >
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="font-medium text-foreground">{item.title}</span>
+                        {/* Words, not a colour: the recommendation has to be
+                            announced, not merely tinted. */}
+                        {item.recommended && (
+                          <span className="rounded border border-primary/40 px-1.5 py-0.5 text-xs text-primary">
+                            Imperator suggests starting here
+                          </span>
+                        )}
+                      </div>
+                      {/* Why it ranked where it did. A recommendation the owner
+                          cannot interrogate is obeyed without thought or
+                          ignored entirely. */}
+                      <p className="mt-1 text-xs text-text-secondary">{item.why}</p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        {WORK_STATE_LABEL[state]}
+                      </p>
+                      {!item.recommended && (
+                        <button
+                          type="button"
+                          onClick={() => setOverride(item.id)}
+                          className="mt-2 rounded-md border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
+                        >
+                          Start with this instead
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {override && (
+                <button
+                  type="button"
+                  onClick={() => setOverride(null)}
+                  className="self-start rounded-md border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
+                >
+                  Use Imperator&rsquo;s suggestion again
+                </button>
+              )}
+            </section>
+          )}
+
           {/* The lead. Everything below is the evidence behind these lines. */}
           <section aria-labelledby="attention-h" className="flex flex-col gap-2">
             <h2 id="attention-h" className="sr-only">
