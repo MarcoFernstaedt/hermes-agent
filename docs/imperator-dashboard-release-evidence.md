@@ -8,7 +8,23 @@ hitting is a green test suite that agreed with the code and was wrong with it.
 
 - Branch: `claude/imperator-dashboard-mobile-xw09ri`, merged to `main`
 - Baseline: `fab8f79c9` ("Phase 4: the approve / deny / modify card")
-- Packaged build provenance: `hermes_cli/web_dist/build-info.json`, `dirty: false`
+
+**Packaged build provenance.** `hermes_cli/web_dist/` is gitignored — the
+packaged frontend is a build artifact, not a committed tree, so its provenance
+is produced and checked at build time rather than reviewed in the diff.
+Verified here by building from a clean checkout of the candidate:
+
+```json
+{
+  "commit": "6a61c07254c6e4de4895d093e7f3886527301cd1",
+  "commit_short": "6a61c0725",
+  "branch": "claude/imperator-dashboard-mobile-xw09ri",
+  "dirty": false
+}
+```
+
+Reproduce with `cd web && npm run build && cat ../hermes_cli/web_dist/build-info.json`
+on a clean tree; `dirty: false` and a matching `commit` is the check.
 
 ## What this candidate contains
 
