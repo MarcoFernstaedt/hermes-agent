@@ -227,7 +227,8 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, attempt = store.claim("k1")
-        store.settle("k1", attempt, state="succeeded", result={"message_id": "abc"})
+        store.mark_dispatching("k1", attempt)
+        store.settle_dispatched("k1", attempt, state="succeeded", result={"message_id": "abc"})
 
         won, prior, _ = store.claim("k1")
         assert won is False
@@ -239,7 +240,7 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, attempt = store.claim("k1")
-        store.settle("k1", attempt, state="failed", result={"error": "smtp timeout"})
+        store.settle_pre_dispatch("k1", attempt, result={"error": "smtp timeout"})
         assert store.lookup("k1")["state"] == "failed"
 
     def test_a_failed_attempt_can_be_retried_and_carries_the_first_failure(self, tmp_path):
@@ -254,7 +255,7 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, attempt = store.claim("k1")
-        store.settle("k1", attempt, state="failed", result={"error": "smtp timeout"})
+        store.settle_pre_dispatch("k1", attempt, result={"error": "smtp timeout"})
 
         won, prior, retry_attempt = store.claim("k1")
         assert won is True
@@ -267,7 +268,7 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, a = store.claim("k1")
-        store.settle("k1", a, state="failed", result={"error": "smtp timeout"})
+        store.settle_pre_dispatch("k1", a, result={"error": "smtp timeout"})
 
         assert store.claim("k1")[0] is True
         won, prior, _ = store.claim("k1")
@@ -279,7 +280,8 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, a = store.claim("k1")
-        store.settle("k1", a, state="succeeded", result={"id": 1})
+        store.mark_dispatching("k1", a)
+        store.settle_dispatched("k1", a, state="succeeded", result={"id": 1})
         won, prior, _ = store.claim("k1")
         assert won is False
         assert prior["state"] == "succeeded"
@@ -299,7 +301,8 @@ class TestIdempotency:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, a = store.claim("k1")
-        store.settle("k1", a, state="succeeded", result={"id": 1})
+        store.mark_dispatching("k1", a)
+        store.settle_dispatched("k1", a, state="succeeded", result={"id": 1})
         assert store.release("k1", a) is False
         assert store.lookup("k1")["state"] == "succeeded"
 
@@ -329,11 +332,12 @@ class TestAStaleClaimantCannotWriteOverALiveOne:
         assert won_b is True and b != a
 
         # A returns late and tries to record its outcome.
-        assert store.settle("k1", a, state="succeeded", result={"id": "A"}) is False
+        assert store.settle_dispatched("k1", a, state="succeeded", result={"id": "A"}) is False
         assert store.lookup("k1")["state"] == "in_flight"
 
-        # B's own settle still works.
-        assert store.settle("k1", b, state="succeeded", result={"id": "B"}) is True
+        # B's own settlement still works, through the two-phase path.
+        assert store.mark_dispatching("k1", b) is True
+        assert store.settle_dispatched("k1", b, state="succeeded", result={"id": "B"}) is True
         assert store.lookup("k1")["result"] == {"id": "B"}
 
     def test_a_stale_attempt_cannot_release_the_current_holders_row(self, tmp_path):
@@ -352,7 +356,7 @@ class TestAStaleClaimantCannotWriteOverALiveOne:
         store.claim("k1")
         _, _, lost = store.claim("k1")
         assert lost is None
-        assert store.settle("k1", "invented", state="succeeded") is False
+        assert store.settle_dispatched("k1", "invented", state="succeeded") is False
 
 
 class TestAmbiguousOutcomesStayBlocked:
@@ -384,7 +388,7 @@ class TestAmbiguousOutcomesStayBlocked:
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, a = store.claim("k1")
         store.mark_dispatching("k1", a)
-        store.settle("k1", a, state="ambiguous", result={"error": "connection reset"})
+        store.settle_dispatched("k1", a, state="ambiguous", result={"error": "connection reset"})
 
         won, prior, token = store.claim("k1")
         assert won is False
@@ -398,7 +402,7 @@ class TestAmbiguousOutcomesStayBlocked:
         store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
         _, _, a = store.claim("k1", now=1000.0)
         store.mark_dispatching("k1", a)
-        store.settle("k1", a, state="ambiguous", result={"error": "reset"})
+        store.settle_dispatched("k1", a, state="ambiguous", result={"error": "reset"})
 
         won, prior, _ = store.claim("k1", now=1000.0 + 10_000)
         assert won is False
@@ -422,7 +426,8 @@ class TestAmbiguousOutcomesStayBlocked:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
         _, _, a = store.claim("k1", now=1000.0)
-        store.settle("k1", a, state="succeeded", result={"id": "x"})
+        store.mark_dispatching("k1", a)
+        store.settle_dispatched("k1", a, state="succeeded", result={"id": "x"})
 
         won, prior, _ = store.claim("k1", now=1000.0 + 10_000)
         assert won is False
@@ -433,8 +438,9 @@ class TestAmbiguousOutcomesStayBlocked:
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
         _, _, a = store.claim("k1")
-        with pytest.raises(ValueError, match="unknown settle state"):
-            store.settle("k1", a, state="probably_fine")
+        store.mark_dispatching("k1", a)
+        with pytest.raises(ValueError, match="not a post-dispatch outcome"):
+            store.settle_dispatched("k1", a, state="probably_fine")
 
 
 class TestCostAttribution:
@@ -521,3 +527,96 @@ class TestCostAttribution:
         ledger = CostLedger(tmp_path / "cost.sqlite3")
         with pytest.raises(ValueError, match="cannot group spend by"):
             ledger.spend_by("feature; DROP TABLE model_spend")
+
+
+class TestReconciliationCannotBeOverwritten:
+    """The exact sequence the review reproduced.
+
+    A claim enters `dispatching`; reconciliation moves it to `ambiguous`; the
+    stale worker returns and settles `succeeded`. Ownership alone did not stop
+    it, because reconciliation left the attempt token in place — so the worker
+    matched its own token and overwrote an outcome that existed precisely
+    because nobody knew what had happened.
+    """
+
+    def _abandoned_then_reconciled(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, stale = store.claim("k1", now=1000.0)
+        store.mark_dispatching("k1", stale)
+        store.claim("k1", now=1000.0 + 61)  # reconciles the abandoned dispatch
+        assert store.lookup("k1")["state"] == "ambiguous"
+        return store, stale
+
+    def test_a_stale_worker_cannot_claim_success_over_ambiguous(self, tmp_path):
+        store, stale = self._abandoned_then_reconciled(tmp_path)
+        assert store.settle_dispatched("k1", stale, state="succeeded",
+                                       result={"id": "X"}) is False
+        assert store.lookup("k1")["state"] == "ambiguous"
+
+    def test_reconciliation_drops_the_old_owner(self, tmp_path):
+        store, stale = self._abandoned_then_reconciled(tmp_path)
+        assert store.lookup("k1")["attempt"] is None
+        assert stale is not None
+
+    def test_a_stale_worker_cannot_write_any_outcome(self, tmp_path):
+        store, stale = self._abandoned_then_reconciled(tmp_path)
+        for state in ("succeeded", "ambiguous"):
+            assert store.settle_dispatched("k1", stale, state=state) is False
+        assert store.settle_pre_dispatch("k1", stale) is False
+        assert store.lookup("k1")["state"] == "ambiguous"
+
+
+class TestSettlementNamesTheStateItExpects:
+    def test_a_pre_dispatch_failure_cannot_be_written_after_dispatch(self, tmp_path):
+        # "It never left" is only sayable before it left.
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        store.mark_dispatching("k1", a)
+        assert store.settle_pre_dispatch("k1", a) is False
+        assert store.lookup("k1")["state"] == "dispatching"
+
+    def test_a_post_dispatch_outcome_cannot_be_written_before_dispatch(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        assert store.settle_dispatched("k1", a, state="succeeded") is False
+        assert store.lookup("k1")["state"] == "in_flight"
+
+    def test_only_reconciliation_may_record_a_post_dispatch_failure(self, tmp_path):
+        # An exception is not a look; a search of Sent is.
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        store.mark_dispatching("k1", a)
+        with pytest.raises(ValueError, match="not a post-dispatch outcome"):
+            store.settle_dispatched("k1", a, state="failed")
+        assert store.settle_reconciled("k1", a, state="failed") is True
+
+
+class TestAdoptingAnAmbiguousRow:
+    def test_only_one_reconciler_can_adopt(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        store.mark_dispatching("k1", a)
+        store.settle_dispatched("k1", a, state="ambiguous")
+
+        first = store.adopt_ambiguous("k1")
+        assert first is not None
+        assert store.adopt_ambiguous("k1") is None
+
+    def test_a_terminal_row_cannot_be_adopted(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        store.mark_dispatching("k1", a)
+        store.settle_dispatched("k1", a, state="succeeded", result={"id": 1})
+        assert store.adopt_ambiguous("k1") is None

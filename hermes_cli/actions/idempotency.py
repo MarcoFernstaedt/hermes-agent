@@ -168,7 +168,12 @@ class IdempotencyStore:
             # An abandoned dispatch does not become retryable; it becomes a
             # question for a person.
             conn.execute(
-                "UPDATE idempotency SET state = 'ambiguous', settled_at = ? "
+                # `attempt = NULL` is the fence. Without it the worker this
+                # just declared abandoned could return and still match its own
+                # token, settling `succeeded` over an `ambiguous` that exists
+                # precisely because nobody knows what happened.
+                "UPDATE idempotency SET state = 'ambiguous', settled_at = ?, "
+                "attempt = NULL "
                 "WHERE claimed_at < ? AND state = 'dispatching'",
                 (now, cutoff),
             )
@@ -208,36 +213,81 @@ class IdempotencyStore:
 
                 return False, self._record(row), None
 
-    def settle(self, key: str, attempt: str, *, state: str, result: Any = None) -> bool:
-        """Record this attempt's outcome. Returns False if it no longer owns the key.
+    def settle_pre_dispatch(
+        self, key: str, attempt: str, *, result: Any = None
+    ) -> bool:
+        """Record that the request provably never left. Only from ``in_flight``.
 
-        ``state`` is one of:
+        Separate from the post-dispatch settlement because the two carry
+        different claims about the world, and a single `settle` that accepts
+        any state let a stale owner assert either one. This says "nothing
+        happened", which is only sayable before dispatch.
+        """
+        return self._settle(key, attempt, "failed", "in_flight", result)
 
-        ``succeeded``
-            It happened. Retained past the claim TTL — forgetting a success is
-            how a duplicate gets authorised.
-        ``failed``
-            It provably did **not** happen: the request never left. Only this
-            is reacquirable by a retry.
-        ``ambiguous``
-            The request may have landed. Blocked until a person or a
-            reconciliation says otherwise. Elapsed time never converts this
-            into permission to repeat an external effect.
+    def settle_dispatched(
+        self, key: str, attempt: str, *, state: str, result: Any = None
+    ) -> bool:
+        """Record what the provider did. Only from ``dispatching``.
 
-        The compare-and-swap on ``attempt`` is the point. Updating by key alone
-        let a late claimant whose claim had expired write its outcome over the
-        row a different claimant now owned.
+        ``state`` is ``succeeded`` (the provider confirmed it) or ``ambiguous``
+        (it may have landed and we cannot tell).
+        """
+        if state not in ("succeeded", "ambiguous"):
+            raise ValueError(f"{state!r} is not a post-dispatch outcome")
+        return self._settle(key, attempt, state, "dispatching", result)
+
+    def settle_reconciled(
+        self, key: str, attempt: str, *, state: str, result: Any = None
+    ) -> bool:
+        """Record what a *look at the provider* found. Only from ``dispatching``.
+
+        This is the one path allowed to write ``failed`` after dispatch, and it
+        earns that by having checked: reconciliation searched Sent for the
+        deterministic Message-ID and did not find it. A post-dispatch exception
+        may write only ``ambiguous``, because an exception is not a look.
         """
         if state not in ("succeeded", "failed", "ambiguous"):
-            raise ValueError(f"unknown settle state {state!r}")
+            raise ValueError(f"{state!r} is not a reconciliation outcome")
+        return self._settle(key, attempt, state, "dispatching", result)
+
+    def _settle(
+        self, key: str, attempt: str, state: str, expected: str, result: Any
+    ) -> bool:
+        """Compare-and-swap on key, owner **and** the state we expect to be in.
+
+        Ownership alone was not enough. Reconciliation moved a stale
+        ``dispatching`` row to ``ambiguous`` while leaving the attempt token in
+        place, so the abandoned worker returned, matched its own token, and
+        wrote ``succeeded`` over an outcome that existed because nobody knew
+        what happened. Naming the expected state means a row that has moved on
+        underneath a caller refuses the write instead of accepting it.
+        """
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE idempotency SET state = ?, result = ?, settled_at = ? "
-                "WHERE key = ? AND attempt = ?",
+                "WHERE key = ? AND attempt = ? AND state = ?",
                 (state, json.dumps(result, default=str) if result is not None else None,
-                 time.time(), key, attempt),
+                 time.time(), key, attempt, expected),
             )
             return cur.rowcount == 1
+
+    def adopt_ambiguous(self, key: str) -> Optional[str]:
+        """Take ownership of an ambiguous row so it can be reconciled.
+
+        Returns a fresh attempt token, or None when the row is not ambiguous or
+        somebody else got there first. Reconciliation has to claim before it
+        writes for the same reason a send does: two reconcilers reaching a
+        different conclusion and both recording it is worse than neither.
+        """
+        token = uuid.uuid4().hex
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE idempotency SET state = 'dispatching', attempt = ? "
+                "WHERE key = ? AND state = 'ambiguous'",
+                (token, key),
+            )
+            return token if cur.rowcount == 1 else None
 
     def release(self, key: str, attempt: str) -> bool:
         """Drop an unsettled claim so the action can be attempted again.

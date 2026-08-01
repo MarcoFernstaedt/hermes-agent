@@ -573,3 +573,201 @@ class TestAuditCarriesNoContent:
         stored = json.dumps(store.lookup(f"gmail_send:{fp}"))
         assert len(stored) < 600
         assert "y" * 200 not in stored
+
+
+class TestAMalformedProviderResponseIsNotASend:
+    """`{}` back from Gmail is not a confirmation.
+
+    Reading it as success reported "sent" on the strength of the call
+    returning — the same class of claim as reporting delivery because a request
+    was made. And without the provider's own identifier there is nothing to
+    reconcile against later, so it is unverified rather than done.
+    """
+
+    def _client_returning(self, monkeypatch, response):
+        class Client:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                return response
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Client)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+
+    def _state(self):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+        from hermes_constants import get_hermes_home
+        from tools.gmail_send_tool import send_fingerprint
+
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
+        return store.lookup(f"gmail_send:{fp}")["state"]
+
+    @pytest.mark.parametrize("response", [{}, None, {"id": ""}, {"nothing": "useful"}])
+    def test_it_does_not_report_success(self, home, monkeypatch, response):
+        self._client_returning(monkeypatch, response)
+        assert errored(**ARGS)
+
+    @pytest.mark.parametrize("response", [{}, None, {"id": ""}])
+    def test_it_is_recorded_as_ambiguous_not_succeeded(self, home, monkeypatch, response):
+        self._client_returning(monkeypatch, response)
+        errored(**ARGS)
+        assert self._state() == "ambiguous"
+
+    def test_a_confirmed_identity_does_produce_success(self, home, monkeypatch):
+        self._client_returning(monkeypatch, {"id": "real-provider-id"})
+        out = call(**ARGS)
+        assert out["sent"] is True
+        assert out["message_id"] == "real-provider-id"
+        assert self._state() == "succeeded"
+
+    def test_an_unconfirmed_send_is_not_retried_into_a_duplicate(self, home, monkeypatch):
+        self._client_returning(monkeypatch, {})
+        assert errored(**ARGS)
+        # Even with a healthy provider afterwards, it stays blocked.
+        self._client_returning(monkeypatch, {"id": "would-be-second-copy"})
+        assert errored(**ARGS)
+
+
+class TestReconciliation:
+    """Answering "did it send?" by looking, rather than by waiting.
+
+    An ambiguous outcome blocks forever without this — correct while the answer
+    is unknown, useless once it is knowable.
+    """
+
+    def _make_ambiguous(self, home, monkeypatch):
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError("reset")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        errored(**ARGS)
+
+        from tools.gmail_send_tool import send_fingerprint
+
+        return send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+
+    def _store(self):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+        from hermes_constants import get_hermes_home
+
+        return IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
+
+    def test_finding_it_in_sent_settles_it_as_delivered(self, home, monkeypatch):
+        from tools.gmail_send_tool import reconcile_ambiguous_send, rfc_message_id
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        searched: list[str] = []
+
+        def search(message_id):
+            searched.append(message_id)
+            return "found-provider-id"
+
+        result = reconcile_ambiguous_send(fingerprint=fp, search=search)
+        assert result["reconciled"] is True
+        assert result["state"] == "succeeded"
+        # Looked up by the deterministic id, not by content.
+        assert searched == [rfc_message_id(fp)]
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "succeeded"
+
+    def test_not_finding_it_makes_the_message_sendable_again(self, home, monkeypatch):
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        result = reconcile_ambiguous_send(fingerprint=fp, search=lambda _id: None)
+        assert result["state"] == "failed"
+
+        outbox: list = []
+
+        class Working:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                outbox.append(raw)
+                return {"id": "now-sent"}
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
+        assert call(**ARGS)["sent"] is True
+        assert len(outbox) == 1
+
+    def test_reconciling_twice_does_not_change_a_terminal_result(self, home, monkeypatch):
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        first = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "id-1")
+        second = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "id-2")
+
+        assert first["state"] == "succeeded"
+        assert second["reconciled"] is False
+        record = self._store().lookup(f"gmail_send:{fp}")
+        assert record["state"] == "succeeded"
+        assert record["result"]["message_id"] == "id-1"
+
+    def test_an_unreachable_provider_leaves_it_ambiguous(self, home, monkeypatch):
+        # Not being able to look is not evidence either way.
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+
+        def boom(_id):
+            raise ConnectionError("provider unreachable")
+
+        result = reconcile_ambiguous_send(fingerprint=fp, search=boom)
+        assert result["reconciled"] is False
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "ambiguous"
+
+    def test_a_settled_send_is_not_re_decided(self, home, sent):
+        from tools.gmail_send_tool import reconcile_ambiguous_send, send_fingerprint
+
+        call(**ARGS)
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        result = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: None)
+        assert result["reconciled"] is False
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "succeeded"
+
+    def test_durable_state_carries_no_message_content(self, home, monkeypatch):
+        from tools.gmail_send_tool import reconcile_ambiguous_send, send_fingerprint
+
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError(
+                    "550 rejected for bob@example.com subject 'SECRET-SUBJECT'"
+                )
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        errored(**{**ARGS, "subject": "SECRET-SUBJECT", "body": "SECRET-BODY"})
+
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject="SECRET-SUBJECT", body="SECRET-BODY",
+        )
+        reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "x")
+        blob = json.dumps(self._store().lookup(f"gmail_send:{fp}"))
+        for secret in ("SECRET-SUBJECT", "SECRET-BODY", "bob@example.com"):
+            assert secret not in blob

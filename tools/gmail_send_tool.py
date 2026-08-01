@@ -196,6 +196,85 @@ def _require_owner_approval(
         }
 
 
+def reconcile_ambiguous_send(
+    *, fingerprint: str, search=None, store=None
+) -> dict[str, Any]:
+    """Answer "did that actually send?" by looking, not by waiting.
+
+    An ambiguous outcome blocks forever without this — which is correct while
+    the answer is unknown and useless once it is knowable. The deterministic
+    RFC Message-ID is what makes it knowable: it either appears in Sent or it
+    does not, and no content comparison is involved.
+
+    Idempotent and owner-fenced. Reconciliation claims the row the same way a
+    send does, so two reconcilers cannot both settle it, and a terminal row is
+    left exactly as it was rather than re-decided.
+    """
+    from hermes_cli.actions.idempotency import IdempotencyStore
+    from hermes_constants import get_hermes_home
+
+    if store is None:
+        store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
+    key = f"gmail_send:{fingerprint}"
+    rfc_id = rfc_message_id(fingerprint)
+
+    record = store.lookup(key)
+    if record is None:
+        return {"reconciled": False, "reason": "no record for that message"}
+    if record["state"] != "ambiguous":
+        # Already terminal. Re-deciding a settled outcome is how a second
+        # reconciler undoes the first one's answer.
+        return {"reconciled": False, "state": record["state"],
+                "reason": "not ambiguous; nothing to reconcile"}
+
+    if search is None:
+        def search(message_id: str) -> Optional[str]:
+            from hermes_cli.google.gmail import GmailClient
+
+            # `rfc822msgid:` is Gmail's own index on the Message-ID header,
+            # which is exactly the field we set deterministically before
+            # dispatch — so this is a lookup, not a content search.
+            found = GmailClient().list_messages(
+                q=f"rfc822msgid:{message_id}", label_ids=["SENT"], max_results=1
+            )
+            for hit in (found or {}).get("messages") or []:
+                got = str((hit or {}).get("id") or "")
+                if got:
+                    return got
+            return None
+
+    try:
+        provider_id = search(rfc_id)
+    except Exception as exc:
+        # Could not look. Still ambiguous — an unreachable provider is not
+        # evidence either way.
+        return {"reconciled": False, "state": "ambiguous",
+                "reason": f"could not search: {_safe_error(exc)}"}
+
+    # Take ownership before writing, so two reconcilers cannot both settle.
+    owner = store.adopt_ambiguous(key)
+    if owner is None:
+        return {"reconciled": False, "reason": "another reconciliation is in progress"}
+
+    if provider_id:
+        store.settle_dispatched(
+            key, owner, state="succeeded",
+            result={"message_id": provider_id, "rfc_message_id": rfc_id,
+                    "reconciled": True},
+        )
+        _audit("send.reconciled", target="1 message",
+               detail={"fingerprint": fingerprint[:16], "outcome": "delivered"})
+        return {"reconciled": True, "state": "succeeded", "message_id": provider_id}
+
+    # Not in Sent: it never landed, so the message becomes sendable again.
+    store.settle_reconciled(key, owner, state="failed",
+                            result={"error": "not found in Sent"})
+    _audit("send.reconciled", target="1 message",
+           detail={"fingerprint": fingerprint[:16], "outcome": "not_delivered"})
+    return {"reconciled": True, "state": "failed",
+            "note": "not found in Sent; this message can be sent again"}
+
+
 def _handle_gmail_send(args: dict, **_kw) -> str:
     from hermes_cli.actions.idempotency import IdempotencyStore
     from hermes_cli.google.compose import build_raw_message
@@ -311,7 +390,7 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
             message_id=rfc_message_id(fingerprint),
         )
     except Exception as exc:
-        store.settle(key, attempt, state="failed", result={"error": _safe_error(exc)})
+        store.settle_pre_dispatch(key, attempt, result={"error": _safe_error(exc)})
         _audit("send.failed", target=f"{len(to)} recipient(s)",
                detail={"stage": "compose", "fingerprint": fingerprint[:16]})
         return tool_error(f"send failed before anything was sent: {exc}")
@@ -325,14 +404,37 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
     try:
         result = GmailClient().send_message(raw)
         message_id = str((result or {}).get("id") or "")
-        store.settle(key, attempt, state="succeeded",
-                     result={"message_id": message_id, "rfc_message_id": rfc_message_id(fingerprint)})
+        if not message_id:
+            # A `{}` or id-less response is not a confirmation. Reading it as
+            # success reported "sent" on the strength of the call returning —
+            # which is the same class of claim as reporting delivery because a
+            # request was made. Without the provider's own identifier there is
+            # nothing to reconcile against, so this is unverified, not done.
+            store.settle_dispatched(
+                key, attempt, state="ambiguous",
+                result={"error": "provider returned no message id",
+                        "rfc_message_id": rfc_message_id(fingerprint)},
+            )
+            _audit("send.ambiguous", target=f"{len(to)} recipient(s)",
+                   detail={"fingerprint": fingerprint[:16], "reason": "no_provider_id"})
+            return tool_error(
+                "Gmail accepted the request but returned no message id, so the "
+                "outcome cannot be confirmed. It may have been delivered. Check "
+                "the Sent folder before trying again."
+            )
+        store.settle_dispatched(
+            key, attempt, state="succeeded",
+            result={"message_id": message_id,
+                    "rfc_message_id": rfc_message_id(fingerprint)},
+        )
     except Exception as exc:
         # NOT `failed`. We do not know whether it landed, and recording a guess
         # here is what turns one send into two.
-        store.settle(key, attempt, state="ambiguous",
-                     result={"error": _safe_error(exc),
-                             "rfc_message_id": rfc_message_id(fingerprint)})
+        store.settle_dispatched(
+            key, attempt, state="ambiguous",
+            result={"error": _safe_error(exc),
+                    "rfc_message_id": rfc_message_id(fingerprint)},
+        )
         _audit("send.ambiguous", target=f"{len(to)} recipient(s)",
                detail={"fingerprint": fingerprint[:16]})
         return tool_error(
