@@ -89,7 +89,7 @@ export default function VaultPage() {
     return (
       <div className="mx-auto max-w-md p-8 text-center" role="status">
         <FileText className="mx-auto mb-3 size-8 text-text-tertiary" aria-hidden />
-        <h1 className="text-lg font-semibold">No vault configured</h1>
+        <h2 className="text-lg font-semibold">No vault configured</h2>
         <p className="mt-2 text-sm text-text-secondary">
           Point Imperator at your Obsidian vault: set <code>HERMES_VAULT_PATH</code> or{" "}
           <code>vault.path</code> in config on the server, then retry.
@@ -172,7 +172,13 @@ export default function VaultPage() {
       </aside>
 
       {/* Reader */}
-      <main className="min-h-0 overflow-y-auto rounded-lg border border-border">
+      {/* A content region inside the page's one <main>, not a second landmark.
+          Two mains give the skip link and the `M` shortcut two destinations
+          and neither knows which is the page. */}
+      <section
+        aria-label="Note"
+        className="min-h-0 overflow-y-auto rounded-lg border border-border"
+      >
         {!selected ? (
           <EmptyState
             icon={FileText}
@@ -185,7 +191,7 @@ export default function VaultPage() {
           </div>
         ) : (
           <article className="mx-auto max-w-2xl p-6">
-            <h1 className="text-xl font-semibold">{n.title}</h1>
+            <h2 className="text-xl font-semibold">{n.title}</h2>
             <p className="mt-1 text-xs text-text-tertiary">{n.path}</p>
             {Object.keys(n.frontmatter).length > 0 && (
               <dl className="my-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-lg border border-border/60 bg-midground/[0.03] p-3 text-sm">
@@ -209,7 +215,7 @@ export default function VaultPage() {
             <Markdown content={n.body} />
           </article>
         )}
-      </main>
+      </section>
 
       {/* Outline + backlinks */}
       <aside className="hidden min-h-0 flex-col gap-3 overflow-y-auto lg:flex">

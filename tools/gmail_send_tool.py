@@ -127,6 +127,31 @@ def build_approval_preview(
     }
 
 
+def rfc_message_id(fingerprint: str) -> str:
+    """A deterministic RFC 5322 Message-ID for this exact message.
+
+    Broker-controlled and derived from the fingerprint, so after an ambiguous
+    outcome the question "did this send?" is answerable by looking for one id
+    in the Sent folder rather than by comparing bodies and hoping.
+    """
+    return f"<{fingerprint[:32]}.imperator@localhost>"
+
+
+#: Provider diagnostics can echo recipients, subjects, or fragments of the
+#: message. Durable records get a bounded, shape-only summary instead.
+_ERROR_LIMIT = 120
+
+
+def _safe_error(exc: Exception) -> str:
+    """The exception's *type* and a bounded excerpt — never the whole thing.
+
+    A raw provider error is a durable record of whatever the provider chose to
+    quote back, which for a mail API is often the recipients and the subject.
+    """
+    text = str(exc).replace("\n", " ").strip()
+    return f"{type(exc).__name__}: {text[:_ERROR_LIMIT]}" if text else type(exc).__name__
+
+
 def _require_owner_approval(
     *,
     preview: dict[str, Any],
@@ -207,7 +232,7 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
     store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
     key = f"gmail_send:{fingerprint}"
 
-    won, prior = store.claim(key)
+    won, prior, attempt = store.claim(key)
     if not won:
         # Already sent, or in flight. Report the original outcome instead of
         # sending again — this is the retry-after-reconnect path.
@@ -218,6 +243,17 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
                 "message_id": (prior.get("result") or {}).get("message_id"),
                 "note": "This exact message was already sent; not sent again.",
             })
+        if prior and prior.get("state") == "ambiguous":
+            # The dangerous one. An earlier attempt reached the point of no
+            # return and never came back with an answer, so the message may
+            # already be in the recipient's inbox. Time does not resolve that,
+            # and a "retry" here is how one send becomes two.
+            return tool_error(
+                "an earlier attempt at this exact message was interrupted after "
+                "it had been handed to Gmail, so it may already have been "
+                "delivered. Check the Sent folder before sending again; this "
+                "will not send until that is reconciled."
+            )
         return tool_error(
             "an identical send is already in flight; not sending a second copy"
         )
@@ -255,35 +291,71 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
     if not approval.get("approved"):
         # Release, don't settle: nothing was sent, so a later approved attempt
         # is a first attempt and must not be mistaken for a duplicate.
-        store.release(key)
+        store.release(key, attempt)
         _audit("send.denied", target=f"{len(to)} recipient(s)",
-               detail={"subject": subject, "fingerprint": fingerprint[:16]})
+               detail={"fingerprint": fingerprint[:16]})
         return tool_error(
             approval.get("message") or "The owner did not approve this send."
         )
 
+    # Everything before the request leaves is *provably* not-sent, so a failure
+    # here is `failed` and retryable. Building the MIME message is in that
+    # bracket; handing it to Gmail is not.
     try:
-        raw = build_raw_message(to=to, subject=subject, body=body)
+        raw = build_raw_message(
+            to=to, subject=subject, body=body,
+            # A broker-controlled Message-ID is what makes reconciliation
+            # possible: after an ambiguous outcome, this exact id either
+            # appears in the Sent folder or it does not, and no content
+            # comparison is needed to tell.
+            message_id=rfc_message_id(fingerprint),
+        )
+    except Exception as exc:
+        store.settle(key, attempt, state="failed", result={"error": _safe_error(exc)})
+        _audit("send.failed", target=f"{len(to)} recipient(s)",
+               detail={"stage": "compose", "fingerprint": fingerprint[:16]})
+        return tool_error(f"send failed before anything was sent: {exc}")
+
+    # Past this line an unexplained failure is ambiguous, not failed: a
+    # provider that accepted the message and then dropped the response looks
+    # exactly like one that never received it.
+    if not store.mark_dispatching(key, attempt):
+        return tool_error("this send was taken over by another attempt; not sending")
+
+    try:
         result = GmailClient().send_message(raw)
         message_id = str((result or {}).get("id") or "")
-        store.settle(key, state="succeeded", result={"message_id": message_id})
+        store.settle(key, attempt, state="succeeded",
+                     result={"message_id": message_id, "rfc_message_id": rfc_message_id(fingerprint)})
     except Exception as exc:
-        # A failed send must not leave a claim that blocks a legitimate retry,
-        # but it must also be recorded — a later duplicate should be able to see
-        # that the first attempt failed rather than assume it is the first.
-        store.settle(key, state="failed", result={"error": str(exc)})
-        _audit("send.failed", target=", ".join(to), detail={"subject": subject})
-        return tool_error(f"send failed: {exc}")
+        # NOT `failed`. We do not know whether it landed, and recording a guess
+        # here is what turns one send into two.
+        store.settle(key, attempt, state="ambiguous",
+                     result={"error": _safe_error(exc),
+                             "rfc_message_id": rfc_message_id(fingerprint)})
+        _audit("send.ambiguous", target=f"{len(to)} recipient(s)",
+               detail={"fingerprint": fingerprint[:16]})
+        return tool_error(
+            "the send was handed to Gmail and the outcome is unknown: "
+            f"{_safe_error(exc)}. It may have been delivered. Check the Sent "
+            "folder before trying again."
+        )
 
     # Counts and identifiers only — never the body, never a recipient's content.
     _audit(
         "send",
         target=f"{len(to)} recipient(s)",
-        detail={"subject": subject, "fingerprint": fingerprint[:16]},
+        # Counts, a fingerprint and a provider id — never a subject, a
+        # recipient or a body. An audit row outlives the message, so anything
+        # written here is retained content, and a subject line is content.
+        detail={"fingerprint": fingerprint[:16], "message_id": message_id},
     )
     payload: dict[str, Any] = {
         "sent": True,
         "message_id": message_id,
+        # The broker-controlled id, echoed so a later reconciliation has the
+        # exact string to search the Sent folder for.
+        "rfc_message_id": rfc_message_id(fingerprint),
         "from": sender,
         "recipient_count": len(to),
         "note": "Sent. This cannot be undone.",

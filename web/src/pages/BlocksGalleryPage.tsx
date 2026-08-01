@@ -159,7 +159,7 @@ export default function BlocksGalleryPage() {
       <header className="flex items-center gap-2">
         <Boxes className="size-5 text-midground" aria-hidden />
         <div>
-          <h1 className="text-lg font-semibold">Blocks gallery</h1>
+          <h2 className="text-lg font-semibold">Blocks gallery</h2>
           <p className="text-sm text-text-secondary">
             Reusable UI pieces the Intelligence Hub composes working areas from.
           </p>

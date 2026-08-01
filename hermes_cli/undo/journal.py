@@ -44,7 +44,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_sqlite import force_delete_journal_if_wal_unsafe
+from hermes_cli import sqlite_open
 
 from hermes_cli.actions.registry import Rollback
 
@@ -101,11 +101,10 @@ class UndoJournal:
 
     def _connect(self) -> sqlite3.Connection:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        if not force_delete_journal_if_wal_unsafe(conn, db_label="undo-journal"):
-            conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        # One controlled path, shared with the idempotency store: busy_timeout
+        # first, journal-mode switch retried under contention. Concurrent
+        # construction used to raise "database is locked" in 3 of 200 rounds.
+        return sqlite_open.connect(self._path, db_label="undo-journal")
 
     def migrate(self) -> None:
         with self._lock, self._connect() as conn:
@@ -131,6 +130,11 @@ class UndoJournal:
                     -- this could never be told apart from one abandoned by a
                     -- process that died, so reconciliation would have to guess.
                     claimed_at    REAL,
+                    -- Which reversal attempt owns this entry. Terminal writes
+                    -- compare-and-swap on it, so a stale worker returning
+                    -- after reconciliation cannot overwrite `reversal_unknown`
+                    -- with "undone".
+                    reversal_owner TEXT,
                     undone_at     REAL
                 )
                 """
@@ -141,6 +145,8 @@ class UndoJournal:
             }
             if "claimed_at" not in existing:
                 conn.execute("ALTER TABLE undo_journal ADD COLUMN claimed_at REAL")
+            if "reversal_owner" not in existing:
+                conn.execute("ALTER TABLE undo_journal ADD COLUMN reversal_owner TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_undo_session ON undo_journal(session_id, created_at)"
             )
@@ -317,7 +323,12 @@ class UndoJournal:
             stale = [self._row(r) for r in rows]
             for entry in stale:
                 conn.execute(
-                    "UPDATE undo_journal SET status = 'reversal_unknown', outcome = ? "
+                    # Clearing `reversal_owner` is the fence. Without it the
+                    # worker we just declared abandoned could return and match
+                    # its own owner on a terminal write, overwriting this
+                    # honest "we do not know" with "undone".
+                    "UPDATE undo_journal SET status = 'reversal_unknown', outcome = ?, "
+                    "reversal_owner = NULL "
                     "WHERE id = ? AND status = ?",
                     (
                         "the reversal was started and never finished — we do not "
@@ -375,7 +386,8 @@ class UndoJournal:
         # From here the claim is the authority, not the status read above. Two
         # callers can both reach this line believing the entry is `done`; only
         # the one that changes a row is allowed to touch the world.
-        if not self._claim(entry_id, "compensating" if compensation else "undoing", ts):
+        owner = self._claim(entry_id, "compensating" if compensation else "undoing", ts)
+        if owner is None:
             raise UndoNotPossible(
                 f"already {self.get(entry_id)['status'].replace('_', ' ')}"
             )
@@ -383,13 +395,17 @@ class UndoJournal:
         try:
             apply(entry)
         except Exception as exc:
+            # An exception says the callback raised. It does *not* say nothing
+            # happened: `apply` runs outside this journal's transaction, so a
+            # partially applied inverse raises exactly the same way a
+            # never-started one does. Treating that as "still offerable" would
+            # invite a second inverse over a half-applied first — so it is
+            # unknown, which is the honest state and a blocking one.
             self._set_status(
                 entry_id,
-                # An inverse runs inside our own transaction, so a raise means
-                # it rolled back and nothing changed — still offerable. A
-                # compensation is a request that may have half-landed.
-                "compensation_failed" if compensation else "done",
+                "compensation_failed" if compensation else "reversal_unknown",
                 outcome=f"reversal failed: {exc}",
+                owner=owner,
             )
             raise
 
@@ -404,6 +420,7 @@ class UndoJournal:
                     # inverse, unreachable is not the same as failed.
                     "compensation_failed" if compensation else "reversal_unknown",
                     outcome=f"could not verify the reversal: {exc}",
+                    owner=owner,
                 )
                 raise UndoNotPossible(
                     "the reversal was attempted but could not be verified"
@@ -416,20 +433,29 @@ class UndoJournal:
                     # the owner to a provider that was never involved.
                     "compensation_failed" if compensation else "undo_failed",
                     outcome="the source still shows the original change",
+                    owner=owner,
                 )
                 raise UndoNotPossible(
                     "the reversal did not take effect at the source"
                 )
 
-        self._set_status(
+        if not self._set_status(
             entry_id,
             "compensated" if compensation else "undone",
             outcome="verified" if verify is not None else "",
             undone_at=ts,
-        )
+            owner=owner,
+        ):
+            # Reconciliation decided this reversal was abandoned and moved it
+            # on. Claiming success now would overwrite an honest "we do not
+            # know" with a claim nobody can check.
+            raise UndoNotPossible(
+                "this reversal was reconciled as abandoned while it was running; "
+                "its outcome is recorded as unknown and needs a person"
+            )
         return self.get(entry_id)
 
-    def _claim(self, entry_id: str, status: str, now: float) -> bool:
+    def _claim(self, entry_id: str, status: str, now: float) -> Optional[str]:
         """Take exclusive ownership of a reversal. True only for the winner.
 
         Conditional on the entry still being ``done``, so of any number of
@@ -437,13 +463,14 @@ class UndoJournal:
         lost by being told nothing changed rather than by discovering it after
         the reversal has already run twice.
         """
+        owner = uuid.uuid4().hex
         with self._lock, self._connect() as conn:
             cur = conn.execute(
-                "UPDATE undo_journal SET status = ?, claimed_at = ? "
+                "UPDATE undo_journal SET status = ?, claimed_at = ?, reversal_owner = ? "
                 "WHERE id = ? AND status = 'done'",
-                (status, now, entry_id),
+                (status, now, owner, entry_id),
             )
-            return cur.rowcount == 1
+            return owner if cur.rowcount == 1 else None
 
     def _set_status(
         self,
@@ -452,13 +479,32 @@ class UndoJournal:
         *,
         outcome: str = "",
         undone_at: Optional[float] = None,
-    ) -> None:
+        owner: Optional[str] = None,
+    ) -> bool:
+        """Write a terminal status. With ``owner``, only if it still holds the entry.
+
+        Unfenced writes were the defect: reconciliation could move a stale
+        entry to ``reversal_unknown``, and then the worker everyone assumed was
+        dead could return and overwrite it with ``undone``. The owner check
+        makes a late write lose instead of win. Returns whether it landed.
+        """
         with self._lock, self._connect() as conn:
-            conn.execute(
-                "UPDATE undo_journal SET status = ?, outcome = ?, "
-                "undone_at = COALESCE(?, undone_at) WHERE id = ?",
-                (status, outcome, undone_at, entry_id),
-            )
+            if owner is None:
+                # Unfenced writes remain available for reconciliation itself,
+                # which is acting *because* no owner is coming back.
+                cur = conn.execute(
+                    "UPDATE undo_journal SET status = ?, outcome = ?, "
+                    "undone_at = COALESCE(?, undone_at) WHERE id = ?",
+                    (status, outcome, undone_at, entry_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE undo_journal SET status = ?, outcome = ?, "
+                    "undone_at = COALESCE(?, undone_at) "
+                    "WHERE id = ? AND reversal_owner = ?",
+                    (status, outcome, undone_at, entry_id, owner),
+                )
+            return cur.rowcount == 1
 
 
 def permanence_sentence(rollback: str, detail: str = "") -> str:

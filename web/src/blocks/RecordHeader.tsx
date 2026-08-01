@@ -39,7 +39,7 @@ export function RecordHeader({
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <h1 className="truncate text-lg font-semibold">{title}</h1>
+          <h2 className="truncate text-lg font-semibold">{title}</h2>
           {status && (
             <span
               className={cn(

@@ -138,12 +138,19 @@ class TestApiResponsesAreNotDocuments:
         assert "Strict-Transport-Security" in headers
 
 
-class TestTheWebsocketPathIsLeftAlone:
-    def test_the_upgrade_path_is_excluded(self):
-        # Headers on a 101 are ignored at best and rejected by an intermediary
-        # at worst, and a chat that will not connect is a broken dashboard.
-        assert should_apply("/api/ws") is False
-        assert should_apply("/api/ws/anything") is False
+class TestNoHttpPathIsExcluded:
+    """The `/api/ws` exclusion was wrong, and wrong in an instructive way.
+
+    ASGI HTTP middleware never sees a WebSocket scope, so excluding the prefix
+    could not protect the upgrade. All it did was strip headers from the
+    ordinary HTTP responses under that path — the 404s and auth rejections that
+    most need them.
+    """
+
+    def test_the_websocket_prefix_is_no_longer_excluded(self):
+        assert should_apply("/api/ws") is True
+        assert should_apply("/api/ws/anything") is True
+        assert should_apply("/api/ws-anything") is True
 
     def test_everything_else_is_covered(self):
         for path in ("/", "/now", "/api/system/capabilities", "/assets/index.js"):

@@ -126,9 +126,17 @@ export function PageHeaderProvider({
           </div>
         </header>
 
+        {/* The one page-level <main>. It has lived here all along, which is
+            why adding another one in `App.tsx` produced two — the skip link
+            then had two landmarks to choose between and the `M` shortcut had
+            no single destination. `tabIndex={-1}` is what lets a
+            non-interactive element accept focus from the skip link, so focus
+            actually moves rather than only the scroll position. */}
         <main
+          id="main-content"
+          tabIndex={-1}
           className={cn(
-            "min-h-0 w-full min-w-0 flex-1 flex flex-col",
+            "min-h-0 w-full min-w-0 flex-1 flex flex-col focus:outline-none",
             // Bottom inset for scrolled pages lives on the route outlet wrapper in
             // `App.tsx` (`w-full min-w-0`) so it pads scrollable content, not flex chrome.
             isChatRoute

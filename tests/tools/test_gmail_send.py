@@ -189,13 +189,20 @@ class TestIdempotency:
         call(**{**ARGS, "to": ["b@x.com", "a@x.com"]})
         assert len(sent) == 1
 
-    def test_a_failed_send_does_not_report_success_or_block_forever(self, home, monkeypatch):
+    def test_a_provider_exception_is_ambiguous_not_failed(self, home, monkeypatch):
+        """The duplicate-mail case, and the reason this is not `failed`.
+
+        Gmail accepts the message, the response connection drops, and the
+        client sees an exception. That is indistinguishable from a send that
+        never left. Recording it as `failed` made it retryable, and an
+        approved retry put a second copy in the recipient's inbox.
+        """
         class Failing:
             def get_profile(self):
                 return {"emailAddress": "marco@example.com"}
 
             def send_message(self, raw, **kw):
-                raise RuntimeError("smtp exploded")
+                raise ConnectionResetError("connection reset by peer")
 
         monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
         monkeypatch.setattr(
@@ -212,31 +219,92 @@ class TestIdempotency:
             subject=ARGS["subject"], body=ARGS["body"],
         )
         store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
-        # Recorded as failed, so a later duplicate can see the first attempt
-        # failed rather than assuming it is the first.
+        assert store.lookup(f"gmail_send:{fp}")["state"] == "ambiguous"
+
+    def test_an_ambiguous_send_is_not_retried_into_a_duplicate(self, home, monkeypatch):
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError("connection reset by peer")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        assert errored(**ARGS)
+
+        outbox: list = []
+
+        class Working:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                outbox.append(raw)
+                return {"id": "msg-2"}
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
+
+        # Even with a healthy provider and a fresh approval, it refuses.
+        assert errored(**ARGS)
+        assert outbox == []
+
+    def test_the_refusal_says_where_to_look(self, home, monkeypatch):
+        # An unresolvable "blocked" would leave the owner with no move.
+        import json as _json
+
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError("reset")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        from tools.gmail_send_tool import _handle_gmail_send
+
+        _handle_gmail_send(dict(ARGS))
+        second = _json.loads(_handle_gmail_send(dict(ARGS)))["error"]
+        assert "Sent folder" in second
+
+    def test_a_failure_before_dispatch_stays_retryable(self, home, monkeypatch):
+        """Composing the message is provably before the point of no return."""
+        def boom(**kw):
+            raise ValueError("bad header")
+
+        monkeypatch.setattr("hermes_cli.google.compose.build_raw_message", boom)
+
+        class Client:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):  # pragma: no cover - must not run
+                raise AssertionError("dispatched despite a compose failure")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Client)
+        assert errored(**ARGS)
+
+        from hermes_cli.actions.idempotency import IdempotencyStore
+        from hermes_constants import get_hermes_home
+        from tools.gmail_send_tool import send_fingerprint
+
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
         assert store.lookup(f"gmail_send:{fp}")["state"] == "failed"
 
-    def test_a_failed_send_can_be_retried_once_the_problem_is_fixed(self, home, monkeypatch):
-        """The failure path must not become a day-long ban on one message.
-
-        Suppressing a *successful* send is the point of the key. Suppressing a
-        failed one is the opposite: nothing was sent, and the owner is left
-        unable to send that exact message at all until the key expires.
-        """
-        class Failing:
-            def get_profile(self):
-                return {"emailAddress": "marco@example.com"}
-
-            def send_message(self, raw, **kw):
-                raise RuntimeError("smtp exploded")
-
-        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        # And a repaired attempt then sends.
+        outbox: list = []
         monkeypatch.setattr(
             "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
         )
-        assert errored(**ARGS)
-
-        outbox: list = []
 
         class Working:
             def get_profile(self):
@@ -244,51 +312,41 @@ class TestIdempotency:
 
             def send_message(self, raw, **kw):
                 outbox.append(raw)
-                return {"id": "msg-retry"}
+                return {"id": "msg-1"}
 
         monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
-
         out = call(**ARGS)
         assert out["sent"] is True
-        assert out["message_id"] == "msg-retry"
         assert len(outbox) == 1
-        # And it says what it is: a send that follows an attempt whose outcome
-        # was never confirmed, not a clean first send.
-        assert out["retry_after_failed_attempt"] is True
-        assert "smtp exploded" in out["previous_error"]
 
-    def test_a_retry_after_a_failure_is_still_suppressed_once_it_succeeds(
-        self, home, monkeypatch
-    ):
-        class Failing:
-            def get_profile(self):
-                return {"emailAddress": "marco@example.com"}
 
-            def send_message(self, raw, **kw):
-                raise RuntimeError("smtp exploded")
+class TestReconciliationIdentity:
+    def test_the_message_carries_a_deterministic_broker_id(self, home, sent):
+        """So an ambiguous send can be answered by looking for one id."""
+        from tools.gmail_send_tool import rfc_message_id, send_fingerprint
 
-        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
-        monkeypatch.setattr(
-            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
         )
-        assert errored(**ARGS)
+        out = call(**ARGS)
+        assert out["rfc_message_id"] == rfc_message_id(fp)
 
-        outbox: list = []
+    def test_the_id_is_stable_for_the_same_message(self):
+        from tools.gmail_send_tool import rfc_message_id
 
-        class Working:
-            def get_profile(self):
-                return {"emailAddress": "marco@example.com"}
+        assert rfc_message_id("abc123") == rfc_message_id("abc123")
 
-            def send_message(self, raw, **kw):
-                outbox.append(raw)
-                return {"id": "msg-retry"}
+    def test_a_different_message_gets_a_different_id(self):
+        from tools.gmail_send_tool import rfc_message_id
 
-        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
-        call(**ARGS)
-        third = call(**ARGS)
+        assert rfc_message_id("a" * 40) != rfc_message_id("b" * 40)
 
-        assert third["duplicate_suppressed"] is True
-        assert len(outbox) == 1
+    def test_it_is_a_well_formed_message_id(self):
+        from tools.gmail_send_tool import rfc_message_id
+
+        value = rfc_message_id("abc")
+        assert value.startswith("<") and value.endswith(">") and "@" in value
 
 
 class TestFingerprint:
@@ -428,14 +486,90 @@ class TestNothingLeavesWithoutTheOwnersConsent:
 
 
 class TestAuditCarriesNoContent:
+    """An audit row outlives the message, so anything in it is retained content.
+
+    A subject line is content. So is a recipient address, and so is whatever a
+    provider chose to quote back in an exception — which for a mail API is
+    frequently both.
+    """
+
     def test_the_audit_row_records_counts_not_the_message(self, home, sent, monkeypatch):
         rows = []
         monkeypatch.setattr(
             "hermes_cli.audit_log.record", lambda **kw: rows.append(kw)
         )
-        call(**{**ARGS, "body": "SECRET-BODY-TEXT"})
+        call(**{**ARGS, "body": "SECRET-BODY-TEXT", "subject": "SECRET-SUBJECT"})
 
         assert rows, "the send must be audited"
         blob = json.dumps(rows)
         assert "SECRET-BODY-TEXT" not in blob
         assert "bob@example.com" not in blob
+        assert "SECRET-SUBJECT" not in blob
+
+    def test_a_denial_records_no_subject_or_recipient(self, home, sent, denied, monkeypatch):
+        rows = []
+        monkeypatch.setattr("hermes_cli.audit_log.record", lambda **kw: rows.append(kw))
+        errored(**{**ARGS, "subject": "SECRET-SUBJECT"})
+
+        blob = json.dumps(rows)
+        assert "SECRET-SUBJECT" not in blob
+        assert "bob@example.com" not in blob
+
+    def test_an_ambiguous_outcome_records_no_recipients(self, home, monkeypatch):
+        rows = []
+        monkeypatch.setattr("hermes_cli.audit_log.record", lambda **kw: rows.append(kw))
+
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError("reset")
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        errored(**{**ARGS, "subject": "SECRET-SUBJECT"})
+
+        blob = json.dumps(rows)
+        assert "bob@example.com" not in blob
+        assert "SECRET-SUBJECT" not in blob
+
+    def test_a_provider_error_is_bounded_and_typed_not_echoed(self, home, monkeypatch):
+        """Raw provider diagnostics often quote the message back."""
+        from tools.gmail_send_tool import _safe_error
+
+        leaky = RuntimeError(
+            "550 rejected for bob@example.com subject 'SECRET-SUBJECT' " + "x" * 500
+        )
+        safe = _safe_error(leaky)
+        assert safe.startswith("RuntimeError:")
+        assert len(safe) < 200
+
+    def test_the_persisted_failure_record_is_bounded(self, home, monkeypatch):
+        class Failing:
+            def get_profile(self):
+                return {"emailAddress": "marco@example.com"}
+
+            def send_message(self, raw, **kw):
+                raise ConnectionResetError("reset for bob@example.com " + "y" * 400)
+
+        monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Failing)
+        monkeypatch.setattr(
+            "hermes_cli.google.compose.build_raw_message", lambda **kw: "raw"
+        )
+        errored(**ARGS)
+
+        from hermes_cli.actions.idempotency import IdempotencyStore
+        from hermes_constants import get_hermes_home
+        from tools.gmail_send_tool import send_fingerprint
+
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
+        stored = json.dumps(store.lookup(f"gmail_send:{fp}"))
+        assert len(stored) < 600
+        assert "y" * 200 not in stored

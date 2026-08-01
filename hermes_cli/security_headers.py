@@ -61,10 +61,15 @@ CSP_DIRECTIVES = (
     "form-action 'self'",
 )
 
-#: Paths that must not receive these headers. The WebSocket upgrade path is
-#: excluded because header injection on a 101 response is at best ignored and
-#: at worst rejected by an intermediary.
-_EXCLUDED_PREFIXES = ("/api/ws",)
+#: Nothing is excluded.
+#:
+#: This once held ``/api/ws``, on the reasoning that headers do not belong on a
+#: 101 upgrade. That reasoning was wrong in a way worth recording: ASGI HTTP
+#: middleware never sees a WebSocket scope at all, so the exclusion could not
+#: protect the upgrade — it only stripped headers from the *ordinary HTTP*
+#: responses under that prefix, which are exactly the 404s and auth rejections
+#: that should carry them.
+_EXCLUDED_PREFIXES: tuple[str, ...] = ()
 
 
 def is_secure_request(scheme: str, forwarded_proto: str = "") -> bool:
@@ -123,10 +128,11 @@ def security_headers(*, secure: bool, is_html: bool = True) -> Dict[str, str]:
 
 
 def should_apply(path: str) -> bool:
-    """False for paths where these headers do not belong.
+    """True for every HTTP path.
 
-    The WebSocket upgrade is the only exclusion: headers on a 101 response are
-    ignored at best and rejected by an intermediary at worst, and a chat that
-    will not connect is a broken dashboard.
+    Kept as a function rather than deleted: it is the seam where a genuine
+    exclusion would go, and its emptiness is a claim worth testing. The
+    WebSocket upgrade needs no exclusion here because HTTP middleware is never
+    invoked for a WebSocket scope.
     """
     return not any(path.startswith(prefix) for prefix in _EXCLUDED_PREFIXES)

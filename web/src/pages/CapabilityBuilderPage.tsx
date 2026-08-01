@@ -106,7 +106,7 @@ export default function CapabilityBuilderPage() {
       <header className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Wand2 className="size-5 text-midground" aria-hidden />
-          <h1 className="text-lg font-semibold">New capability</h1>
+          <h2 className="text-lg font-semibold">New capability</h2>
         </div>
         <label className="flex items-center gap-2 text-xs text-text-secondary">
           <span>Template</span>

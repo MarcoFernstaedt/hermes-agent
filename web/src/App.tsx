@@ -1311,17 +1311,12 @@ export default function App() {
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            {/* The one <main> on the page. `tabIndex={-1}` is what lets a
-                non-interactive element accept focus when the skip link jumps
-                here — without it the browser moves the scroll position and
-                leaves focus in the navigation, so the next Tab goes back to
-                where the user was trying to escape. */}
-            <main
-              id="main-content"
-              tabIndex={-1}
+            {/* Layout only. The page-level <main> is inside
+                `PageHeaderProvider` — it always was, and adding a second one
+                here is what broke the single-landmark rule. */}
+            <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "focus:outline-none",
                 // Chat is edge-to-edge on phones (flat, Claude-style, so the
                 // keyboard slides against a seamless sheet) and insets to a
                 // card at ≥sm where the side panel appears.
@@ -1422,7 +1417,7 @@ export default function App() {
                   ))}
               </div>
               <PluginSlot name="post-main" />
-            </main>
+            </div>
           </PageHeaderProvider>
         </div>
       </div>

@@ -20,7 +20,7 @@ export default function ReviewPage() {
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center gap-2">
         <Inbox className="size-5 text-midground" aria-hidden />
-        <h1 className="text-lg font-semibold">Review queue</h1>
+        <h2 className="text-lg font-semibold">Review queue</h2>
         <span className="ml-auto font-mono-ui text-xs text-text-tertiary">
           {(counts.pending ?? 0)} pending · {(counts.applied ?? 0)} applied
         </span>

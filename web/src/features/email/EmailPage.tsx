@@ -133,9 +133,9 @@ export default function EmailPage() {
     return (
       <div className="mx-auto max-w-md p-8 text-center" role="status">
         <MailOpen className="mx-auto mb-3 size-8 text-text-tertiary" aria-hidden />
-        <h1 className="text-lg font-semibold">
+        <h2 className="text-lg font-semibold">
           {conn.data?.needs_reauth ? "Gmail needs reauthorization" : "Gmail not connected"}
-        </h1>
+        </h2>
         <p className="mt-2 text-sm text-text-secondary">
           Run <code>python google_api.py</code> setup / <code>hermes</code> Google auth on the
           server to {conn.data?.needs_reauth ? "reconnect" : "connect"} Gmail, then retry.
@@ -256,14 +256,14 @@ export default function EmailPage() {
           ) : (
             <div className="flex min-h-0 flex-1 flex-col p-3">
               <div className="mb-2 border-b border-border pb-2">
-                <h1 className="text-base font-semibold">
+                <h2 className="text-base font-semibold">
                   {renderable.subject || "(no subject)"}
                   {threadMessages.length > 1 && (
                     <span className="ml-2 align-middle text-xs font-normal text-text-tertiary">
                       {threadMessages.length} messages
                     </span>
                   )}
-                </h1>
+                </h2>
                 <p className="mt-0.5 text-sm text-text-secondary">
                   <span className="font-medium text-foreground">{renderable.from.name}</span>{" "}
                   <span className="text-text-tertiary">&lt;{renderable.from.email}&gt;</span>

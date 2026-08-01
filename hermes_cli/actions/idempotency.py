@@ -20,10 +20,11 @@ import hashlib
 import json
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_sqlite import force_delete_journal_if_wal_unsafe
+from hermes_cli import sqlite_open
 
 #: How long a recorded outcome stays replayable. A retry days later is a new
 #: intent, not the same one — keeping keys forever would silently swallow a
@@ -50,13 +51,9 @@ class IdempotencyStore:
         self._migrate()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        if not force_delete_journal_if_wal_unsafe(
-            conn, db_label="phase1-idempotency-store"
-        ):
-            conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        # One controlled path: busy_timeout before anything else, and the
+        # journal-mode switch retried while another connection holds the file.
+        return sqlite_open.connect(self.path, db_label="phase1-idempotency-store")
 
     def _migrate(self) -> None:
         with self._connect() as conn:
@@ -67,24 +64,60 @@ class IdempotencyStore:
                     state      TEXT NOT NULL,
                     result     TEXT,
                     claimed_at REAL NOT NULL,
-                    settled_at REAL
+                    settled_at REAL,
+                    -- Which attempt currently owns this key. Without it,
+                    -- `settle` updated by key alone, so an expired claimant
+                    -- returning late could write its outcome over the row a
+                    -- *different* claimant now holds — recording someone
+                    -- else's send as this one's success.
+                    attempt    TEXT
                 )
                 """
             )
+            existing = {
+                r["name"] for r in conn.execute("PRAGMA table_info(idempotency)").fetchall()
+            }
+            if "attempt" not in existing:
+                conn.execute("ALTER TABLE idempotency ADD COLUMN attempt TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_idem_claimed ON idempotency(claimed_at)"
             )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> dict:
+        keys = row.keys()
         return {
             "state": row["state"],
             "result": json.loads(row["result"]) if row["result"] else None,
             "claimed_at": row["claimed_at"],
             "settled_at": row["settled_at"],
+            "attempt": row["attempt"] if "attempt" in keys else None,
         }
 
-    def claim(self, key: str, *, now: Optional[float] = None) -> tuple[bool, Optional[dict]]:
+    def mark_dispatching(self, key: str, attempt: str) -> bool:
+        """Record that the external request is *about to leave*.
+
+        The state between "we decided to act" and "we know what happened" needs
+        a name, because it is the only state in which a retry can duplicate a
+        real-world effect. A send that raised after the provider accepted it is
+        indistinguishable from one that never left — so once a key is
+        ``dispatching``, an unexplained failure becomes ``ambiguous`` rather
+        than ``failed``, and ``ambiguous`` is not retryable without
+        reconciliation.
+
+        Conditional on this attempt still owning the row.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE idempotency SET state = 'dispatching' "
+                "WHERE key = ? AND attempt = ? AND state = 'in_flight'",
+                (key, attempt),
+            )
+            return cur.rowcount == 1
+
+    def claim(
+        self, key: str, *, now: Optional[float] = None
+    ) -> tuple[bool, Optional[dict], Optional[str]]:
         """Try to become the one caller that executes.
 
         Returns ``(True, prior)`` when this caller won and should execute, or
@@ -106,86 +139,124 @@ class IdempotencyStore:
         The reacquisition is itself conditional on the row still being
         ``failed``, so two retries arriving together do not both execute.
 
-        An expired claim is reclaimable too: a process that died mid-action must
-        not wedge the key forever.
+        The third element is this claim's **attempt token**. Every subsequent
+        write must present it. Without one, `settle` updated by key alone — so
+        a claimant whose claim had expired could return late and write its
+        outcome over the row a *different* claimant now held, recording someone
+        else's send as this one's success. An adversarial probe demonstrated
+        exactly that.
+
+        Expiry is deliberately narrow. Only a pre-dispatch ``in_flight`` claim
+        is reclaimable by age: a process that died before acting must not wedge
+        the key forever, and nothing happened, so a fresh attempt is a first
+        attempt. A ``dispatching`` row is **never** reclaimed by elapsed time —
+        time is not evidence about an external system — it becomes
+        ``ambiguous`` and stays blocked. Conclusive receipts (``succeeded``,
+        ``ambiguous``) are retained independently of claim expiry, because
+        forgetting a success is how a duplicate is authorised.
         """
         now = time.time() if now is None else now
         cutoff = now - self.ttl_seconds
+        attempt = uuid.uuid4().hex
         with self._connect() as conn:
-            conn.execute("DELETE FROM idempotency WHERE claimed_at < ?", (cutoff,))
+            # Only abandoned *pre-dispatch* claims are swept. A success or an
+            # ambiguous outcome is a receipt, not a claim, and outlives the TTL.
+            conn.execute(
+                "DELETE FROM idempotency WHERE claimed_at < ? AND state = 'in_flight'",
+                (cutoff,),
+            )
+            # An abandoned dispatch does not become retryable; it becomes a
+            # question for a person.
+            conn.execute(
+                "UPDATE idempotency SET state = 'ambiguous', settled_at = ? "
+                "WHERE claimed_at < ? AND state = 'dispatching'",
+                (now, cutoff),
+            )
             try:
                 conn.execute(
-                    "INSERT INTO idempotency (key, state, claimed_at) VALUES (?, 'in_flight', ?)",
-                    (key, now),
+                    "INSERT INTO idempotency (key, state, claimed_at, attempt) "
+                    "VALUES (?, 'in_flight', ?, ?)",
+                    (key, now, attempt),
                 )
-                return True, None
+                return True, None, attempt
             except sqlite3.IntegrityError:
                 row = conn.execute(
-                    "SELECT key, state, result, claimed_at, settled_at "
-                    "FROM idempotency WHERE key = ?",
-                    (key,),
+                    "SELECT * FROM idempotency WHERE key = ?", (key,)
                 ).fetchone()
                 if row is None:  # deleted between the delete and the select
-                    return True, None
+                    return True, None, attempt
 
                 if row["state"] == "failed":
+                    # `failed` means *proven not to have happened* — see
+                    # `settle`. Only that is reacquirable.
                     prior = self._record(row)
                     cur = conn.execute(
                         "UPDATE idempotency SET state = 'in_flight', result = NULL, "
-                        "claimed_at = ?, settled_at = NULL "
-                        "WHERE key = ? AND state = 'failed'",
-                        (now, key),
+                        "claimed_at = ?, settled_at = NULL, attempt = ? "
+                        "WHERE key = ? AND state = 'failed' AND attempt IS ?",
+                        (now, attempt, key, row["attempt"]),
                     )
                     if cur.rowcount == 1:
-                        return True, prior
-                    # Another retry got there first; fall through and report
-                    # whatever it left behind rather than executing as well.
+                        return True, prior, attempt
+                    # Another retry got there first; report what it left rather
+                    # than executing as well.
                     row = conn.execute(
-                        "SELECT key, state, result, claimed_at, settled_at "
-                        "FROM idempotency WHERE key = ?",
-                        (key,),
+                        "SELECT * FROM idempotency WHERE key = ?", (key,)
                     ).fetchone()
                     if row is None:
-                        return True, prior
+                        return True, prior, attempt
 
-                return False, self._record(row)
+                return False, self._record(row), None
 
-    def settle(self, key: str, *, state: str, result: Any = None) -> None:
-        """Record the outcome so a later duplicate can replay it.
+    def settle(self, key: str, attempt: str, *, state: str, result: Any = None) -> bool:
+        """Record this attempt's outcome. Returns False if it no longer owns the key.
 
-        ``state`` is ``"succeeded"`` or ``"failed"``. A failure is recorded too:
-        a retry should be able to see that the first attempt failed rather than
-        assuming it is the first attempt.
+        ``state`` is one of:
+
+        ``succeeded``
+            It happened. Retained past the claim TTL — forgetting a success is
+            how a duplicate gets authorised.
+        ``failed``
+            It provably did **not** happen: the request never left. Only this
+            is reacquirable by a retry.
+        ``ambiguous``
+            The request may have landed. Blocked until a person or a
+            reconciliation says otherwise. Elapsed time never converts this
+            into permission to repeat an external effect.
+
+        The compare-and-swap on ``attempt`` is the point. Updating by key alone
+        let a late claimant whose claim had expired write its outcome over the
+        row a different claimant now owned.
         """
+        if state not in ("succeeded", "failed", "ambiguous"):
+            raise ValueError(f"unknown settle state {state!r}")
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE idempotency SET state = ?, result = ?, settled_at = ? WHERE key = ?",
+            cur = conn.execute(
+                "UPDATE idempotency SET state = ?, result = ?, settled_at = ? "
+                "WHERE key = ? AND attempt = ?",
                 (state, json.dumps(result, default=str) if result is not None else None,
-                 time.time(), key),
+                 time.time(), key, attempt),
             )
+            return cur.rowcount == 1
 
-    def release(self, key: str) -> None:
+    def release(self, key: str, attempt: str) -> bool:
         """Drop an unsettled claim so the action can be attempted again.
 
-        Used when execution never started — a validation failure before any side
-        effect. Releasing after a side effect would be wrong; settle instead.
+        Only from ``in_flight`` — before the request left. A ``dispatching``
+        claim cannot be released, because releasing it would advertise as
+        never-attempted something that may already have happened.
         """
         with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM idempotency WHERE key = ? AND state = 'in_flight'", (key,)
+            cur = conn.execute(
+                "DELETE FROM idempotency WHERE key = ? AND attempt = ? AND state = 'in_flight'",
+                (key, attempt),
             )
+            return cur.rowcount == 1
 
     def lookup(self, key: str) -> Optional[dict]:
+        """The current record, including which attempt owns it. No mutation."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT state, result, claimed_at, settled_at FROM idempotency WHERE key = ?",
-                (key,),
+                "SELECT * FROM idempotency WHERE key = ?", (key,)
             ).fetchone()
-        if row is None:
-            return None
-        return {
-            "state": row["state"],
-            "result": json.loads(row["result"]) if row["result"] else None,
-            "claimed_at": row["claimed_at"],
-            "settled_at": row["settled_at"],
-        }
+        return None if row is None else self._record(row)

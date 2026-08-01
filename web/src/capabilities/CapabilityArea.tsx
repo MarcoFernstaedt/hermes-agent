@@ -185,7 +185,7 @@ export function CapabilityArea({ capability }: { capability: Capability }) {
       <header className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {capability.icon && <capability.icon className="size-5 text-midground" />}
-          <h1 className="text-lg font-semibold">{capability.label}</h1>
+          <h2 className="text-lg font-semibold">{capability.label}</h2>
         </div>
         <div className="flex items-center gap-2">
           {capability.views.length > 1 && (

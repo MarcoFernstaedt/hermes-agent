@@ -134,7 +134,14 @@ class TestInverseUndo:
         with pytest.raises(UndoNotPossible, match="already"):
             journal.undo(entry["id"], apply=lambda e: None)
 
-    def test_a_failed_inverse_stays_undoable_for_a_retry(self, journal):
+    def test_a_failed_inverse_is_unknown_not_retryable(self, journal):
+        """An exception says the callback raised, not that nothing happened.
+
+        `apply` runs outside this journal's transaction, so a half-applied
+        inverse raises exactly the way a never-started one does. Resetting to
+        `done` invited a second inverse over a partially reversed first — the
+        earlier behaviour, and the reason this changed.
+        """
         entry = record(journal)
 
         def boom(_e):
@@ -142,10 +149,37 @@ class TestInverseUndo:
 
         with pytest.raises(RuntimeError):
             journal.undo(entry["id"], apply=boom)
-        # Our own transaction did not complete, so nothing changed and the
-        # entry is still offerable.
-        assert journal.get(entry["id"])["status"] == "done"
-        assert "disk full" in journal.get(entry["id"])["outcome"]
+
+        got = journal.get(entry["id"])
+        assert got["status"] == "reversal_unknown"
+        assert "disk full" in got["outcome"]
+        # Blocking, and visible to a person.
+        assert got.needs_repair is True
+        assert journal.stack() == []
+
+    def test_a_reconciled_entry_cannot_be_overwritten_by_a_late_worker(self, journal):
+        """Fencing.
+
+        Reconciliation moves an abandoned reversal to `reversal_unknown`. The
+        worker everyone assumed was dead could then return and write "undone"
+        over it — replacing an honest "we do not know" with a claim nobody can
+        check.
+        """
+        entry = record(journal)
+        now = time.time()
+
+        def reconcile_underneath(_e):
+            # The real reconciliation path, firing while this reversal is
+            # still running — which is exactly the race: the timeout cannot
+            # tell a slow worker from a dead one.
+            journal.reconcile(now=now + DEFAULT_IN_FLIGHT_TIMEOUT_SECONDS + 1)
+
+        with pytest.raises(UndoNotPossible, match="reconciled as abandoned"):
+            journal.undo(entry["id"], apply=reconcile_underneath, now=now)
+
+        got = journal.get(entry["id"])
+        assert got["status"] == "reversal_unknown"
+        assert "do not know" in got["outcome"]
 
 
 class TestIrreversible:

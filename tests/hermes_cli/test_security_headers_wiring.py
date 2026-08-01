@@ -83,6 +83,42 @@ class TestHsts:
         assert "Strict-Transport-Security" in response.headers
 
 
+class TestTheWebsocketPathIsCoveredAndStillWorks:
+    def test_a_rejected_http_request_under_the_ws_prefix_gets_headers(self, client):
+        """The exclusion this replaces stripped headers from exactly these.
+
+        HTTP middleware never sees a WebSocket scope, so excluding `/api/ws`
+        protected nothing about the upgrade — it only unprotected the 404s and
+        auth rejections served over ordinary HTTP under that prefix.
+        """
+        for path in ("/api/ws", "/api/ws-anything"):
+            response = client.get(path)
+            assert response.headers["X-Content-Type-Options"] == "nosniff", path
+            assert "Referrer-Policy" in response.headers, path
+
+    def test_the_upgrade_itself_still_connects_or_closes_cleanly(self, client):
+        """The regression that matters: middleware must not break the socket.
+
+        Either the handshake completes or the server closes it deliberately
+        (auth, readiness). Both are fine. A middleware fault would surface as
+        neither — a raised exception during the upgrade.
+        """
+        from starlette.websockets import WebSocketDisconnect
+
+        try:
+            with client.websocket_connect("/api/ws") as ws:
+                ws.close()
+        except WebSocketDisconnect:
+            pass  # a deliberate server-side close is a pass
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).lower()
+            # Starlette raises a plain exception when the app rejects the
+            # handshake outright; that is still a deliberate refusal.
+            assert "denied" in message or "403" in message or "reject" in message, (
+                f"the upgrade failed in an unexpected way: {exc!r}"
+            )
+
+
 class TestNothingElseBreaks:
     def test_the_capability_endpoint_is_reachable_and_carries_no_secret(
         self, client, monkeypatch

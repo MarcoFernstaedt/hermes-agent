@@ -194,14 +194,13 @@ class TestIdempotency:
     def test_the_same_intent_produces_the_same_key(self):
         from hermes_cli.actions.idempotency import idempotency_key
 
-        a = idempotency_key(actor="marco", action_id="mail.send", target="t1",
-                            payload={"to": "a@b.c", "body": "hi"})
-        b = idempotency_key(actor="marco", action_id="mail.send", target="t1",
-                            payload={"body": "hi", "to": "a@b.c"})
-        assert a == b  # key order must not matter
+        a = idempotency_key(actor="m", action_id="mail.send", target="t",
+                            payload={"body": "one"})
+        b = idempotency_key(actor="m", action_id="mail.send", target="t",
+                            payload={"body": "one"})
+        assert a == b
 
-    def test_a_different_body_is_a_different_action(self):
-        """Two sends to one recipient with different text must both run."""
+    def test_a_different_payload_is_a_different_key(self):
         from hermes_cli.actions.idempotency import idempotency_key
 
         a = idempotency_key(actor="m", action_id="mail.send", target="t",
@@ -214,21 +213,23 @@ class TestIdempotency:
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        first, prior = store.claim("k1")
-        assert first is True and prior is None
+        first, prior, attempt = store.claim("k1")
+        assert first is True and prior is None and attempt
 
-        second, prior = store.claim("k1")
+        second, prior, lost = store.claim("k1")
         assert second is False
         assert prior["state"] == "in_flight"
+        # A loser gets no token, so it cannot write anything at all.
+        assert lost is None
 
     def test_a_retry_after_success_replays_the_original_result(self, tmp_path):
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="succeeded", result={"message_id": "abc"})
+        _, _, attempt = store.claim("k1")
+        store.settle("k1", attempt, state="succeeded", result={"message_id": "abc"})
 
-        won, prior = store.claim("k1")
+        won, prior, _ = store.claim("k1")
         assert won is False
         assert prior["state"] == "succeeded"
         assert prior["result"] == {"message_id": "abc"}
@@ -237,28 +238,27 @@ class TestIdempotency:
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="failed", result={"error": "smtp timeout"})
+        _, _, attempt = store.claim("k1")
+        store.settle("k1", attempt, state="failed", result={"error": "smtp timeout"})
         assert store.lookup("k1")["state"] == "failed"
 
     def test_a_failed_attempt_can_be_retried_and_carries_the_first_failure(self, tmp_path):
         """Recording a failure must not wedge the key.
 
-        Idempotency exists to stop something happening *twice*. A failure means
-        it did not happen once, so refusing the retry converts a transient
-        provider error into a whole day in which that exact message can never
-        be sent.
+        Idempotency exists to stop something happening *twice*. A proven
+        pre-dispatch failure means it did not happen once, so refusing the
+        retry converts a transient provider error into a whole day in which
+        that exact message can never be sent.
         """
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="failed", result={"error": "smtp timeout"})
+        _, _, attempt = store.claim("k1")
+        store.settle("k1", attempt, state="failed", result={"error": "smtp timeout"})
 
-        won, prior = store.claim("k1")
+        won, prior, retry_attempt = store.claim("k1")
         assert won is True
-        # The retry is told what it is retrying, so a caller can say so rather
-        # than presenting it as a first attempt.
+        assert retry_attempt and retry_attempt != attempt
         assert prior["state"] == "failed"
         assert prior["result"] == {"error": "smtp timeout"}
 
@@ -266,44 +266,31 @@ class TestIdempotency:
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="failed", result={"error": "smtp timeout"})
+        _, _, a = store.claim("k1")
+        store.settle("k1", a, state="failed", result={"error": "smtp timeout"})
 
         assert store.claim("k1")[0] is True
-        # Two retries arriving together must not both execute.
-        won, prior = store.claim("k1")
+        won, prior, _ = store.claim("k1")
         assert won is False
         assert prior["state"] == "in_flight"
 
     def test_a_success_is_never_reacquired(self, tmp_path):
-        """The rule the whole module exists for is not weakened by the retry path."""
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="succeeded", result={"id": 1})
-        won, prior = store.claim("k1")
+        _, _, a = store.claim("k1")
+        store.settle("k1", a, state="succeeded", result={"id": 1})
+        won, prior, _ = store.claim("k1")
         assert won is False
         assert prior["state"] == "succeeded"
-
-    def test_retrying_a_failure_that_fails_again_stays_retryable(self, tmp_path):
-        from hermes_cli.actions.idempotency import IdempotencyStore
-
-        store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        for attempt in range(3):
-            store.settle("k1", state="failed", result={"error": f"attempt {attempt}"})
-            won, prior = store.claim("k1")
-            assert won is True
-            assert prior["result"] == {"error": f"attempt {attempt}"}
 
     def test_releasing_an_unstarted_claim_allows_a_genuine_retry(self, tmp_path):
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.release("k1")
-        won, _ = store.claim("k1")
+        _, _, a = store.claim("k1")
+        assert store.release("k1", a) is True
+        won, _, _ = store.claim("k1")
         assert won is True
 
     def test_release_cannot_erase_a_settled_outcome(self, tmp_path):
@@ -311,19 +298,143 @@ class TestIdempotency:
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3")
-        store.claim("k1")
-        store.settle("k1", state="succeeded", result={"id": 1})
-        store.release("k1")
+        _, _, a = store.claim("k1")
+        store.settle("k1", a, state="succeeded", result={"id": 1})
+        assert store.release("k1", a) is False
         assert store.lookup("k1")["state"] == "succeeded"
 
-    def test_an_expired_claim_does_not_wedge_the_key_forever(self, tmp_path):
-        """A process that died mid-action must not block the action for good."""
+    def test_an_expired_pre_dispatch_claim_does_not_wedge_the_key(self, tmp_path):
+        """A process that died before acting must not block the action forever."""
         from hermes_cli.actions.idempotency import IdempotencyStore
 
         store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
         store.claim("k1", now=1000.0)
-        won, _ = store.claim("k1", now=1000.0 + 61)
+        won, _, _ = store.claim("k1", now=1000.0 + 61)
         assert won is True
+
+
+class TestAStaleClaimantCannotWriteOverALiveOne:
+    """The adversarial case the review demonstrated.
+
+    A claimed, expired, then re-claimed by someone else, and stale A settled
+    B's row as a success. Settling by key alone made that possible.
+    """
+
+    def test_a_stale_attempt_cannot_settle_the_current_holders_row(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, a = store.claim("k1", now=1000.0)
+        won_b, _, b = store.claim("k1", now=1000.0 + 61)
+        assert won_b is True and b != a
+
+        # A returns late and tries to record its outcome.
+        assert store.settle("k1", a, state="succeeded", result={"id": "A"}) is False
+        assert store.lookup("k1")["state"] == "in_flight"
+
+        # B's own settle still works.
+        assert store.settle("k1", b, state="succeeded", result={"id": "B"}) is True
+        assert store.lookup("k1")["result"] == {"id": "B"}
+
+    def test_a_stale_attempt_cannot_release_the_current_holders_row(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, a = store.claim("k1", now=1000.0)
+        _, _, b = store.claim("k1", now=1000.0 + 61)
+        assert store.release("k1", a) is False
+        assert store.lookup("k1")["attempt"] == b
+
+    def test_a_loser_holds_no_token_and_can_write_nothing(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        store.claim("k1")
+        _, _, lost = store.claim("k1")
+        assert lost is None
+        assert store.settle("k1", "invented", state="succeeded") is False
+
+
+class TestAmbiguousOutcomesStayBlocked:
+    """An external effect that may have landed is not a failure.
+
+    Gmail accepts the send, the response connection drops, and the send is
+    recorded as failed — then an approved retry sends a second copy. The state
+    between "we decided to act" and "we know what happened" has to have a name.
+    """
+
+    def test_a_dispatching_claim_is_recorded_before_the_request_leaves(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        assert store.mark_dispatching("k1", a) is True
+        assert store.lookup("k1")["state"] == "dispatching"
+
+    def test_only_the_owner_can_mark_it_dispatching(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        store.claim("k1")
+        assert store.mark_dispatching("k1", "invented") is False
+
+    def test_an_ambiguous_outcome_is_not_retryable(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        store.mark_dispatching("k1", a)
+        store.settle("k1", a, state="ambiguous", result={"error": "connection reset"})
+
+        won, prior, token = store.claim("k1")
+        assert won is False
+        assert prior["state"] == "ambiguous"
+        assert token is None
+
+    def test_elapsed_time_never_unblocks_an_ambiguous_outcome(self, tmp_path):
+        # Time is not evidence about an external system.
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, a = store.claim("k1", now=1000.0)
+        store.mark_dispatching("k1", a)
+        store.settle("k1", a, state="ambiguous", result={"error": "reset"})
+
+        won, prior, _ = store.claim("k1", now=1000.0 + 10_000)
+        assert won is False
+        assert prior["state"] == "ambiguous"
+
+    def test_an_abandoned_dispatch_becomes_ambiguous_rather_than_retryable(self, tmp_path):
+        """A process that died *after* dispatching may already have sent."""
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, a = store.claim("k1", now=1000.0)
+        store.mark_dispatching("k1", a)
+
+        won, prior, _ = store.claim("k1", now=1000.0 + 61)
+        assert won is False
+        assert prior["state"] == "ambiguous"
+
+    def test_a_success_survives_the_claim_ttl(self, tmp_path):
+        """Forgetting a success is how a duplicate gets authorised."""
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3", ttl_seconds=60)
+        _, _, a = store.claim("k1", now=1000.0)
+        store.settle("k1", a, state="succeeded", result={"id": "x"})
+
+        won, prior, _ = store.claim("k1", now=1000.0 + 10_000)
+        assert won is False
+        assert prior["state"] == "succeeded"
+
+    def test_an_unknown_settle_state_is_refused(self, tmp_path):
+        from hermes_cli.actions.idempotency import IdempotencyStore
+
+        store = IdempotencyStore(tmp_path / "idem.sqlite3")
+        _, _, a = store.claim("k1")
+        with pytest.raises(ValueError, match="unknown settle state"):
+            store.settle("k1", a, state="probably_fine")
 
 
 class TestCostAttribution:

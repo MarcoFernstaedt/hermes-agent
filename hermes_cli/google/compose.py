@@ -25,13 +25,22 @@ def build_raw_message(
     in_reply_to: Optional[str] = None,
     references: Optional[str] = None,
     html_body: Optional[str] = None,
+    message_id: Optional[str] = None,
 ) -> str:
     """Return a base64url-encoded RFC 2822 message for Gmail send/draft.
 
     ``in_reply_to`` / ``references`` are the referenced message's ``Message-ID``
     header(s), required for a reply to thread correctly in every client.
+
+    ``message_id`` sets this message's own ``Message-ID``. Supplying one lets a
+    caller reconcile an ambiguous send: the id either appears in the Sent
+    folder or it does not, which is a far stronger answer than comparing
+    bodies. Left unset, the provider assigns one and that reconciliation is
+    unavailable.
     """
     msg = EmailMessage()
+    if message_id:
+        msg["Message-ID"] = message_id
     msg["To"] = ", ".join(to)
     if cc:
         msg["Cc"] = ", ".join(cc)
