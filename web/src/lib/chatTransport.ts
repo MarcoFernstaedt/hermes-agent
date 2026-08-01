@@ -137,10 +137,19 @@ export interface ChatTransport {
     choices?: string[];
   }): Promise<boolean>;
   /**
-   * Steer into an open clarify's "Other" option so free text can follow.
-   * Terminal-only: natively the free text *is* the answer.
+   * Answer an open clarify question with free text the owner typed.
+   *
+   * One method rather than "steer, then send", because the two transports do
+   * genuinely different things and splitting it produced the defect: natively
+   * the steering step was a no-op returning true and the text then went out as
+   * `prompt.submit`, so the clarify request stayed pending and the answer
+   * arrived as an unrelated new prompt.
    */
-  openClarifyFreeText(choiceCount: number): boolean;
+  answerClarifyFreeText(opts: {
+    answer: string;
+    requestId?: string;
+    choiceCount: number;
+  }): Promise<SendOutcome>;
 }
 
 export function createChatTransport(sources: ChatTransportSources): ChatTransport {
@@ -213,14 +222,26 @@ export function createChatTransport(sources: ChatTransportSources): ChatTranspor
       return sources.pty().sendRaw(String(index + 1));
     },
 
-    openClarifyFreeText(choiceCount) {
-      if (mode() === "native") return true;
+    async answerClarifyFreeText({ answer, requestId, choiceCount }) {
+      if (mode() === "native") {
+        // The free text *is* the answer, and it is addressed to the request it
+        // answers. Sending it as a prompt left the question open.
+        if (!requestId) return "failed";
+        try {
+          await sources.native().respondClarify(requestId, answer);
+          return "sent";
+        } catch {
+          return "failed";
+        }
+      }
       const pty = sources.pty();
-      if (!pty.open) return false;
-      // Walk to the last entry ("Other"), select it, and let the caller paste.
-      return (
-        pty.sendRaw("\x1b[B".repeat(choiceCount)) && pty.sendRaw("\r")
-      );
+      if (!pty.open) return "failed";
+      // Walk to the last entry ("Other"), select it, then paste the text.
+      if (!pty.sendRaw("\x1b[B".repeat(choiceCount)) || !pty.sendRaw("\r")) {
+        return "failed";
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return pty.sendText(answer) ? "sent" : "failed";
     },
   };
 }

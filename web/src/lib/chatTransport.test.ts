@@ -221,18 +221,55 @@ describe("clarify", () => {
     expect(ptyCalls).toEqual([["sendRaw", "2"]]);
   });
 
-  it("does not steer a native clarify with arrow keys", () => {
-    const { transport, ptyCalls } = fakes();
-    expect(transport.openClarifyFreeText(2)).toBe(true);
-    expect(ptyCalls).toEqual([]);
+  it("routes free text as an answer, not as a new prompt", async () => {
+    // The defect: natively the steering step was a no-op returning true, and
+    // the text then went out as `prompt.submit` — so the question stayed open
+    // and the answer arrived as an unrelated message.
+    const { transport, nativeCalls } = fakes();
+    const outcome = await transport.answerClarifyFreeText({
+      answer: "something else",
+      requestId: "req-9",
+      choiceCount: 2,
+    });
+    expect(outcome).toBe("sent");
+    expect(nativeCalls).toEqual([["respondClarify", "req-9", "something else"]]);
   });
 
-  it("still walks the terminal menu to Other", () => {
+  it("never sends free text as a prompt natively", async () => {
+    const { transport, nativeCalls } = fakes();
+    await transport.answerClarifyFreeText({
+      answer: "x", requestId: "req-9", choiceCount: 1,
+    });
+    expect(nativeCalls.map((c) => c[0])).not.toContain("submit");
+  });
+
+  it("fails rather than guessing when there is no request to answer", async () => {
+    const { transport, nativeCalls } = fakes();
+    const outcome = await transport.answerClarifyFreeText({
+      answer: "x", choiceCount: 1,
+    });
+    expect(outcome).toBe("failed");
+    expect(nativeCalls).toEqual([]);
+  });
+
+  it("reports a rejected answer as failed", async () => {
+    const { transport } = fakes({ clarifyThrows: true });
+    expect(
+      await transport.answerClarifyFreeText({
+        answer: "x", requestId: "req-9", choiceCount: 1,
+      }),
+    ).toBe("failed");
+  });
+
+  it("still walks the terminal menu to Other and pastes the text", async () => {
     const { transport, ptyCalls } = fakes({ nativeActive: false });
-    transport.openClarifyFreeText(2);
+    await transport.answerClarifyFreeText({
+      answer: "something else", requestId: "req-9", choiceCount: 2,
+    });
     expect(ptyCalls).toEqual([
       ["sendRaw", "\x1b[B\x1b[B"],
       ["sendRaw", "\r"],
+      ["sendText", "something else"],
     ]);
   });
 });

@@ -39,6 +39,10 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatBubbleFeed } from "@/components/ChatBubbleFeed";
 import { useNativeChat } from "@/hooks/useNativeChat";
+import {
+  isNativeChatEnabled,
+  type ResumedMessage,
+} from "@/lib/nativeChat";
 import type { GatewayEvent } from "@hermes/shared";
 import { ChatHeaderRename } from "@/components/ChatHeaderRename";
 import { ChatScopeControl } from "@/components/ChatScopeControl";
@@ -401,6 +405,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // Probe once, on the first activation that matters — paired with the
     // latch above so a document that never opens Chat makes no request either.
     if (!chatEverShown) return;
+    // This probe asks whether the *TUI* can start. Native chat talks to the
+    // gateway directly and needs no TUI build at all, so letting this result
+    // gate it meant a missing TUI disabled the transport that exists to avoid
+    // the TUI — and the owner saw a banner about a dependency their chat does
+    // not use.
+    if (isNativeChatEnabled()) return;
     let alive = true;
     void api
       .getChatReadiness()
@@ -467,6 +477,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer]);
+  // Declared here because `startFreshDashboardChat` below runs before
+  // `nativeChat` exists in source order. Read only inside callbacks, never
+  // during render.
+  const nativeChatRef = useRef<ReturnType<typeof useNativeChat> | null>(null);
+
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
     setPtyAttachIdentity(rotateAlignedPtyAttachToken());
@@ -498,6 +513,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyState("connecting");
     resetFreshChatProjection();
     setReconnectNonce((n) => n + 1);
+    // The native half. Without this, "new chat" rotated a PTY identity that
+    // native mode does not use, left the session open and its durable id in
+    // storage, and the next prompt continued the old conversation.
+    nativeChatRef.current?.startNew();
   }, [
     clearReconnectTimer,
     resetFreshChatProjection,
@@ -593,8 +612,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setAgentRunning(false);
       }
     }, []),
-    { enabled: chatEverShown && !chatBlocked, profile: scopedProfile ?? "default" },
+    // Gated on its own prerequisite only. `chatBlocked` is the TUI readiness
+    // verdict and says nothing about whether the gateway is reachable.
+    {
+      enabled: chatEverShown,
+      profile: scopedProfile ?? "default",
+      // The resumed transcript, applied before any live event arrives. Without
+      // it a refresh reattached to a running session and showed nothing.
+      onHistory: useCallback((messages: ResumedMessage[]) => {
+        if (!messages.length) return;
+        const history = hydrateSessionMessages(
+          messages as unknown as SessionMessage[],
+        );
+        setFeedState((state) => mergeHydratedFeedState(history, state));
+      }, []),
+    },
   );
+  useEffect(() => {
+    nativeChatRef.current = nativeChat;
+  }, [nativeChat]);
+
   const ptyTargetKeyRef = useRef(ptyTargetKey);
   useLayoutEffect(() => {
     if (ptyTargetKeyRef.current === ptyTargetKey) return;
@@ -1199,18 +1236,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       let outcome: SendOutcome;
 
       if (activeClarify && activeClarify.choices?.length) {
-        // A free-form answer to an open question. On the terminal that means
-        // steering the menu to "Other" first; natively the text *is* the
-        // answer, so `openClarifyFreeText` is a no-op that reports success.
-        if (!transport.openClarifyFreeText(activeClarify.choices.length)) {
-          outcome = "failed";
-        } else {
-          if (transport.mode() === "pty") {
-            // Let the menu settle before pasting into it.
-            await new Promise((resolve) => window.setTimeout(resolve, 50));
-          }
-          outcome = await transport.send(text, ctx);
-        }
+        // A free-form answer to an open question, routed as an *answer*. It
+        // used to steer the menu and then send the text as an ordinary
+        // prompt, which natively left the clarify request pending and
+        // delivered the answer as an unrelated message.
+        outcome = await transport.answerClarifyFreeText({
+          answer: text,
+          requestId: activeClarify.requestId,
+          choiceCount: activeClarify.choices.length,
+        });
       } else {
         // `shouldQueueSend` still decides whether this *is* a queued send —
         // it drives the bubble's "Queued" label. How the queueing happens is

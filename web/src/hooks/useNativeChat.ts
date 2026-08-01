@@ -4,9 +4,11 @@ import {
   NativeChatSession,
   isNativeChatEnabled,
   type NativeChatStatus,
+  type ResumedMessage,
   type SubmitOutcome,
 } from "@/lib/nativeChat";
 import {
+  clearDurableSessionId,
   loadDurableSessionId,
   saveDurableSessionId,
 } from "@/lib/nativeChatSessionStore";
@@ -39,18 +41,42 @@ export interface NativeChat {
     opts?: { all?: boolean },
   ): Promise<void>;
   respondClarify(requestId: string, answer: string): Promise<void>;
+  /**
+   * Close this session and open a genuinely new one.
+   *
+   * "New chat" used to rotate the PTY identity and clear the URL, which under
+   * native chat changed nothing at all: the session stayed open, the durable
+   * id stayed in storage, and the next prompt continued the old conversation
+   * under a heading that said it was new.
+   */
+  startNew(): void;
   error: string | null;
 }
 
 export function useNativeChat(
   onEvent: (event: GatewayEvent) => void,
-  { enabled, profile = "default" }: { enabled: boolean; profile?: string },
+  {
+    enabled,
+    profile = "default",
+    onHistory,
+  }: {
+    enabled: boolean;
+    profile?: string;
+    /** The resumed transcript, delivered before any live event. */
+    onHistory?: (messages: ResumedMessage[]) => void;
+  },
 ): NativeChat {
   const active = enabled && isNativeChatEnabled();
   const [status, setStatus] = useState<NativeChatStatus>("idle");
   const [liveId, setLiveId] = useState<string | null>(null);
   const [durableId, setDurableId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by `startNew`; a dependency of the open effect, so incrementing it
+  // tears the session down and builds another.
+  const [generation, setGeneration] = useState(0);
+  // Set alongside it, and consumed by the effect: a deliberate new chat must
+  // not resume the id it just discarded.
+  const forceFreshRef = useRef(false);
 
   const sessionRef = useRef<NativeChatSession | null>(null);
   // The event sink is held in a ref so a re-created callback does not tear the
@@ -64,6 +90,10 @@ export function useNativeChat(
   useEffect(() => {
     sinkRef.current = onEvent;
   }, [onEvent]);
+  const historyRef = useRef(onHistory);
+  useEffect(() => {
+    historyRef.current = onHistory;
+  }, [onHistory]);
 
   useEffect(() => {
     if (!active) return;
@@ -71,14 +101,18 @@ export function useNativeChat(
     let disposed = false;
     const session = new NativeChatSession(new GatewayClient(), {
       onEvent: (ev) => sinkRef.current(ev),
+      onHistory: (messages) => historyRef.current?.(messages),
       onStatusChange: (s) => {
         if (!disposed) setStatus(s);
       },
     });
     sessionRef.current = session;
 
+    const fresh = forceFreshRef.current;
+    forceFreshRef.current = false;
+
     void session
-      .open(loadDurableSessionId(profile))
+      .open(fresh ? null : loadDurableSessionId(profile))
       .then(() => {
         if (disposed) return;
         setLiveId(session.id);
@@ -100,7 +134,19 @@ export function useNativeChat(
       session.close();
       sessionRef.current = null;
     };
-  }, [active, profile]);
+  }, [active, profile, generation]);
+
+  const startNew = useCallback(() => {
+    // Cleared *before* the rebuild so the effect cannot read a stale id, and
+    // the live id is dropped immediately so nothing keeps addressing the old
+    // session while the new one opens.
+    clearDurableSessionId(profile);
+    forceFreshRef.current = true;
+    setLiveId(null);
+    setDurableId(null);
+    setError(null);
+    setGeneration((n) => n + 1);
+  }, [profile]);
 
   const submit = useCallback(async (text: string): Promise<SubmitOutcome> => {
     const session = sessionRef.current;
@@ -142,6 +188,7 @@ export function useNativeChat(
     interrupt,
     respondApproval,
     respondClarify,
+    startNew,
     error,
   };
 }

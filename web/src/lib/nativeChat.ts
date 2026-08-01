@@ -66,9 +66,27 @@ export type NativeChatStatus =
 /** What the gateway did with a prompt. `queued` is a success, not a failure. */
 export type SubmitOutcome = "accepted" | "queued" | "steered";
 
+/** One stored turn, as `session.resume` returns it. */
+export interface ResumedMessage {
+  role: string;
+  content?: string;
+  timestamp?: number | string | null;
+}
+
 export interface NativeChatOptions {
   /** Every gateway event for *this* session, in arrival order. */
   onEvent(event: GatewayEvent): void;
+  /**
+   * The transcript `session.resume` handed back, delivered *before* any live
+   * event is forwarded.
+   *
+   * Resume returned `messages` and this controller read only the identity
+   * fields, so a refresh reattached to a running session and showed an empty
+   * feed — execution continued against a conversation the owner could no
+   * longer see. Ordering is the other half: applying history after live
+   * deltas have already landed would interleave the past into the present.
+   */
+  onHistory?(messages: ResumedMessage[]): void;
   onStatusChange?(status: NativeChatStatus): void;
   /** Terminal-width hint the gateway uses for its own formatting. */
   cols?: number;
@@ -189,6 +207,7 @@ export class NativeChatSession {
           const res = await this.transport.request<{
             session_id?: string;
             resumed?: string;
+            messages?: ResumedMessage[];
           }>("session.resume", {
             session_id: resumeId,
             cols: this.options.cols ?? 80,
@@ -200,6 +219,10 @@ export class NativeChatSession {
           if (res?.session_id) {
             this.liveId = res.session_id;
             this.storedId = res.resumed ?? resumeId;
+            // Before `subscribe()` below, deliberately: the feed has to hold
+            // the past before the present starts arriving.
+            const history = Array.isArray(res.messages) ? res.messages : [];
+            this.options.onHistory?.(history);
           }
         } catch (err) {
           // Fall back ONLY when the server says the session is genuinely gone.
@@ -304,11 +327,22 @@ export class NativeChatSession {
   ): Promise<void> {
     if (this.closed) throw new Error("session is closed");
     if (!this.liveId) throw new Error("session is not open");
-    await this.transport.request("approval.respond", {
-      session_id: this.liveId,
-      choice,
-      all,
-    });
+    const res = await this.transport.request<{ resolved?: number }>(
+      "approval.respond",
+      { session_id: this.liveId, choice, all },
+    );
+    // The gateway answers with how many approvals it actually resolved, and
+    // zero is a *successful RPC* that decided nothing — the request expired,
+    // or it was already answered elsewhere. Treating a fulfilled envelope as
+    // consent closed the card while the agent stayed blocked, which is the
+    // worst possible reading: the owner believes they answered.
+    const resolved = typeof res?.resolved === "number" ? res.resolved : 0;
+    if (resolved < 1) {
+      throw new Error(
+        "the gateway did not record that decision — the request may have " +
+          "expired or already been answered",
+      );
+    }
   }
 
   /**
@@ -322,11 +356,17 @@ export class NativeChatSession {
     if (this.closed) throw new Error("session is closed");
     if (!this.liveId) throw new Error("session is not open");
     if (!requestId) throw new Error("clarify answers need the request they answer");
-    await this.transport.request("clarify.respond", {
-      session_id: this.liveId,
-      request_id: requestId,
-      answer,
-    });
+    const res = await this.transport.request<{ status?: string }>(
+      "clarify.respond",
+      { session_id: this.liveId, request_id: requestId, answer },
+    );
+    // Same rule. `expired` comes back on a fulfilled envelope, so only an
+    // explicit `ok` resolves the card.
+    if (res?.status !== "ok") {
+      throw new Error(
+        `the gateway did not record that answer (${res?.status ?? "no status"})`,
+      );
+    }
   }
 
   /** Ask the gateway to wind down the live turn. Safe to call when idle. */

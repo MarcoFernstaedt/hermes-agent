@@ -27,6 +27,8 @@ function fakeTransport(overrides: Partial<Record<string, unknown>> = {}) {
     "session.resume": { session_id: "live-2", resumed: "durable-1" },
     "prompt.submit": { status: "ok" },
     "session.interrupt": {},
+    "approval.respond": { resolved: 1 },
+    "clarify.respond": { status: "ok" },
     ...overrides,
   };
 
@@ -454,6 +456,109 @@ describe("NativeChatSession", () => {
       const before = t.calls.length;
       await expect(s.respondClarify("", "blue")).rejects.toThrow(/request/);
       expect(t.calls.length).toBe(before);
+    });
+  });
+
+  describe("the server's answer is authoritative", () => {
+    it("refuses to call an approval resolved when the gateway resolved nothing", async () => {
+      // `resolved: 0` is a *successful RPC* that decided nothing — expired, or
+      // already answered elsewhere. Treating the envelope as consent closed the
+      // card while the agent stayed blocked, and the owner believed they had
+      // answered.
+      const t = fakeTransport({ "approval.respond": { resolved: 0 } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await expect(s.respondApproval("deny")).rejects.toThrow(/did not record/);
+    });
+
+    it("accepts an approval the gateway did resolve", async () => {
+      const t = fakeTransport({ "approval.respond": { resolved: 1 } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await expect(s.respondApproval("deny")).resolves.toBeUndefined();
+    });
+
+    it("treats a missing resolved count as not resolved", async () => {
+      const t = fakeTransport({ "approval.respond": {} });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await expect(s.respondApproval("once")).rejects.toThrow(/did not record/);
+    });
+
+    it("refuses an expired clarify answer", async () => {
+      const t = fakeTransport({ "clarify.respond": { status: "expired" } });
+      const s = new NativeChatSession(t, { onEvent: () => {} });
+      await s.open();
+      await expect(s.respondClarify("r1", "blue")).rejects.toThrow(/did not record/);
+    });
+  });
+
+  describe("resume restores the transcript", () => {
+    it("delivers the messages the gateway returned", async () => {
+      // Resume returned `messages` and this controller read only the identity
+      // fields, so a refresh reattached to a running session and showed an
+      // empty feed.
+      const history: unknown[] = [];
+      const t = fakeTransport({
+        "session.resume": {
+          session_id: "live-2",
+          resumed: "durable-1",
+          messages: [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "hi" },
+          ],
+        },
+      });
+      const s = new NativeChatSession(t, {
+        onEvent: () => {},
+        onHistory: (m) => history.push(...m),
+      });
+      await s.open("durable-1");
+
+      expect(history).toHaveLength(2);
+      expect((history[0] as { content: string }).content).toBe("hello");
+    });
+
+    it("delivers history before any live event", async () => {
+      // Applying the past after the present has started interleaves them.
+      const order: string[] = [];
+      const t = fakeTransport({
+        "session.resume": {
+          session_id: "live-2",
+          resumed: "durable-1",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      const s = new NativeChatSession(t, {
+        onEvent: () => order.push("live"),
+        onHistory: () => order.push("history"),
+      });
+      await s.open("durable-1");
+      t.emit("message.delta", ev("message.delta", "live-2"));
+
+      expect(order).toEqual(["history", "live"]);
+    });
+
+    it("copes with a resume that carries no transcript", async () => {
+      const calls: number[] = [];
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, {
+        onEvent: () => {},
+        onHistory: (m) => calls.push(m.length),
+      });
+      await s.open("durable-1");
+      expect(calls).toEqual([0]);
+    });
+
+    it("does not deliver history for a fresh session", async () => {
+      const calls: unknown[] = [];
+      const t = fakeTransport();
+      const s = new NativeChatSession(t, {
+        onEvent: () => {},
+        onHistory: (m) => calls.push(m),
+      });
+      await s.open();
+      expect(calls).toEqual([]);
     });
   });
 
