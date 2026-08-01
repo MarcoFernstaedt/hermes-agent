@@ -77,6 +77,40 @@ protection, referrer policy, permissions policy, nosniff. `connect-src` allows
 **Undo, idempotency, native chat transport.** Carried from the prior review
 cycles; see the merge commit.
 
+### Follow-up delta — what it superseded, and what I built
+
+The follow-up brief changed four decisions from the original. Each is named
+here with what replaced it.
+
+| Original requirement | Superseded by | Status |
+|---|---|---|
+| "Add explicit push-to-talk, **not** always-listening behavior" | Push-to-talk **and** optional wake-word; push-to-talk stays the default | Modelled in `sensorConsent.ts`, tested. Capture path still not built. |
+| "Auto-speak only when the turn began by voice **or** Marco explicitly enables it" | Every voice-started turn speaks its full response, text always retained | `shouldSpeakReply()` + tests |
+| Camera: "user-initiated … after explicit permission", one mode | Two separate switches — session camera, and a distinct emergency camera that stays inert | `cameraNeedsConfirmation()` / `emergencyCameraStatusText()`, tested as *separate* capabilities |
+| Location: "coarse/current location only … no precise history" | Precise allowed for a named workflow with the shortest useful retention | `LocationPurpose` with per-purpose precision + retention, tested |
+
+**Outcome ranking.** `web/src/lib/outcomeRanking.ts` produces a top three from
+real projected state, marks one recommendation, and gives every item a `why`
+in plain language — a recommendation the owner cannot interrogate is either
+obeyed without thought or ignored, and both are worse than none. Consequence
+and recovery time dominate; `income` is worth 8 points against consequence's
+100, and a test asserts a severe irrecoverable health item outranks an income
+task. Marco's override wins outright, keeps its own explanation, and is pulled
+into view even when it scored outside the top three.
+
+**Sensor consent.** `web/src/lib/sensorConsent.ts` holds the rules for
+microphone, camera, location and emergency in one testable place. Wake-word
+listening ends when the dashboard closes, with no action from Marco.
+`mayUploadAmbientAudio()` returns false unconditionally. Session camera grants
+die with the session rather than on a timer someone must remember. Every state
+has words, so nothing is carried by colour alone.
+
+**Emergency is provably inert.** `canActivateEmergency()` returns `false`
+regardless of input, written as a constant rather than an unsatisfiable
+condition so that completing the configuration cannot accidentally arm it. The
+test enumerates all 256 combinations of the eight config flags and asserts none
+returns true.
+
 ### Not delivered in this candidate
 
 **Voice push-to-talk (Phase 4) is not implemented.** The capability *status*
