@@ -254,6 +254,89 @@ def invalidate_check_fn_cache() -> None:
         _check_fn_last_good.clear()
 
 
+#: How the dispatch-time permission gate behaves.
+#:
+#: ``enforce``  a non-AUTO tool without a valid capability is refused.
+#: ``observe``  the refusal is audited and the call proceeds. **Default.**
+#:
+#: Default `observe` on purpose, and it is a real limitation rather than a
+#: preference. `get_tier()` returns ALWAYS_APPROVAL for any *unregistered*
+#: tool — deliberately, so an unknown tool is never treated as safe — and most
+#: tools in this repository have never been registered. Switching straight to
+#: `enforce` would therefore refuse nearly every call in the product, which is
+#: not a safety improvement, it is an outage. `observe` makes the gap
+#: measurable: every call that *would* be refused is audited with its tool
+#: name, so the registration backlog can be worked off against real traffic
+#: and the switch flipped once the audit is quiet.
+#:
+#: This mirrors HERMES_APPROVAL_INTEGRITY_MODE, which exists for the same
+#: reason. Both must reach `enforce` for the tier system to mean anything, and
+#: neither is there yet.
+_GATE_MODE_ENV = "HERMES_TOOL_GATE_MODE"
+
+
+def tool_gate_mode() -> str:
+    import os
+
+    value = (os.environ.get(_GATE_MODE_ENV) or "observe").strip().lower()
+    return value if value in ("enforce", "observe", "off") else "observe"
+
+
+def _capability_refusal(name: str, args: dict, capability) -> "str | None":
+    """The refusal message for a gated call, or None to proceed.
+
+    Fails closed: any error establishing the capability is a refusal, because
+    an exception in the permission layer must never read as permission.
+    """
+    mode = tool_gate_mode()
+    if mode == "off":
+        return None
+    try:
+        from hermes_cli import execution_capability as cap
+
+        trusted = _trusted_tools()
+        if not cap.requires_capability(name, trusted):
+            return None
+        cap.consume(capability, tool_name=name, args=args)
+        return None
+    except Exception as exc:
+        message = (
+            f"{name} requires the owner's approval and it was not established: {exc}"
+        )
+        _audit_gate(name, message, enforced=mode == "enforce")
+        return message if mode == "enforce" else None
+
+
+def _trusted_tools() -> tuple:
+    """APPROVAL-tier tools the owner opted into running without a prompt.
+
+    Read at call time and never cached: a trust setting revoked mid-session
+    has to take effect on the next call, not the next restart.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        value = (load_config() or {}).get("approvals", {}).get("trusted_tools", [])
+        return tuple(str(v) for v in value) if isinstance(value, (list, tuple)) else ()
+    except Exception:
+        # Unable to read the trust list ⇒ trust nothing.
+        return ()
+
+
+def _audit_gate(name: str, message: str, *, enforced: bool) -> None:
+    try:
+        from hermes_cli import audit_log
+
+        audit_log.record(
+            actor="agent", module="registry", tool=name,
+            action="capability_missing",
+            outcome="refused" if enforced else "observed",
+            detail={"reason": message[:200], "enforced": enforced},
+        )
+    except Exception:
+        pass
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
@@ -675,6 +758,19 @@ class ToolRegistry:
                 return json.dumps({"error": refusal, "refused": True})
         except Exception:
             pass
+
+        # The permission tier, actually consumed. Until now `resolve()` had no
+        # production caller: a tool's tier was recorded and never enforced, and
+        # this function reached handlers without consulting it — so Gmail was
+        # protected only because its own handler contained a Gmail-shaped gate.
+        #
+        # `capability` is the one-use ticket minted when a human decided. No
+        # ticket, wrong tool, changed arguments, replayed, or expired ⇒ the
+        # handler is not called at all.
+        gate_refusal = _capability_refusal(name, args, kwargs.pop("capability", None))
+        if gate_refusal is not None:
+            return json.dumps({"error": gate_refusal, "refused": True})
+
         try:
             if entry.is_async:
                 from model_tools import _run_async

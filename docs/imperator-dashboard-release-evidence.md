@@ -165,13 +165,27 @@ HERMES_TEST_PATHS="tests/hermes_cli/test_dashboard_auth_password_login.py:tests/
 → **6 files, 142 tests passed, 0 failed.** This is the check that matters most
 for the new outermost middleware.
 
-### Pre-existing failures, attributed
+### Pre-existing failures, attributed — corrected
 
-`tests/tools`: 8498 passed, 19 failed. `tests/hermes_cli`: 9789 passed, 21
-failed. **All pre-existing and environmental** — ssh binaries, ripgrep, man
-pages, systemd, network. Verified by re-running the failing files with this
-work stashed and getting identical failures in both directions. No test was
-deleted or weakened to obtain green.
+An earlier version of this document called the baseline failures
+"ssh/ripgrep/man/systemd/network environmental". That was sloppy and the review
+was right to reject it. They are pre-existing — verified by re-running the
+failing files with this work stashed and getting identical results both
+directions — but they are not all environmental. Accurately:
+
+| Failure | Character |
+|---|---|
+| `atomic_config_write` NameErrors in reasoning and service-tier config tests | a real code defect at baseline |
+| a SQLite journal-mode assertion | a real assertion failure at baseline |
+| a jobs asset-contract failure | a real contract failure at baseline |
+| `test_ssh_environment` (7) | environmental — no ssh binary |
+| `test_execution_flag_detection` (2) | environmental — no man pages |
+| `test_search_error_guard` (2) | environmental — ripgrep/grep behaviour |
+| `test_managed_browserbase_and_modal` (2) | environmental — no network |
+| `test_approval` tee/redirect (3) | environmental — `~` expansion vs real home |
+
+Counts at this candidate: `tests/tools` 8532 passed / 19 failed; the failing
+set is byte-identical to the baseline set. No test was deleted or weakened.
 
 ## A defect this work found in itself
 
@@ -240,14 +254,42 @@ verify `build-info.json` matches and `dirty: false`, restart the service.
 
 ## Rollback
 
+The earlier "revert one merge commit" was wrong: the candidate is many commits
+beyond baseline and a single revert does not reliably restore `fab8f79c9`. Two
+separate procedures, because they answer different questions.
+
+**Runtime rollback — non-destructive, and the one that matters.** The live
+service runs from its own worktree; nothing about the repository state affects
+it until someone checks out a new commit there.
+
 ```
-git checkout main && git revert -m 1 <merge-commit>
+# In the release worktree, pin back to the last known-good commit:
+git -C <release-worktree> fetch origin
+git -C <release-worktree> checkout --detach fab8f79c9d54c1c6a8f1642833aab33f3191b7d1
+cd <release-worktree>/web && npm ci && npm run build
+# verify provenance matches before restarting:
+cat ../hermes_cli/web_dist/build-info.json   # commit fab8f79c9, dirty:false
+# restart the service, then verify health:
+curl -sS https://<host>/api/system/health
 ```
 
-The merge is a single commit; reverting it restores `fab8f79c9`'s tree. No
-migration ran, no schema changed destructively (the undo journal adds a nullable
-column via `ALTER TABLE`, which an older build ignores), and no external state
-was mutated.
+This touches no history and is reversible by checking out the candidate again.
+
+**Repository correction — Imperator Prime's call, not mine.** `main` currently
+contains the candidate. Options, in increasing severity:
+
+1. *Leave it.* Nothing deploys from `main`; the release worktree is pinned.
+   The repository records a candidate that failed review, which is accurate.
+2. *Revert forward.* `git revert --no-commit fab8f79c9..main && git commit`
+   produces one commit restoring the baseline tree while preserving history.
+   Reversible, auditable, and does not rewrite anything.
+3. *Reset.* `git reset --hard fab8f79c9 && git push --force-with-lease`
+   rewrites Marco's `main`. **Requires explicit approval and is not something
+   I will do on my own initiative.**
+
+No schema change is destructive: both new columns are added with
+`ALTER TABLE ... ADD COLUMN`, which an older build ignores, and no data is
+dropped or rewritten by any migration in this candidate.
 
 ## Explicit statement
 
