@@ -127,6 +127,50 @@ def build_approval_preview(
     }
 
 
+def _require_owner_approval(
+    *,
+    preview: dict[str, Any],
+    fingerprint: str,
+    recipient_count: int,
+    subject: str,
+    retrying: bool = False,
+) -> dict[str, Any]:
+    """Block until the owner approves this exact message, or refuse.
+
+    Imported at call time so a failure to import the approval machinery cannot
+    be answered by sending anyway — an ImportError here becomes a refusal, not
+    an ungated send.
+    """
+    reason = (
+        f"Send an email from {preview['from']} to {recipient_count} "
+        f"recipient(s), subject {subject!r}. This cannot be undone."
+    )
+    if retrying:
+        reason += (
+            " An earlier attempt at this exact message failed without a "
+            "confirmed outcome; if it failed after delivery, this would be a "
+            "second copy."
+        )
+    try:
+        from tools.approval import request_tool_approval
+
+        return request_tool_approval(
+            "gmail_send",
+            reason,
+            # The message itself is the grain. Any change to who it is from,
+            # who receives it, or what it says produces a different key — so
+            # one approval can never authorise a different email.
+            rule_key=f"gmail_send:{fingerprint}",
+            preview=preview,
+            once_only=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return {
+            "approved": False,
+            "message": f"cannot ask for approval, so nothing is sent: {exc}",
+        }
+
+
 def _handle_gmail_send(args: dict, **_kw) -> str:
     from hermes_cli.actions.idempotency import IdempotencyStore
     from hermes_cli.google.compose import build_raw_message
@@ -187,6 +231,36 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
     retry_of: dict[str, Any] | None = (
         prior if prior and prior.get("state") == "failed" else None
     )
+
+    # The human gate. Registering ALWAYS_APPROVAL records a tier; nothing in
+    # the dispatch path turned that tier into a gate, so the strictest label in
+    # the system had no bearing on whether mail went out. It does now, and it
+    # is asked *after* the idempotency claim so a duplicate that is not about
+    # to happen never interrupts the owner.
+    #
+    # Keyed on the fingerprint: an approval authorises exactly the message the
+    # owner read, and any change to sender, recipients, subject or body is a
+    # different key and a fresh ask. `once_only` refuses the session cache,
+    # `--yolo` and `cron_mode: approve` — an irreversible send that can be
+    # pre-approved is an APPROVAL-tier action wearing a stricter label.
+    approval = _require_owner_approval(
+        preview=build_approval_preview(
+            sender=sender, to=to, subject=subject, body=body
+        ),
+        fingerprint=fingerprint,
+        recipient_count=len(to),
+        subject=subject,
+        retrying=retry_of is not None,
+    )
+    if not approval.get("approved"):
+        # Release, don't settle: nothing was sent, so a later approved attempt
+        # is a first attempt and must not be mistaken for a duplicate.
+        store.release(key)
+        _audit("send.denied", target=f"{len(to)} recipient(s)",
+               detail={"subject": subject, "fingerprint": fingerprint[:16]})
+        return tool_error(
+            approval.get("message") or "The owner did not approve this send."
+        )
 
     try:
         raw = build_raw_message(to=to, subject=subject, body=body)

@@ -2645,6 +2645,8 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    extra_approval_data: Optional[dict] = None,
+    once_only: bool = False,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2681,6 +2683,19 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        extra_approval_data: Structured fields merged into the payload the
+            gateway approval card receives — a preview of what is about to
+            happen, so the owner judges the action rather than a one-line
+            label. Cannot overwrite the allowlist keys: a caller-supplied
+            ``pattern_key`` would let a preview redirect which pattern the
+            decision is recorded against.
+        once_only: This action may be approved for *this* call and no other.
+            No session cache short-circuit, no ``--yolo`` bypass, no
+            ``cron_mode: approve`` auto-approval, and a ``session``/``always``
+            answer is honoured for this call but never persisted. Reserved for
+            irreversible actions, where a standing grant is the whole risk: an
+            action that can be pre-approved once and then repeated unattended
+            is an APPROVAL-tier action wearing a stricter label.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
@@ -2689,11 +2704,11 @@ def _run_approval_gate(
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if not once_only and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if not once_only and is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     if approval_callback is None:
@@ -2709,7 +2724,9 @@ def _run_approval_gate(
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
+            # `cron_mode: approve` is a standing grant by another name, so a
+            # once-only action refuses it the way it refuses --yolo.
+            if once_only or _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
                     "message": cron_deny_message,
@@ -2764,6 +2781,20 @@ def _run_approval_gate(
                 "description": redact_sensitive_text(description),
                 "allow_permanent": True,
             }
+            if extra_approval_data:
+                # Merged, then the allowlist keys re-asserted: a caller-supplied
+                # `pattern_key` would let a preview redirect which pattern the
+                # decision is recorded against — approving one thing and
+                # granting another.
+                approval_data.update(extra_approval_data)
+                approval_data["pattern_key"] = pattern_key
+                approval_data["pattern_keys"] = [pattern_key]
+            if once_only:
+                # Say so in the payload, not only in the handler. A card that
+                # offers "always" for an action that cannot be granted always
+                # is a card that lies about what the button does.
+                approval_data["allow_permanent"] = False
+                approval_data["choices"] = ["once", "deny"]
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2801,12 +2832,16 @@ def _run_approval_gate(
                     "user_consent": False,
                 }
 
-            if choice == "session":
-                approve_session(session_key, pattern_key)
-            elif choice == "always":
-                approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
+            # A once-only decision covers this call and nothing after it, so
+            # nothing is written to the session or permanent allowlist even if
+            # a surface managed to send back "session" or "always".
+            if not once_only:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
             return {"approved": True, "message": None}
 
         # No notify callback (e.g. API server without an attached chat):
@@ -2843,12 +2878,16 @@ def _run_approval_gate(
             "description": description,
         }
 
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+    # Same rule as the gateway branch: a once-only answer is honoured for this
+    # call and written nowhere. The CLI prompt still offers [s]ession/[a]lways
+    # — refusing to *persist* them is what makes the tier non-negotiable.
+    if not once_only:
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}
 
@@ -2943,6 +2982,8 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    preview: Optional[dict] = None,
+    once_only: bool = False,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -2970,6 +3011,16 @@ def request_tool_approval(
             on the same tool).
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
+        preview: Structured description of exactly what will happen, carried
+            on the approval request so the card shows the thing being judged
+            rather than a one-line label. For a send that means the sender,
+            every recipient, the subject and the body — deliberately *not*
+            redacted, because the card must describe the real action and a
+            redacted preview would describe a different one.
+        once_only: Approval covers this call and no other — no session cache,
+            no ``--yolo`` bypass, no ``cron_mode: approve``, nothing persisted.
+            This is what ALWAYS_APPROVAL means in practice, and it is the only
+            thing that makes the tier different from APPROVAL.
 
     Returns:
         ``{"approved": True, "message": None}`` when allowed, or
@@ -3021,6 +3072,8 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        extra_approval_data={"preview": preview} if preview else None,
+        once_only=once_only,
     )
 
 

@@ -21,6 +21,34 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+@pytest.fixture(autouse=True)
+def approved(monkeypatch):
+    """Stand in for the owner, and record what they were shown.
+
+    Every send goes through the human gate now, so without this the tests
+    would fail closed — correctly, but uninformatively. Returning the captured
+    call lets each test assert on the card the owner would actually see,
+    without a Google credential anywhere in the loop.
+    """
+    calls: list[dict] = []
+
+    def gate(tool_name, reason, **kw):
+        calls.append({"tool": tool_name, "reason": reason, **kw})
+        return {"approved": True, "message": None}
+
+    monkeypatch.setattr("tools.approval.request_tool_approval", gate)
+    return calls
+
+
+@pytest.fixture
+def denied(monkeypatch):
+    """The owner says no."""
+    def gate(tool_name, reason, **kw):
+        return {"approved": False, "message": "BLOCKED: Action denied by user."}
+
+    monkeypatch.setattr("tools.approval.request_tool_approval", gate)
+
+
 @pytest.fixture
 def sent(monkeypatch):
     """Capture what would have gone out, without going out."""
@@ -319,6 +347,84 @@ class TestApprovalPreview:
 
         args = dict(sender="m@x.com", to=["a@x.com"], subject="S", body="B")
         assert build_approval_preview(**args)["fingerprint"] == send_fingerprint(**args)
+
+
+class TestNothingLeavesWithoutTheOwnersConsent:
+    """The gate, wired — not registered and then never consulted.
+
+    `register_tool_permission(ALWAYS_APPROVAL)` records a tier. Nothing in the
+    dispatch path turned that tier into a human gate, so the strictest label in
+    the system had no effect on whether mail went out. These tests are about
+    the wiring, and they need no Google credential to run.
+    """
+
+    def test_a_denied_send_does_not_go_out(self, home, sent, denied):
+        assert errored(**ARGS)
+        assert sent == []
+
+    def test_a_denied_send_leaves_the_message_sendable_later(self, home, sent, denied):
+        # The claim must be released, not settled: nothing happened, so a
+        # later approved attempt is a first attempt and not a duplicate.
+        errored(**ARGS)
+
+        from hermes_cli.actions.idempotency import IdempotencyStore
+        from hermes_constants import get_hermes_home
+        from tools.gmail_send_tool import send_fingerprint
+
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
+        assert store.lookup(f"gmail_send:{fp}") is None
+
+    def test_the_gate_is_asked_before_anything_is_sent(self, home, sent, approved):
+        call(**ARGS)
+        assert [c["tool"] for c in approved] == ["gmail_send"]
+
+    def test_the_card_carries_the_message_the_owner_must_judge(self, home, sent, approved):
+        call(**{**ARGS, "to": ["bob@example.com", "eve@example.com"],
+                "body": "Paying today."})
+        preview = approved[0]["preview"]
+
+        assert preview["from"] == "marco@example.com"
+        # Every recipient, not a count.
+        assert preview["to"] == ["bob@example.com", "eve@example.com"]
+        assert preview["subject"] == "Invoice"
+        assert "Paying today." in preview["body_preview"]
+        assert preview["irreversible"] is True
+
+    def test_the_approval_is_once_only(self, home, sent, approved):
+        # A session or permanent grant would let the agent send any mail
+        # unprompted for the rest of that session — the exact thing
+        # ALWAYS_APPROVAL exists to prevent.
+        call(**ARGS)
+        assert approved[0]["once_only"] is True
+
+    def test_each_distinct_message_is_approved_separately(self, home, sent, approved):
+        call(**ARGS)
+        call(**{**ARGS, "body": "Actually, paying tomorrow."})
+        keys = [c["rule_key"] for c in approved]
+        assert len(keys) == 2
+        assert keys[0] != keys[1], "one approval must not cover a different message"
+
+    def test_the_approval_key_is_the_message_that_will_be_sent(self, home, sent, approved):
+        from tools.gmail_send_tool import send_fingerprint
+
+        call(**ARGS)
+        fp = send_fingerprint(
+            sender="marco@example.com", to=ARGS["to"],
+            subject=ARGS["subject"], body=ARGS["body"],
+        )
+        assert approved[0]["rule_key"] == f"gmail_send:{fp}"
+        assert approved[0]["preview"]["fingerprint"] == fp
+
+    def test_a_suppressed_duplicate_does_not_ask_again(self, home, sent, approved):
+        # Nothing is about to happen, so there is nothing to consent to.
+        call(**ARGS)
+        second = call(**ARGS)
+        assert second["duplicate_suppressed"] is True
+        assert len(approved) == 1
 
 
 class TestAuditCarriesNoContent:
