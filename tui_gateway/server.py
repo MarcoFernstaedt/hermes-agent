@@ -5996,6 +5996,118 @@ def _(rid, params: dict) -> dict:
     )
 
 
+# ── Methods: undo ────────────────────────────────────────────────────
+#
+# The journal filled up correctly and nothing ever read it back. These are the
+# first production callers of `hermes_cli.undo`, and the reason the states that
+# exist so a person can act on them — `compensation_failed`, `undo_failed`,
+# `reversal_unknown` — are reachable by a person at all.
+
+
+@method("undo.list")
+def _(rid, params: dict) -> dict:
+    """The undo stack, the repair list, and anything mid-reversal.
+
+    Three lists rather than one, because they are three different claims about
+    the world: this can be taken back, this could not be and needs somebody,
+    and this is being taken back right now. Collapsing them would mean
+    reporting one of the last two as a state it is not in.
+
+    ``session_id`` scopes the stack to one conversation. It does *not* scope
+    the repair list: an unreversed action still matters in whatever session
+    the owner happens to be looking at, and hiding it behind the session that
+    caused it is how it stays unnoticed.
+    """
+    from hermes_cli.undo import surface
+
+    session_id = str(params.get("session_id") or "")
+    try:
+        limit = int(params.get("limit", 50) or 50)
+    except (TypeError, ValueError):
+        return _err(rid, -32602, "limit must be a number")
+    try:
+        return _ok(rid, surface.summary(session_id=session_id, limit=limit))
+    except Exception as exc:
+        return _err(rid, 5040, f"the undo journal could not be read: {exc}")
+
+
+@method("undo.preview")
+def _(rid, params: dict) -> dict:
+    """What undoing this entry would do, and what stands in the way.
+
+    Nothing is changed. A conflict comes back as the structured report — which
+    note, what the undo expected to find there, what is actually there — so the
+    confirmation the owner is shown describes the real situation rather than
+    saying "this failed".
+    """
+    from hermes_cli.undo import surface
+
+    entry_id = str(params.get("entry_id") or "").strip()
+    if not entry_id:
+        return _err(rid, -32602, "entry_id is required")
+    try:
+        return _ok(rid, surface.preview(entry_id))
+    except Exception as exc:
+        return _err(rid, 5041, f"that undo entry could not be read: {exc}")
+
+
+@method("undo.apply")
+def _(rid, params: dict) -> dict:
+    """Reverse one recorded action, or say why it was refused.
+
+    ``force`` is the owner's answer to a conflict they have already been shown,
+    carried back — not a way to skip the check. A refusal leaves the entry
+    exactly as it was, still offerable, because a conflict is the undo working
+    rather than the undo breaking.
+
+    Omitting ``entry_id`` undoes the most recent offerable action, which is what
+    "undo that" means from a chat composer.
+    """
+    from hermes_cli.undo import surface
+
+    entry_id = str(params.get("entry_id") or "").strip()
+    force = bool(params.get("force"))
+    session_id = str(params.get("session_id") or "")
+    try:
+        if entry_id:
+            result = surface.apply(entry_id, force=force)
+        else:
+            result = surface.apply_last(
+                actor=str(params.get("actor") or "agent"),
+                session_id=session_id,
+                force=force,
+            )
+            if result is None:
+                return _ok(rid, {"undone": False, "reason": "nothing to undo"})
+    except surface.UndoRefused as exc:
+        # Not an RPC error: the call worked and the answer is "no, and here is
+        # why". An error envelope would lose the report, which is the only part
+        # a screen can act on. Nothing was attempted, so the entry is untouched
+        # and still offerable.
+        return _ok(rid, {
+            "undone": False,
+            "refused": True,
+            "message": str(exc),
+            "conflict": exc.report,
+            "can_force": bool(exc.report) and exc.report.get("kind") != "backup_missing",
+        })
+    except surface.UndoFailed as exc:
+        # Also not an RPC error, and deliberately not the same answer as a
+        # refusal: the reversal ran and did not take, so the entry is now in a
+        # repair state and the owner needs to be sent there rather than told to
+        # try again.
+        return _ok(rid, {
+            "undone": False,
+            "failed": True,
+            "needs_repair": True,
+            "message": str(exc),
+            "entry": exc.entry,
+        })
+    except Exception as exc:
+        return _err(rid, 5042, f"the undo could not be run: {exc}")
+    return _ok(rid, {"undone": True, "entry": result})
+
+
 @method("session.list")
 def _(rid, params: dict) -> dict:
     db = _get_db()

@@ -455,7 +455,16 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
+            # `_web_ui_build_needed` reads the *real* working tree: it compares
+            # every source file's mtime against `hermes_cli/web_dist`. On a
+            # checkout where the dashboard has just been built it returns False,
+            # the build is skipped, and `mock_idle.assert_called_once()` below
+            # fails — so this test passed or failed according to whether
+            # somebody had run `npm run build`, which is not what it is about.
+            # Staleness has its own tests in `test_web_ui_build.py`; this one is
+            # about the command and cwd the build is invoked with.
             cmd_update(mock_args)
 
         npm_calls = [

@@ -4702,7 +4702,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval, resolve_oldest_gateway_approval,
         )
 
         if not has_blocking_approval(session_key):
@@ -4763,7 +4763,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval, resolve_oldest_gateway_approval,
         )
 
         if not has_blocking_approval(session_key):

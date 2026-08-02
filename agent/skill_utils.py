@@ -323,46 +323,61 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
     """Test hook — drop the shared raw config cache."""
     _RAW_CONFIG_CACHE.clear()
+    _EXTERNAL_DIRS_CACHE.clear()
+
+
+def _config_digest(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with a shared mtime+size keyed cache.
+    """Read config.yaml with a shared content-keyed cache.
 
     This module intentionally avoids importing ``hermes_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
     win without pulling the heavier CLI config stack into startup.
+
+    Keyed on the file's contents rather than on ``(mtime_ns, size)``. The stat
+    pair is not a fingerprint: a rewrite that keeps the length and lands inside
+    the filesystem's timestamp granularity is invisible to it, and the result
+    is a stale parse served as current configuration — a disabled skill that
+    stays enabled, with nothing reporting a problem. Reading the text is not
+    extra work: the cache exists to skip the YAML parse (~85ms on a non-trivial
+    config), which the read is a rounding error against.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return {}
     try:
-        stat = config_path.stat()
-        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+        text = config_path.read_text(encoding="utf-8")
+        cache_key: Optional[Tuple[str, str]] = (
+            str(config_path), _config_digest(text)
+        )
     except OSError:
-        cache_key = None
+        return {}
 
-    if cache_key is not None:
-        cached = _RAW_CONFIG_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+    cached = _RAW_CONFIG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = yaml_load(text)
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
     if not isinstance(parsed, dict):
         return {}
 
-    if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
+    _RAW_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE[cache_key] = parsed
     return parsed
 
 
@@ -420,7 +435,7 @@ def _normalize_string_set(values) -> Set[str]:
 # which becomes the dominant cost of ``hermes`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, str], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -445,13 +460,16 @@ def get_external_skills_dirs() -> List[Path]:
     if not config_path.exists():
         return []
 
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
+    # Cache key: (absolute path, content digest). An mtime-only key served the
+    # previous answer whenever two writes landed inside one timestamp tick —
+    # which is a same-second edit, not an exotic race.
     try:
-        stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+        cache_key: Optional[Tuple[str, str]] = (
+            str(config_path),
+            _config_digest(config_path.read_text(encoding="utf-8")),
+        )
     except OSError:
-        cache_key = None  # type: ignore[assignment]
+        cache_key = None
 
     if cache_key is not None:
         cached = _EXTERNAL_DIRS_CACHE.get(cache_key)

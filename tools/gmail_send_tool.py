@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, List
+from typing import Any, List, Optional
 
 from tools.registry import registry, tool_error, tool_result
 
