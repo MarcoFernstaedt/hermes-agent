@@ -12,7 +12,7 @@ secret value.
 ## What this evidence is bound to
 
 Branch `claude/imperator-dashboard-mobile-xw09ri`, ending at commit
-`__FINAL_COMMIT__`, tree `__FINAL_TREE__`. That is the last *code* commit; this
+`1009624d4ef4b841c01020e3f5c634c7305d9a2c`, tree `f869c0454b6f75fcf060374ea6c78333037380f1`. That is the last *code* commit; this
 document is committed on top of it, so the tree recorded above is the one every
 claim below was verified against. If `git rev-parse HEAD~1` does not match it,
 this document has drifted and should be regenerated rather than trusted.
@@ -24,6 +24,16 @@ The commits this candidate adds over the previous FAIL-HOLD candidate
 | --- | --- | --- |
 | `5e8691e4e` | `6a17f2457` | per-call tier escalation; durable prompt idempotency; Gmail outcome classification; voice status truthfulness |
 | `8b2aa9092` | `1d812449b` | the undo surface (RPC + `hermes undo`); content-keyed cache invalidation; the missing slash-command import |
+| `b00c133b4` | `86d000cbf` | the approval fixtures, updated to the id-and-actor contract the gateway now enforces |
+| `1009624d4` | `f869c0454` | `observe` measures without asking — a card whose answer is discarded is worse than no card |
+
+**These commits are unsigned.** `commit.gpgsign` is on and `user.signingkey`
+points at `/home/claude/.ssh/commit_signing_key.pub`, which is a zero-byte file
+with no matching private key anywhere in the container, so git produces an
+unsigned commit without complaining. Every commit already on this branch is in
+the same state, including `0e52f3a8c` — the candidate the last review examined
+— so this is the container's condition rather than a change made here. Signing
+needs the key material provisioned; it cannot be fixed from inside a commit.
 
 ## The three kinds of evidence below
 
@@ -50,13 +60,13 @@ credentials, no network calls to a provider, and no deployment.
 
 | command | result |
 | --- | --- |
-| `HERMES_TEST_PATHS=tests HERMES_TEST_WORKERS=8 python scripts/run_tests_parallel.py -q` | __PY_RESULT__ |
-| `npm run typecheck --workspace web` | __TSC_RESULT__ |
-| `npm test --workspace web -- --run` | __VITEST_RESULT__ |
-| `npm run lint --workspace web` | __LINT_RESULT__ |
-| `npm run build --workspace web` | __BUILD_RESULT__ |
-| `npm test` | __NPM_TEST_RESULT__ |
-| `npm run check` | __NPM_CHECK_RESULT__ |
+| `HERMES_TEST_PATHS=tests HERMES_TEST_WORKERS=8 python scripts/run_tests_parallel.py -q` | **2183 files, 44923 passed, 0 failed** in 1400.6s (8 workers) |
+| `npm run typecheck --workspace web` | **pass** — `tsconfig.app.json` and `tsconfig.node.json`, no errors |
+| `npm test --workspace web -- --run` | **75 files, 766 passed, 0 failed** |
+| `npm run lint --workspace web` | **pass** — eslint, no findings |
+| `npm run build --workspace web` | **pass** |
+| `npm test` | **not runnable** — the repo root defines no `test` script (`npm error Missing script: "test"`). The workspace suites are covered by the `npm test --workspace web` row above. |
+| `npm run check` | **fails, pre-existing** — 5 TypeScript errors in `apps/bootstrap-installer` because `@tauri-apps/api` is declared in its `package.json` and not installed in this container. Verified identical at the failed candidate `0e52f3a8c`, so it is environmental and not caused by this work. |
 
 The Python runner is the canonical one: it isolates each file in its own
 subprocess, and a plain `pytest tests/` gives different results because
@@ -138,8 +148,8 @@ that refuses after the side effect is not a gate.
 
 | check | result |
 | --- | --- |
-| `git status --porcelain` after the final commit | __WORKTREE__ |
-| `~/.qwen/oauth_creds.json` created during the run | __QWEN__ |
+| `git status --porcelain` after the final commit | clean (0 entries) |
+| `~/.qwen/oauth_creds.json` created during the run | no — `~/.qwen` does not exist |
 | live credentials used | none |
 | messages or email sent | none |
 | services deployed or restarted | none |
