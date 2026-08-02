@@ -52,9 +52,9 @@ class TestMatrixExecApprovalReactions:
             content=content,
         )
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 
-        mock_resolve.assert_called_once_with("sess-1", "once")
+        mock_resolve.assert_called_once_with("sess-1", "once", actor="matrix:reaction")
         assert "$target" not in adapter._approval_prompts_by_event
         assert "sess-1" not in adapter._approval_prompt_by_session

@@ -1582,20 +1582,22 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_approval_click_once_maps_to_once(self):
-        """'allow-once' button → resolve_gateway_approval(session, 'once')."""
+        """'allow-once' button → resolve_oldest_gateway_approval(session, 'once')."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, *, actor, reason=None):
+            # `actor` is required now: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            resolve_calls.append((session_key, choice, actor))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
         # imports lazily.
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        orig = tools.approval.resolve_oldest_gateway_approval
+        tools.approval.resolve_oldest_gateway_approval = fake_resolve
         try:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1606,22 +1608,24 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            tools.approval.resolve_oldest_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", "qqbot:button")]
 
     @pytest.mark.asyncio
     async def test_approval_click_always_maps_to_always(self):
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, *, actor, reason=None):
+            # `actor` is required now: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            resolve_calls.append((session_key, choice, actor))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        orig = tools.approval.resolve_oldest_gateway_approval
+        tools.approval.resolve_oldest_gateway_approval = fake_resolve
         try:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1630,22 +1634,24 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            tools.approval.resolve_oldest_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u", "always", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u", "always", "qqbot:button")]
 
     @pytest.mark.asyncio
     async def test_approval_click_deny_maps_to_deny(self):
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, *, actor, reason=None):
+            # `actor` is required now: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            resolve_calls.append((session_key, choice, actor))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        orig = tools.approval.resolve_oldest_gateway_approval
+        tools.approval.resolve_oldest_gateway_approval = fake_resolve
         try:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1654,9 +1660,9 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            tools.approval.resolve_oldest_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u", "deny", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u", "deny", "qqbot:button")]
 
 
     @pytest.mark.asyncio
@@ -1664,13 +1670,15 @@ class TestDefaultInteractionDispatch:
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, *, actor, reason=None):
+            # `actor` is required now: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            resolve_calls.append((session_key, choice, actor))
             return 1
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        orig = tools.approval.resolve_oldest_gateway_approval
+        tools.approval.resolve_oldest_gateway_approval = fake_resolve
         try:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1681,7 +1689,7 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            tools.approval.resolve_oldest_gateway_approval = orig
 
         assert resolve_calls == []
 
@@ -1746,15 +1754,15 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_resolve_exception_is_swallowed(self):
-        """If resolve_gateway_approval raises, we log but don't propagate."""
+        """If resolve_oldest_gateway_approval raises, we log but don't propagate."""
         adapter = self._make_adapter()
 
-        def bad_resolve(session_key, choice, resolve_all=False):
+        def bad_resolve(session_key, choice, *, actor, reason=None):
             raise RuntimeError("boom")
 
         import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = bad_resolve
+        orig = tools.approval.resolve_oldest_gateway_approval
+        tools.approval.resolve_oldest_gateway_approval = bad_resolve
         try:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1764,7 +1772,7 @@ class TestDefaultInteractionDispatch:
             # Must not raise.
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            tools.approval.resolve_oldest_gateway_approval = orig
 
 
 class TestSendExecApproval:

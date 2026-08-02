@@ -88,7 +88,12 @@ class TestBlockingGatewayApproval:
         _clear_approval_state()
 
     def test_register_and_resolve_unblocks_entry(self):
-        """resolve_gateway_approval signals the entry's event."""
+        """Answering a rendered card signals that card's event.
+
+        Answered by id, because a decision must apply to the request the owner
+        was actually shown — not to whatever is at the front of a shared queue
+        when the tap arrives.
+        """
         from tools.approval import (
             register_gateway_notify, unregister_gateway_notify,
             resolve_gateway_approval, has_blocking_approval,
@@ -106,7 +111,9 @@ class TestBlockingGatewayApproval:
         # Resolve from another thread
         def resolve():
             time.sleep(0.1)
-            resolve_gateway_approval(session_key, "once")
+            resolve_gateway_approval(
+                session_key, "once", approval_id=entry.id, actor="test:owner"
+            )
 
         t = threading.Thread(target=resolve)
         t.start()
@@ -115,16 +122,25 @@ class TestBlockingGatewayApproval:
 
         assert resolved is True
         assert entry.result == "once"
+        assert entry.actor == "test:owner"
         unregister_gateway_notify(session_key)
 
     def test_resolve_returns_zero_when_no_pending(self):
-        from tools.approval import resolve_gateway_approval
-        assert resolve_gateway_approval("nonexistent", "once") == 0
+        from tools.approval import resolve_oldest_gateway_approval
+        assert resolve_oldest_gateway_approval(
+            "nonexistent", "once", actor="test:owner"
+        ) == 0
 
-    def test_resolve_all_unblocks_multiple_entries(self):
-        """resolve_gateway_approval with resolve_all=True signals all entries."""
+    def test_deny_all_unblocks_multiple_entries(self):
+        """Bulk *deny* signals every pending entry. Bulk approve does not exist.
+
+        The asymmetry is the point. Withholding consent en masse is safe;
+        granting it en masse grants requests the owner was never shown, because
+        a queue can gain an entry between the card being rendered and the tap
+        arriving.
+        """
         from tools.approval import (
-            resolve_gateway_approval, _ApprovalEntry, _gateway_queues,
+            _ApprovalEntry, _gateway_queues, deny_all_pending,
         )
         session_key = "test-all"
         e1 = _ApprovalEntry({"command": "cmd1"})
@@ -132,23 +148,50 @@ class TestBlockingGatewayApproval:
         e3 = _ApprovalEntry({"command": "cmd3"})
         _gateway_queues[session_key] = [e1, e2, e3]
 
-        count = resolve_gateway_approval(session_key, "session", resolve_all=True)
+        count = deny_all_pending(session_key, actor="test:owner")
         assert count == 3
         assert all(e.event.is_set() for e in [e1, e2, e3])
-        assert all(e.result == "session" for e in [e1, e2, e3])
+        assert all(e.result == "deny" for e in [e1, e2, e3])
+
+    def test_a_positive_choice_is_refused_when_several_are_pending(self):
+        """The migration shim refuses to guess which card was answered.
+
+        A `deny` against the oldest is still allowed: declining the wrong thing
+        costs a retry, approving the wrong thing costs whatever it did.
+        """
+        from tools.approval import (
+            _ApprovalEntry, _gateway_queues, resolve_oldest_gateway_approval,
+        )
+        session_key = "test-ambiguous"
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert resolve_oldest_gateway_approval(
+            session_key, "once", actor="test:owner"
+        ) == 0
+        assert not e1.event.is_set()
+        assert not e2.event.is_set()
+
+        assert resolve_oldest_gateway_approval(
+            session_key, "deny", actor="test:owner"
+        ) == 1
+        assert e1.result == "deny"
+        assert not e2.event.is_set()
 
     def test_resolve_single_pops_oldest_fifo(self):
-        """resolve_gateway_approval without resolve_all resolves oldest first."""
+        """Answering by id resolves exactly that entry, oldest or not."""
         from tools.approval import (
-            resolve_gateway_approval,
-            _ApprovalEntry, _gateway_queues,
+            _ApprovalEntry, _gateway_queues, resolve_gateway_approval,
         )
         session_key = "test-fifo"
         e1 = _ApprovalEntry({"command": "first"})
         e2 = _ApprovalEntry({"command": "second"})
         _gateway_queues[session_key] = [e1, e2]
 
-        count = resolve_gateway_approval(session_key, "once")
+        count = resolve_gateway_approval(
+            session_key, "once", approval_id=e1.id, actor="test:owner"
+        )
         assert count == 1
         assert e1.event.is_set()
         assert e1.result == "once"
@@ -218,8 +261,14 @@ class TestApproveCommand:
         assert entry.event.is_set()
 
     @pytest.mark.asyncio
-    async def test_approve_all_resolves_multiple(self):
-        """/approve all resolves all pending approvals."""
+    async def test_approve_all_is_refused_and_resolves_nothing(self):
+        """`/approve all` granted requests the owner had never been shown.
+
+        A queue can gain an entry between a card being rendered and the tap
+        arriving, so a single "yes to everything" is consent for things that
+        did not exist when it was given. `/deny all` is unaffected: withholding
+        consent en masse is safe.
+        """
         from tools.approval import _ApprovalEntry, _gateway_queues
 
         runner = _make_runner()
@@ -231,13 +280,13 @@ class TestApproveCommand:
         _gateway_queues[session_key] = [e1, e2]
 
         result = await runner._handle_approve_command(_make_event("/approve all"))
-        assert "2 commands" in result
-        assert e1.event.is_set()
-        assert e2.event.is_set()
+        assert "no longer available" in str(result)
+        assert not e1.event.is_set()
+        assert not e2.event.is_set()
 
     @pytest.mark.asyncio
-    async def test_approve_all_session(self):
-        """/approve all session resolves all with session scope."""
+    async def test_deny_all_still_resolves_multiple(self):
+        """The safe half of the pair, kept."""
         from tools.approval import _ApprovalEntry, _gateway_queues
 
         runner = _make_runner()
@@ -248,10 +297,9 @@ class TestApproveCommand:
         e2 = _ApprovalEntry({"command": "cmd2"})
         _gateway_queues[session_key] = [e1, e2]
 
-        result = await runner._handle_approve_command(_make_event("/approve all session"))
-        assert "session" in result.lower()
-        assert e1.result == "session"
-        assert e2.result == "session"
+        await runner._handle_deny_command(_make_event("/deny all"))
+        assert e1.result == "deny"
+        assert e2.result == "deny"
 
     @pytest.mark.asyncio
     async def test_approve_no_pending(self):
@@ -478,7 +526,10 @@ class TestBlockingApprovalE2E:
         assert len(notified) == 1
         assert "rm -rf /important" in notified[0]["command"]
 
-        resolve_gateway_approval(session_key, "once")
+        resolve_gateway_approval(
+            session_key, "once",
+            approval_id=notified[0]["approval_id"], actor="test:owner",
+        )
         t.join(timeout=5)
 
         assert result_holder[0] is not None
@@ -522,7 +573,10 @@ class TestBlockingApprovalE2E:
                 break
             time.sleep(0.05)
 
-        resolve_gateway_approval(session_key, "deny")
+        resolve_gateway_approval(
+            session_key, "deny",
+            approval_id=notified[0]["approval_id"], actor="test:owner",
+        )
         t.join(timeout=5)
 
         assert result_holder[0]["approved"] is False
@@ -634,9 +688,15 @@ class TestBlockingApprovalE2E:
         assert len(notified) == 3
         assert len(_gateway_queues.get(session_key, [])) == 3
 
-        # Approve all at once
-        count = resolve_gateway_approval(session_key, "session", resolve_all=True)
-        assert count == 3
+        # Each card is answered on its own, by the id it carried. Bulk approve
+        # is gone: a queue can gain an entry between a card being rendered and
+        # a tap arriving, so one "yes to everything" is consent for requests
+        # that did not exist when it was given.
+        for card in notified:
+            assert resolve_gateway_approval(
+                session_key, "session",
+                approval_id=card["approval_id"], actor="test:owner",
+            ) == 1
 
         for t in threads:
             t.join(timeout=5)
@@ -691,9 +751,15 @@ class TestBlockingApprovalE2E:
                 break
             time.sleep(0.05)
 
-        # Approve first, deny second
-        resolve_gateway_approval(session_key, "once")   # oldest
-        resolve_gateway_approval(session_key, "deny")   # next
+        # Approve one, deny the other — each by the id of the card it is
+        # answering, so the outcome cannot depend on queue order.
+        first, second = list(_gateway_queues[session_key])[:2]
+        resolve_gateway_approval(
+            session_key, "once", approval_id=first.id, actor="test:owner"
+        )
+        resolve_gateway_approval(
+            session_key, "deny", approval_id=second.id, actor="test:owner"
+        )
 
         for t in threads:
             t.join(timeout=5)
@@ -875,7 +941,10 @@ class TestCrossSessionApprovalIsolation:
             assert len(notified_b) == 0, "approval prompt leaked to session B (#24100)"
             assert "rm -rf /important" in notified_a[0]["command"]
 
-            resolve_gateway_approval("session-A", "once")
+            resolve_gateway_approval(
+                "session-A", "once",
+                approval_id=notified_a[0]["approval_id"], actor="test:owner",
+            )
             t.join(timeout=5)
             assert result_holder[0] is not None
             assert result_holder[0]["approved"] is True
@@ -943,7 +1012,9 @@ class TestCrossSessionApprovalIsolation:
             assert len(qb) == 1, f"sess-B queue should hold 1, got {len(qb)}"
 
             # Resolve ONLY sess-A; sess-B must stay blocked (no cross-leak).
-            resolve_gateway_approval("sess-A", "once")
+            resolve_gateway_approval(
+                "sess-A", "once", approval_id=qa[0].id, actor="test:owner"
+            )
             ta.join(timeout=5)
             assert results["sess-A"] is not None
             assert results["sess-A"]["approved"] is True
@@ -951,13 +1022,19 @@ class TestCrossSessionApprovalIsolation:
             assert len(_gateway_queues.get("sess-B", [])) == 1
 
             # Now resolve sess-B independently.
-            resolve_gateway_approval("sess-B", "once")
+            resolve_gateway_approval(
+                "sess-B", "once", approval_id=qb[0].id, actor="test:owner"
+            )
             tb.join(timeout=5)
             assert results["sess-B"] is not None
             assert results["sess-B"]["approved"] is True
         finally:
-            resolve_gateway_approval("sess-A", "deny")
-            resolve_gateway_approval("sess-B", "deny")
+            # Belt and braces: release anything still parked so the worker
+            # threads unwind. Bulk deny is the right tool — it needs no id.
+            from tools.approval import deny_all_pending
+
+            deny_all_pending("sess-A", actor="test:teardown")
+            deny_all_pending("sess-B", actor="test:teardown")
             ta.join(timeout=2)
             tb.join(timeout=2)
             os.environ.pop("HERMES_GATEWAY_SESSION", None)
