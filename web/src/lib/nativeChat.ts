@@ -25,31 +25,138 @@
  * path into two. It ships behind `isNativeChatEnabled()` so the on-machine
  * agent can exercise it against a real gateway first.
  */
+import { GatewayRpcError } from "@hermes/shared";
 import type { GatewayEvent, GatewayEventName } from "@hermes/shared";
+
+/**
+ * The gateway's code for "that durable session is gone" (pruned, expired, or
+ * from another profile). The *only* condition under which creating a
+ * replacement is correct.
+ */
+export const SESSION_NOT_FOUND = 4007;
+
+/**
+ * Is this the server telling us the session no longer exists?
+ *
+ * Deliberately narrow. A timeout, a dropped socket, an auth failure or a 500
+ * all mean "we do not know" — and answering "we do not know" by creating a
+ * second session is how a transient blip becomes a duplicate session and a
+ * duplicate worker.
+ */
+export function isSessionNotFound(err: unknown): boolean {
+  return err instanceof GatewayRpcError && err.code === SESSION_NOT_FOUND;
+}
 
 /** The slice of a gateway client this controller needs — a seam for tests. */
 export interface NativeChatTransport {
   connect(): Promise<void>;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
   on(event: GatewayEventName, handler: (ev: GatewayEvent) => void): () => void;
+  /**
+   * Connection state, for the drop that happens *after* a successful open.
+   *
+   * Retrying a rejected `open()` covered only the case where the socket never
+   * came up. The far more common one is a session that opened fine and then
+   * lost its connection an hour later — laptop lid, wifi handover, gateway
+   * restart — and that produced no retry at all, because nothing was awaiting
+   * anything. The feed simply stopped, still looking connected.
+   */
+  onState(handler: (state: TransportState) => void): () => void;
   close(): void;
 }
+
+/** The transport's own view of its socket. Mirrors `ConnectionState`. */
+export type TransportState = "idle" | "connecting" | "open" | "closed" | "error";
 
 export type NativeChatStatus =
   | "idle"
   | "connecting"
+  /** A retry is pending after a failed open. Distinct from `connecting` so the
+   *  UI can say "reconnecting" rather than implying a first attempt. */
+  | "reconnecting"
   | "ready"
   | "working"
   | "closed"
+  /** Retries are exhausted. Nothing further happens without the owner. */
   | "error";
 
-/** What the gateway did with a prompt. `queued` is a success, not a failure. */
-export type SubmitOutcome = "accepted" | "queued" | "steered";
+/**
+ * What the gateway did with a prompt. `queued` is a success, not a failure.
+ *
+ * `unresolved` is the one that is neither: an earlier submission of this exact
+ * message was claimed and then interrupted before its outcome was recorded, so
+ * it may or may not be in the conversation. The caller must show it rather than
+ * retrying, because a silent retry is how one prompt becomes two.
+ */
+export type SubmitOutcome = "accepted" | "queued" | "steered" | "unresolved";
+
+/** What the gateway knows about one held message, keyed by its client token. */
+export interface ReconcileReport {
+  token: string;
+  /**
+   * `unknown` — never seen, so the message did not land.
+   * `in_flight` — claimed and still running here.
+   * `settled` — it ran; `result` carries what was decided.
+   * `failed` — proven not to have happened, so a resend is not a duplicate.
+   * `unresolved` — claimed, then interrupted, or the record could not be read.
+   */
+  state: "unknown" | "in_flight" | "settled" | "failed" | "unresolved" | string;
+  /** True only when the gateway can prove the message never landed. */
+  resend?: boolean;
+  result?: Record<string, unknown>;
+}
+
+/**
+ * A fresh idempotency key for one composed message.
+ *
+ * Mint it when the message is composed — not when it is sent — because the
+ * point is that every *send of the same message* carries the same value. A
+ * token minted per attempt would make each retry look like a new prompt, which
+ * is exactly the duplicate it exists to prevent.
+ */
+export function newClientToken(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // Non-secure contexts have no randomUUID. Uniqueness within one session is
+    // all this needs, and a collision would only ever suppress a message the
+    // owner sent twice on purpose in the same millisecond.
+    return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+/** One stored turn, as `session.resume` returns it. */
+export interface ResumedMessage {
+  role: string;
+  content?: string;
+  timestamp?: number | string | null;
+}
 
 export interface NativeChatOptions {
   /** Every gateway event for *this* session, in arrival order. */
   onEvent(event: GatewayEvent): void;
+  /**
+   * The transcript `session.resume` handed back, delivered *before* any live
+   * event is forwarded.
+   *
+   * Resume returned `messages` and this controller read only the identity
+   * fields, so a refresh reattached to a running session and showed an empty
+   * feed — execution continued against a conversation the owner could no
+   * longer see. Ordering is the other half: applying history after live
+   * deltas have already landed would interleave the past into the present.
+   */
+  onHistory?(messages: ResumedMessage[]): void;
   onStatusChange?(status: NativeChatStatus): void;
+  /**
+   * The connection went away after it had been working.
+   *
+   * Separate from `onStatusChange` because it is a request, not a report: the
+   * owner of the retry budget has to decide whether to reopen, and this
+   * controller deliberately does not — a session that reconnects itself on a
+   * schedule nobody can see is how one outage becomes an unbounded reconnect
+   * storm.
+   */
+  onDrop?(): void;
   /** Terminal-width hint the gateway uses for its own formatting. */
   cols?: number;
 }
@@ -71,6 +178,11 @@ const FORWARDED: GatewayEventName[] = [
   "write_approval.failed",
   "clarify.request",
   "clarify.resolved",
+  // Not a feed event. Forwarded because it is the only place session-scoped
+  // signals (model, cwd, credential warnings, title) arrive — and under native
+  // chat there is no second session to read them from. See ChatSidebar's
+  // `ownsSession`.
+  "session.info",
   "error",
 ] as unknown as GatewayEventName[];
 
@@ -89,7 +201,26 @@ export function eventSessionId(ev: GatewayEvent): string | null {
 }
 
 export class NativeChatSession {
-  private sessionId: string | null = null;
+  /**
+   * The live transport identity — what `prompt.submit` and event filtering
+   * must use.
+   *
+   * It may or may not change across a reconnect: the gateway reuses the
+   * existing live sid on a quick reattach (inside the orphan grace) and issues
+   * a fresh one only once the prior live session has been reaped. So this is
+   * always taken from the resume response, never assumed either way.
+   */
+  private liveId: string | null = null;
+  /**
+   * The durable identity. Survives the socket, and is the *only* thing
+   * `session.resume` accepts.
+   *
+   * Keeping one field for both is the defect the real-gateway soak found:
+   * resuming with a dead live sid returned "session not found", the fallback
+   * silently created a second session, and a refresh cost a duplicate
+   * slash-worker instead of reattaching.
+   */
+  private storedId: string | null = null;
   private status: NativeChatStatus = "idle";
   private unsubscribes: Array<() => void> = [];
   private closed = false;
@@ -101,8 +232,14 @@ export class NativeChatSession {
     this.options = options;
   }
 
+  /** The live transport session. Use for prompts and event scoping. */
   get id(): string | null {
-    return this.sessionId;
+    return this.liveId;
+  }
+
+  /** The durable session to hand back to `open()` after a refresh. */
+  get resumeId(): string | null {
+    return this.storedId;
   }
 
   get state(): NativeChatStatus {
@@ -118,11 +255,15 @@ export class NativeChatSession {
   /**
    * Connect, then resume `resumeId` if given and create a session otherwise.
    *
-   * Resume is tried *first* and falls back to create only when the gateway
-   * rejects it. A browser refresh that always created a fresh session is the
-   * documented cause of leaked slash-worker subprocesses (one per refresh) —
-   * the gateway even carries an orphan reaper to mop them up. Preferring resume
-   * means a reconnect reattaches the session that already exists.
+   * Resume is tried *first*, and falls back to create only when the gateway
+   * explicitly reports the durable session is gone (`4007`). A browser refresh
+   * that always created a fresh session is the documented cause of leaked
+   * slash-worker subprocesses (one per refresh) — the gateway even carries an
+   * orphan reaper to mop them up.
+   *
+   * Every other failure propagates. A timeout or a dropped socket means "we do
+   * not know whether that session still exists", and answering that by creating
+   * a second one turns a transient blip into a duplicate session.
    */
   async open(resumeId?: string | null): Promise<string> {
     if (this.closed) throw new Error("session is closed");
@@ -132,31 +273,57 @@ export class NativeChatSession {
 
       if (resumeId) {
         try {
-          const res = await this.transport.request<{ session_id?: string }>(
-            "session.resume",
-            { session_id: resumeId, cols: this.options.cols ?? 80 },
-          );
-          this.sessionId = res?.session_id ?? resumeId;
-        } catch {
-          // The session is gone (pruned, or from another profile). Falling back
-          // to a new one is right; failing the open would strand the owner on a
-          // dead id with no way back.
-          this.sessionId = null;
+          const res = await this.transport.request<{
+            session_id?: string;
+            resumed?: string;
+            messages?: ResumedMessage[];
+          }>("session.resume", {
+            session_id: resumeId,
+            cols: this.options.cols ?? 80,
+          });
+          // The gateway may hand back the *same* live sid (quick reconnect,
+          // before the prior live session was reaped) or a fresh one (cold
+          // reconnect, after). Both are correct; adopt whatever it returns
+          // rather than assuming either.
+          if (res?.session_id) {
+            this.liveId = res.session_id;
+            this.storedId = res.resumed ?? resumeId;
+            // Before `subscribe()` below, deliberately: the feed has to hold
+            // the past before the present starts arriving.
+            const history = Array.isArray(res.messages) ? res.messages : [];
+            this.options.onHistory?.(history);
+          }
+        } catch (err) {
+          // Fall back ONLY when the server says the session is genuinely gone.
+          // Catching everything meant a timeout, a dropped socket or a 500
+          // silently created a duplicate session — the same class of defect as
+          // the identity bug, one layer up.
+          if (!isSessionNotFound(err)) {
+            this.setStatus("error");
+            throw err;
+          }
+          this.liveId = null;
+          this.storedId = null;
         }
       }
 
-      if (!this.sessionId) {
-        const res = await this.transport.request<{ session_id: string }>(
-          "session.create",
-          { cols: this.options.cols ?? 80 },
-        );
+      if (!this.liveId) {
+        const res = await this.transport.request<{
+          session_id: string;
+          stored_session_id?: string;
+        }>("session.create", { cols: this.options.cols ?? 80 });
         if (!res?.session_id) throw new Error("gateway did not return a session id");
-        this.sessionId = res.session_id;
+        this.liveId = res.session_id;
+        // A gateway that omits the durable id leaves nothing to resume with;
+        // recording the live one would guarantee a failed resume next refresh,
+        // so leave it null and let the next open create honestly.
+        this.storedId = res.stored_session_id ?? null;
       }
 
       this.subscribe();
+      this.watchConnection();
       this.setStatus("ready");
-      return this.sessionId;
+      return this.liveId;
     } catch (err) {
       this.setStatus("error");
       throw err;
@@ -181,7 +348,7 @@ export class NativeChatSession {
           // was forwarded. `chat-feed-model` normalises to `sessionId` only
           // *after* parsing the frame, so this layer must use the wire name.
           const evSid = eventSessionId(ev);
-          if (evSid && this.sessionId && evSid !== this.sessionId) return;
+          if (evSid && this.liveId && evSid !== this.liveId) return;
           if (name === "message.start") this.setStatus("working");
           if (name === "message.complete" || name === "error") this.setStatus("ready");
           this.options.onEvent(ev);
@@ -191,31 +358,181 @@ export class NativeChatSession {
   }
 
   /**
+   * Watch for the socket dying under a session that had opened successfully.
+   *
+   * Only a *transition away from open* counts. `closed` before the connection
+   * was ever up is the open path's business, and reporting a drop there would
+   * double-count one failure against a retry budget.
+   */
+  private watchConnection(): void {
+    let wasOpen = false;
+    this.unsubscribes.push(
+      this.transport.onState((state) => {
+        if (this.closed) return;
+        if (state === "open") {
+          wasOpen = true;
+          return;
+        }
+        if (!wasOpen) return;
+        if (state === "closed" || state === "error") {
+          wasOpen = false;
+          this.setStatus("reconnecting");
+          this.options.onDrop?.();
+        }
+      }),
+    );
+  }
+
+  /**
    * Send a prompt. A mid-turn send is queued by the gateway rather than
    * rejected, so `queued` and `steered` are successful outcomes and the caller
    * should render the message as pending, not failed.
+   *
+   * ``clientToken`` is the idempotency key. The caller mints one per composed
+   * message and presents the same one every time it resends that message, so a
+   * submission whose acknowledgement was lost to a dropped socket can simply be
+   * sent again: the gateway recognises the token and replays what it decided
+   * the first time rather than running the prompt twice.
+   *
+   * Without it, a lost ack leaves the client choosing between dropping the
+   * message and duplicating it, and there is no third option that does not
+   * involve guessing.
    */
-  async submit(text: string): Promise<SubmitOutcome> {
+  async submit(text: string, clientToken?: string): Promise<SubmitOutcome> {
     if (this.closed) throw new Error("session is closed");
-    if (!this.sessionId) throw new Error("session is not open");
+    if (!this.liveId) throw new Error("session is not open");
     const body = text.trim();
     if (!body) throw new Error("nothing to send");
 
-    const res = await this.transport.request<{ status?: string }>("prompt.submit", {
-      session_id: this.sessionId,
-      text: body,
-    });
+    const res = await this.transport.request<{ status?: string; queued?: boolean }>(
+      "prompt.submit",
+      {
+        session_id: this.liveId,
+        text: body,
+        ...(clientToken ? { client_token: clientToken } : {}),
+      },
+    );
+    // The gateway signals a mid-turn queue two ways depending on path: a
+// `status` string from the busy-submit handler, and a `queued: true` flag on
+    // the accepted response the real soak observed. Both mean the same thing to
+    // a caller — the message will run — so both map to "queued".
     const status = res?.status;
-    if (status === "queued" || status === "steered") return status;
+    if (status === "queued" || res?.queued === true) return "queued";
+    if (status === "steered") return "steered";
+    if (status === "unresolved") return "unresolved";
     this.setStatus("working");
     return "accepted";
   }
 
+  /**
+   * Ask, before resending, which held messages actually landed.
+   *
+   * A client that went offline holding composed messages has to decide, per
+   * message, between losing it and sending it twice. `submit` makes the second
+   * choice safe once the message has gone, but a client that would rather ask
+   * first needs somewhere to ask — and after a gateway restart the answer is
+   * not in this tab's memory, it is in the gateway's durable record.
+   *
+   * Returns the tokens that are safe to resend. A token is only in that list
+   * when the gateway has no record of it at all, which is the one state that
+   * proves the message did not land. A live claim, a recorded outcome, an
+   * interrupted submission, and a lookup that failed are all excluded, because
+   * none of them is evidence that nothing happened.
+   */
+  async reconcile(clientTokens: string[]): Promise<ReconcileReport[]> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    const tokens = clientTokens.filter((t) => typeof t === "string" && t.trim());
+    if (!tokens.length) return [];
+
+    const res = await this.transport.request<{ tokens?: ReconcileReport[] }>(
+      "prompt.reconcile",
+      { session_id: this.liveId, client_tokens: tokens },
+    );
+    return Array.isArray(res?.tokens) ? res.tokens : [];
+  }
+
+  /**
+   * The subset of `clientTokens` that provably never reached the gateway.
+   *
+   * Fails closed twice over: a token missing from the report is not resent
+   * (the gateway did not answer for it, which is not the same as answering
+   * "no"), and a reconcile call that throws resends nothing at all.
+   */
+  async tokensSafeToResend(clientTokens: string[]): Promise<string[]> {
+    let report: ReconcileReport[];
+    try {
+      report = await this.reconcile(clientTokens);
+    } catch {
+      return [];
+    }
+    const safe = new Set(
+      report.filter((r) => r?.resend === true).map((r) => r.token),
+    );
+    return clientTokens.filter((t) => safe.has(t));
+  }
+
+  /**
+   * Answer a pending approval.
+   *
+   * The PTY path answered by typing a menu digit into a terminal — a number
+   * whose meaning depends on how many options the TUI happened to render. Here
+   * the choice is the choice, so the gateway cannot mistake "deny" for
+   * "always allow" because a list was one row shorter than expected.
+   */
+  async respondApproval(
+    choice: "once" | "session" | "always" | "deny",
+    { all = false }: { all?: boolean } = {},
+  ): Promise<void> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    const res = await this.transport.request<{ resolved?: number }>(
+      "approval.respond",
+      { session_id: this.liveId, choice, all },
+    );
+    // The gateway answers with how many approvals it actually resolved, and
+    // zero is a *successful RPC* that decided nothing — the request expired,
+    // or it was already answered elsewhere. Treating a fulfilled envelope as
+    // consent closed the card while the agent stayed blocked, which is the
+    // worst possible reading: the owner believes they answered.
+    const resolved = typeof res?.resolved === "number" ? res.resolved : 0;
+    if (resolved < 1) {
+      throw new Error(
+        "the gateway did not record that decision — the request may have " +
+          "expired or already been answered",
+      );
+    }
+  }
+
+  /**
+   * Answer a pending clarify question.
+   *
+   * Addressed by `request_id`, not by position. The terminal path sent arrow
+   * keys and an index, which silently answers the *wrong* question whenever a
+   * second request arrives between render and click.
+   */
+  async respondClarify(requestId: string, answer: string): Promise<void> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    if (!requestId) throw new Error("clarify answers need the request they answer");
+    const res = await this.transport.request<{ status?: string }>(
+      "clarify.respond",
+      { session_id: this.liveId, request_id: requestId, answer },
+    );
+    // Same rule. `expired` comes back on a fulfilled envelope, so only an
+    // explicit `ok` resolves the card.
+    if (res?.status !== "ok") {
+      throw new Error(
+        `the gateway did not record that answer (${res?.status ?? "no status"})`,
+      );
+    }
+  }
+
   /** Ask the gateway to wind down the live turn. Safe to call when idle. */
   async interrupt(): Promise<void> {
-    if (this.closed || !this.sessionId) return;
+    if (this.closed || !this.liveId) return;
     try {
-      await this.transport.request("session.interrupt", { session_id: this.sessionId });
+      await this.transport.request("session.interrupt", { session_id: this.liveId });
     } catch {
       // Interrupting an already-finished turn is not an error worth surfacing.
     }

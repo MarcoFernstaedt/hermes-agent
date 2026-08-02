@@ -1258,3 +1258,44 @@ FINISH_REASON_LENGTH = "length"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+
+# ---------------------------------------------------------------------------
+# Permission gate mode
+# ---------------------------------------------------------------------------
+
+#: The mode the product ships with. `observe` audits what enforcement *would*
+#: refuse without refusing it, which is the right setting while the tier
+#: catalogue is being validated against real traffic.
+DEFAULT_TOOL_GATE_MODE = "observe"
+
+#: Same idea for the approval-integrity check.
+DEFAULT_APPROVAL_INTEGRITY_MODE = "observe"
+
+_GATE_MODE_ENV = "HERMES_TOOL_GATE_MODE"
+_INTEGRITY_MODE_ENV = "HERMES_APPROVAL_INTEGRITY"
+
+
+def apply_default_gate_modes() -> None:
+    """State the shipped permission modes explicitly, at startup.
+
+    `tool_gate_mode()` refuses to run when its variable is unset or misspelled,
+    rather than falling back to the weakest setting — a control whose *absence*
+    selects its own weakest value is not a control, and a typo in a deployment
+    (``enfore``) used to silently downgrade a machine somebody had deliberately
+    switched to enforcement.
+
+    That leaves someone to say what the default is, and it should be the
+    product rather than the check. Entry points call this; anything that never
+    went through an entry point fails closed, which is the correct answer for a
+    process nobody configured.
+
+    Never overwrites an existing value, including a deliberate empty one — an
+    operator who exported the variable owns it.
+    """
+    for name, value in (
+        (_GATE_MODE_ENV, DEFAULT_TOOL_GATE_MODE),
+        (_INTEGRITY_MODE_ENV, DEFAULT_APPROVAL_INTEGRITY_MODE),
+    ):
+        if name not in os.environ:
+            os.environ[name] = value

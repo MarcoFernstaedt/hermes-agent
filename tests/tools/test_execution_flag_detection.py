@@ -32,6 +32,29 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+def _is_real_binary(tool: str) -> bool:
+    """Is the thing on PATH the actual tool, or a placeholder wearing its name?
+
+    `shutil.which` answers "is there a file called `man`", which is not the
+    question. Debian's minimized images ship `/usr/bin/man` as a three-line
+    shell script that prints "This system has been minimized" and exits — so
+    the guard passed, the real binary was never exercised, and the test failed
+    claiming `man` reparses its arguments when `man` was never run at all.
+
+    A test that pins another program's CLI grammar has to be sure it is talking
+    to that program.
+    """
+    path = shutil.which(tool)
+    if path is None:
+        return False
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    return b"system has been minimized" not in head
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
@@ -47,8 +70,8 @@ def test_real_binaries_execute_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
-    if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
-        pytest.skip(f"{tool} or script is not installed")
+    if not _is_real_binary(tool) or (needs_tty and not _is_real_binary("script")):
+        pytest.skip(f"{tool} or script is not installed (or is a stub)")
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"

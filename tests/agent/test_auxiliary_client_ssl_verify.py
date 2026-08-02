@@ -16,7 +16,12 @@ import pytest
 
 from agent.process_bootstrap import build_keepalive_http_client
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
+# `CURL_CA_BUNDLE` included: it is the fourth source the resolver consults,
+# and leaving it set made the "no CA configured" cases find one.
+_CA_ENV_VARS = (
+    "HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE", "HTTPS_PROXY",
+)
 
 
 @pytest.fixture

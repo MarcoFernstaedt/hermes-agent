@@ -82,7 +82,7 @@ export function GraphPage() {
     <div className="mx-auto flex min-h-0 max-w-6xl flex-col gap-3 p-4 sm:p-6">
       <div className="flex items-center gap-2">
         <Share2 className="size-5 text-midground" aria-hidden />
-        <h1 className="text-lg font-semibold">Relationships</h1>
+        <h2 className="text-lg font-semibold">Relationships</h2>
         <span className="text-xs text-text-tertiary">
           {graph.nodes.length} records · {graph.edges.length} links
         </span>

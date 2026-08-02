@@ -308,7 +308,7 @@ class TestFeishuUpdatePrompt:
 # ===========================================================================
 
 class TestResolveApproval:
-    """Test _resolve_approval pops state and calls resolve_gateway_approval."""
+    """Test _resolve_approval pops state and calls resolve_oldest_gateway_approval."""
 
     @pytest.mark.asyncio
     async def test_resolves_once(self):
@@ -319,10 +319,10 @@ class TestResolveApproval:
             "chat_id": "oc_12345",
         }
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
-        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
+        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once", actor="feishu:button")
         assert 1 not in adapter._approval_state
 
     @pytest.mark.asyncio
@@ -334,10 +334,10 @@ class TestResolveApproval:
             "chat_id": "oc_12345",
         }
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(2, "deny", "Alice", open_id="ou_user1", chat_id="oc_12345")
 
-        mock_resolve.assert_called_once_with("some-session", "deny")
+        mock_resolve.assert_called_once_with("some-session", "deny", actor="feishu:button")
 
     @pytest.mark.asyncio
     async def test_resolves_session(self):
@@ -348,10 +348,10 @@ class TestResolveApproval:
             "chat_id": "oc_99",
         }
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(3, "session", "Bob", open_id="ou_user1", chat_id="oc_99")
 
-        mock_resolve.assert_called_once_with("sess-3", "session")
+        mock_resolve.assert_called_once_with("sess-3", "session", actor="feishu:button")
 
     @pytest.mark.asyncio
     async def test_resolves_always(self):
@@ -362,16 +362,16 @@ class TestResolveApproval:
             "chat_id": "oc_55",
         }
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(4, "always", "Carol", open_id="ou_user1", chat_id="oc_55")
 
-        mock_resolve.assert_called_once_with("sess-4", "always")
+        mock_resolve.assert_called_once_with("sess-4", "always", actor="feishu:button")
 
     @pytest.mark.asyncio
     async def test_already_resolved_drops_silently(self):
         adapter = _make_adapter()
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._resolve_approval(99, "once", "Nobody", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_not_called()
@@ -386,7 +386,7 @@ class TestResolveApproval:
             "chat_id": "oc_12345",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._resolve_approval(5, "once", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
 
         mock_resolve.assert_not_called()
@@ -401,7 +401,7 @@ class TestResolveApproval:
             "chat_id": "oc_expected",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._resolve_approval(6, "session", "Norbert", open_id="ou_user1", chat_id="oc_wrong")
 
         mock_resolve.assert_not_called()

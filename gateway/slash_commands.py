@@ -2766,6 +2766,14 @@ class GatewaySlashCommandsMixin:
         and their interactive pickers)."""
         import yaml
         from gateway.run import _hermes_home
+        # `atomic_config_write` was used below and never imported, so every
+        # `--global` write raised NameError — which this function catches,
+        # logs, and reports as a failed save. The command still answered
+        # "saved globally" from its session-scoped path, so `/fast fast
+        # --global` and `/reasoning ... --global` looked like they worked and
+        # persisted nothing at all; the setting came back on the next restart.
+        from hermes_cli.config import atomic_config_write
+
         config_path = _hermes_home / "config.yaml"
         try:
             user_config = {}
@@ -4694,7 +4702,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval, resolve_oldest_gateway_approval,
         )
 
         if not has_blocking_approval(session_key):
@@ -4715,7 +4723,19 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        if resolve_all:
+            # `/approve all` is gone. It turned one message into a session-wide
+            # grant covering requests the owner had never been shown, and the
+            # queue is shared with every parallel subagent. Denying in bulk is
+            # still fine — see `/deny all` — because declining something nobody
+            # looked at costs a retry, and approving it costs whatever it did.
+            return (
+                "Approving everything at once is no longer available — each "
+                "request has to be answered on its own. `/deny all` still works."
+            )
+        count = resolve_oldest_gateway_approval(
+            session_key, choice, actor=f"slash:{source.platform}",
+        )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -4743,7 +4763,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval, resolve_oldest_gateway_approval,
         )
 
         if not has_blocking_approval(session_key):
@@ -4766,10 +4786,18 @@ class GatewaySlashCommandsMixin:
         if reason:
             reason = reason[:280].strip()
 
-        count = resolve_gateway_approval(
-            session_key, "deny", resolve_all=resolve_all,
-            reason=reason or None,
-        )
+        if resolve_all:
+            from tools.approval import deny_all_pending
+
+            count = deny_all_pending(
+                session_key, actor=f"slash:{source.platform}",
+                reason=reason or None,
+            )
+        else:
+            count = resolve_oldest_gateway_approval(
+                session_key, "deny", actor=f"slash:{source.platform}",
+                reason=reason or None,
+            )
         if not count:
             return t("gateway.deny.no_pending")
 

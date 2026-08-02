@@ -103,9 +103,9 @@ export default function CalendarPage() {
     return (
       <div className="mx-auto max-w-md p-8 text-center" role="status">
         <CalendarDays className="mx-auto mb-3 size-8 text-text-tertiary" aria-hidden />
-        <h1 className="text-lg font-semibold">
+        <h2 className="text-lg font-semibold">
           {conn.data?.needs_reauth ? "Calendar needs reauthorization" : "Calendar not connected"}
-        </h1>
+        </h2>
         <p className="mt-2 text-sm text-text-secondary">
           Connect Google on the server to {conn.data?.needs_reauth ? "reconnect" : "use"} your calendar, then retry.
         </p>
@@ -119,7 +119,7 @@ export default function CalendarPage() {
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col gap-3 p-3 sm:p-4">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="text-display text-sm tracking-wider text-text-tertiary">Next 14 days</h1>
+        <h2 className="text-display text-sm tracking-wider text-text-tertiary">Next 14 days</h2>
         <div className="flex items-center gap-2">
           <Button ghost size="icon" onClick={refresh} aria-label="Refresh" title="Refresh">
             <RefreshCw className={cn((events.isValidating || tasks.isValidating) && "animate-spin")} />

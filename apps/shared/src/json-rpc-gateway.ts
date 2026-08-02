@@ -30,11 +30,28 @@ export interface GatewayEvent<P = unknown> {
   type: GatewayEventName
 }
 
+/**
+ * An error the *server* returned, carrying its JSON-RPC code.
+ *
+ * Distinguishable from a transport failure (socket closed, timeout), which
+ * arrives as a plain Error with no code. Callers that need to react to one
+ * specific server condition must be able to tell the two apart.
+ */
+export class GatewayRpcError extends Error {
+  readonly code: number | undefined
+
+  constructor(code: number | undefined, message?: string) {
+    super(message || 'Hermes RPC failed')
+    this.name = 'GatewayRpcError'
+    this.code = code
+  }
+}
+
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 export type GatewayRequestId = number | string
 
 export interface JsonRpcFrame {
-  error?: { message?: string }
+  error?: { code?: number; message?: string }
   id?: GatewayRequestId | null
   method?: string
   params?: GatewayEvent
@@ -336,7 +353,12 @@ export class JsonRpcGatewayClient {
       this.clearPending(frame.id)
 
       if (frame.error) {
-        call.reject(new Error(frame.error.message || 'Hermes RPC failed'))
+        // Preserve the RPC error code. It is protocol information the server
+        // sends deliberately (4007 = session not found, and so on), and
+        // discarding it forces callers to pattern-match on message text or, far
+        // worse, to treat every failure alike — a transport blip then looks
+        // identical to "this session is gone".
+        call.reject(new GatewayRpcError(frame.error.code, frame.error.message))
       } else {
         call.resolve(frame.result)
       }

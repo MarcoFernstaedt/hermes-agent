@@ -371,6 +371,39 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3b. Ambient CLI credentials outside HERMES_HOME.
+    #
+    #     The Qwen CLI keeps its OAuth tokens at ``~/.qwen/oauth_creds.json``,
+    #     which is genuinely its path and cannot move under HERMES_HOME. Two
+    #     things follow, and both bit: a test that saved tokens without the
+    #     right fixture wrote real credentials into the developer's home, and
+    #     the file it left behind then resolved as a live qwen credential for
+    #     every later run — a stale `test-access-token` on disk made an
+    #     unrelated provider-resolution test fail with somebody else's token.
+    #
+    #     Redirected for every test. A test that wants to exercise the real
+    #     path can still patch it back.
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_cli_auth_path",
+        lambda: tmp_path / "qwen_cli_home" / ".qwen" / "oauth_creds.json",
+        raising=False,
+    )
+
+    # 3c. Permission gate modes, stated explicitly.
+    #
+    #     `tool_gate_mode()` refuses to run when its variable is unset rather
+    #     than falling back to `observe` — a control whose absence selects its
+    #     own weakest setting is not a control. Production entry points call
+    #     `apply_default_gate_modes()`; tests are not production, so they say
+    #     it here. A test that wants a different mode still sets its own.
+    from hermes_constants import (
+        DEFAULT_APPROVAL_INTEGRITY_MODE,
+        DEFAULT_TOOL_GATE_MODE,
+    )
+
+    monkeypatch.setenv("HERMES_TOOL_GATE_MODE", DEFAULT_TOOL_GATE_MODE)
+    monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", DEFAULT_APPROVAL_INTEGRITY_MODE)
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")
@@ -428,6 +461,45 @@ def _isolate_hermes_home(_hermetic_environment):
 # this replaces; the running example was ``test_command_guards`` failing
 # 12/15 CI runs because ``tools.approval._session_approved`` carried
 # approvals from one test's session into another's.
+
+
+def _ipv6_loopback_available() -> bool:
+    """Can this host actually listen on ``::1``?"""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+#: Skip a test that needs a real IPv6 loopback.
+#:
+#: Plenty of containers are built without IPv6, where `bind(("::1", 0))` fails
+#: with EAFNOSUPPORT. A test asserting dual-stack behaviour then reports a
+#: reachability bug that is entirely the host's shape.
+requires_ipv6 = pytest.mark.skipif(
+    not _ipv6_loopback_available(),
+    reason="no IPv6 loopback on this host",
+)
+
+
+#: Skip a test whose premise is that the filesystem will deny something.
+#:
+#: Root holds CAP_DAC_OVERRIDE, so `chmod 000` denies it nothing: a test that
+#: makes a file unreadable and asserts the reader reports a permission error
+#: watches the reader succeed instead. That is not the reader misbehaving, and
+#: the assertion is not wrong either — the setup simply cannot be performed as
+#: root, which is how most containers run.
+#:
+#: Shared here because three files had already written their own version of
+#: this check and two more needed it.
+requires_unprivileged = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="running as root: permission bits do not deny root anything",
+)
 
 
 @pytest.fixture()

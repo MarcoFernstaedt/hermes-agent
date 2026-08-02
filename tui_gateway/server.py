@@ -1,4 +1,5 @@
 import atexit
+import collections
 import concurrent.futures
 import contextlib
 import contextvars
@@ -5995,6 +5996,118 @@ def _(rid, params: dict) -> dict:
     )
 
 
+# ── Methods: undo ────────────────────────────────────────────────────
+#
+# The journal filled up correctly and nothing ever read it back. These are the
+# first production callers of `hermes_cli.undo`, and the reason the states that
+# exist so a person can act on them — `compensation_failed`, `undo_failed`,
+# `reversal_unknown` — are reachable by a person at all.
+
+
+@method("undo.list")
+def _(rid, params: dict) -> dict:
+    """The undo stack, the repair list, and anything mid-reversal.
+
+    Three lists rather than one, because they are three different claims about
+    the world: this can be taken back, this could not be and needs somebody,
+    and this is being taken back right now. Collapsing them would mean
+    reporting one of the last two as a state it is not in.
+
+    ``session_id`` scopes the stack to one conversation. It does *not* scope
+    the repair list: an unreversed action still matters in whatever session
+    the owner happens to be looking at, and hiding it behind the session that
+    caused it is how it stays unnoticed.
+    """
+    from hermes_cli.undo import surface
+
+    session_id = str(params.get("session_id") or "")
+    try:
+        limit = int(params.get("limit", 50) or 50)
+    except (TypeError, ValueError):
+        return _err(rid, -32602, "limit must be a number")
+    try:
+        return _ok(rid, surface.summary(session_id=session_id, limit=limit))
+    except Exception as exc:
+        return _err(rid, 5040, f"the undo journal could not be read: {exc}")
+
+
+@method("undo.preview")
+def _(rid, params: dict) -> dict:
+    """What undoing this entry would do, and what stands in the way.
+
+    Nothing is changed. A conflict comes back as the structured report — which
+    note, what the undo expected to find there, what is actually there — so the
+    confirmation the owner is shown describes the real situation rather than
+    saying "this failed".
+    """
+    from hermes_cli.undo import surface
+
+    entry_id = str(params.get("entry_id") or "").strip()
+    if not entry_id:
+        return _err(rid, -32602, "entry_id is required")
+    try:
+        return _ok(rid, surface.preview(entry_id))
+    except Exception as exc:
+        return _err(rid, 5041, f"that undo entry could not be read: {exc}")
+
+
+@method("undo.apply")
+def _(rid, params: dict) -> dict:
+    """Reverse one recorded action, or say why it was refused.
+
+    ``force`` is the owner's answer to a conflict they have already been shown,
+    carried back — not a way to skip the check. A refusal leaves the entry
+    exactly as it was, still offerable, because a conflict is the undo working
+    rather than the undo breaking.
+
+    Omitting ``entry_id`` undoes the most recent offerable action, which is what
+    "undo that" means from a chat composer.
+    """
+    from hermes_cli.undo import surface
+
+    entry_id = str(params.get("entry_id") or "").strip()
+    force = bool(params.get("force"))
+    session_id = str(params.get("session_id") or "")
+    try:
+        if entry_id:
+            result = surface.apply(entry_id, force=force)
+        else:
+            result = surface.apply_last(
+                actor=str(params.get("actor") or "agent"),
+                session_id=session_id,
+                force=force,
+            )
+            if result is None:
+                return _ok(rid, {"undone": False, "reason": "nothing to undo"})
+    except surface.UndoRefused as exc:
+        # Not an RPC error: the call worked and the answer is "no, and here is
+        # why". An error envelope would lose the report, which is the only part
+        # a screen can act on. Nothing was attempted, so the entry is untouched
+        # and still offerable.
+        return _ok(rid, {
+            "undone": False,
+            "refused": True,
+            "message": str(exc),
+            "conflict": exc.report,
+            "can_force": bool(exc.report) and exc.report.get("kind") != "backup_missing",
+        })
+    except surface.UndoFailed as exc:
+        # Also not an RPC error, and deliberately not the same answer as a
+        # refusal: the reversal ran and did not take, so the entry is now in a
+        # repair state and the owner needs to be sent there rather than told to
+        # try again.
+        return _ok(rid, {
+            "undone": False,
+            "failed": True,
+            "needs_repair": True,
+            "message": str(exc),
+            "entry": exc.entry,
+        })
+    except Exception as exc:
+        return _err(rid, 5042, f"the undo could not be run: {exc}")
+    return _ok(rid, {"undone": True, "entry": result})
+
+
 @method("session.list")
 def _(rid, params: dict) -> dict:
     db = _get_db()
@@ -9158,9 +9271,12 @@ def _(rid, params: dict) -> dict:
             session["queued_prompt"] = None
         _clear_pending(sid)
         try:
-            from tools.approval import resolve_gateway_approval
+            from tools.approval import deny_all_pending
 
-            resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+            deny_all_pending(
+                session["session_key"], actor="system:session-teardown",
+                reason="the session ended",
+            )
         except Exception:
             pass
         return _ok(rid, {"status": "interrupted", "turn_isolation": True})
@@ -9198,9 +9314,12 @@ def _(rid, params: dict) -> dict:
     # process, silently resolving them to empty strings.
     _clear_pending(params.get("session_id", ""))
     try:
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import deny_all_pending
 
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        deny_all_pending(
+            session["session_key"], actor="system:session-teardown",
+            reason="the session ended",
+        )
     except Exception:
         pass
     return _ok(rid, {"status": "interrupted"})
@@ -9468,6 +9587,69 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+# Prompt idempotency lives in `tui_gateway.submit_ledger`, which keeps the
+# in-memory cache *and* a durable record keyed by the session's persistent key.
+# Both properties matter and neither was true of the dictionary this replaces:
+# an in-flight claim is never evicted to make room, and a claim survives an
+# orphan reap, a restart and a cold resume — which is precisely when a client
+# resends, because it reconnects *because* something died.
+from tui_gateway import submit_ledger  # noqa: E402
+from tui_gateway.submit_ledger import SubmitLedgerFull  # noqa: E402
+from tui_gateway.submit_ledger import claim as _claim_submit_token  # noqa: E402
+from tui_gateway.submit_ledger import lookup as _lookup_submit_token  # noqa: E402
+from tui_gateway.submit_ledger import record_outcome as _record_submit_outcome  # noqa: E402
+from tui_gateway.submit_ledger import release as _release_submit_token  # noqa: E402
+
+#: Re-exported so the handler's length cap and the ledger's budget are read
+#: from one place.
+_SUBMIT_TOKEN_MEMORY = submit_ledger.SUBMIT_TOKEN_MEMORY
+
+#: A client cannot present an unbounded list of tokens to reconcile. Anything
+#: beyond this is not a reconnecting composer, it is a probe.
+_MAX_RECONCILE_TOKENS = 64
+
+
+@method("prompt.reconcile")
+def _(rid, params: dict) -> dict:
+    """Did these messages land? Asked *before* resending, not after.
+
+    A client that went offline holding composed messages has to decide, for
+    each one, between losing it and sending it twice. `prompt.submit` already
+    makes the second choice safe, but only once the message has been sent — and
+    a client that would rather ask first has, until now, had nothing to ask.
+
+    Returns one entry per token with a ``resend`` flag. ``resend: true`` means
+    the gateway has no record of that token at all, so the message provably did
+    not land. Everything else — a live claim, a recorded outcome, an
+    interrupted submission, or a lookup that failed — is ``resend: false``,
+    because none of those is evidence that nothing happened, and only the first
+    of them is evidence that something did.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    raw = params.get("client_tokens")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return _err(rid, -32602, "client_tokens must be a list of strings")
+    if len(raw) > _MAX_RECONCILE_TOKENS:
+        return _err(
+            rid, -32602,
+            f"at most {_MAX_RECONCILE_TOKENS} tokens may be reconciled at once",
+        )
+
+    tokens: list[str] = []
+    for value in raw:
+        if isinstance(value, str) and value.strip():
+            token = value.strip()[:128]
+            if token not in tokens:
+                tokens.append(token)
+
+    return _ok(rid, {"tokens": [_lookup_submit_token(session, t) for t in tokens]})
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -9479,6 +9661,23 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+
+    # Idempotency. The client mints one token per composed message and presents
+    # the same one on every resubmission of it, so a reconnect that could not
+    # tell whether its prompt landed can simply send it again.
+    raw_token = params.get("client_token")
+    token = raw_token.strip()[:128] if isinstance(raw_token, str) else ""
+    if token:
+        try:
+            replay = _claim_submit_token(session, token)
+        except SubmitLedgerFull as exc:
+            # Refusing is the safe direction. The alternative is forgetting a
+            # claim that is currently protecting a message from being sent
+            # twice, and a visible error the client can retry is much better
+            # than a silent duplicate.
+            return _err(rid, -32000, str(exc))
+        if replay is not None:
+            return _ok(rid, replay)
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -9499,6 +9698,10 @@ def _(rid, params: dict) -> dict:
                 break
         busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
         if busy_response is not None:
+            if token and isinstance(busy_response.get("result"), dict):
+                _record_submit_outcome(session, token, busy_response["result"])
+            elif token:
+                _release_submit_token(session, token)
             return busy_response
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
@@ -9511,11 +9714,15 @@ def _(rid, params: dict) -> dict:
         # transcript, stale fork). After the run completes, submitting is fine:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            # Refused, so nothing happened, so the token must not stick — a
+            # retry after the subagent finishes has to be a real submission.
+            _release_submit_token(session, token)
             return _err(rid, 4009, "subagent still running — wait for it to finish")
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
+                _release_submit_token(session, token)
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
@@ -9525,6 +9732,7 @@ def _(rid, params: dict) -> dict:
             # truncating history to everything before it and persisting that loss
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
+                _release_submit_token(session, token)
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -9542,6 +9750,8 @@ def _(rid, params: dict) -> dict:
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
+            if token and isinstance(isolated_response.get("result"), dict):
+                _record_submit_outcome(session, token, isolated_response["result"])
             return isolated_response
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s",
@@ -9584,7 +9794,7 @@ def _(rid, params: dict) -> dict:
     # `running` flag (a turn that died without clearing it) and recover the latter.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming"})
+    return _ok(rid, _record_submit_outcome(session, token, {"status": "streaming"}))
 
 
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
@@ -11377,24 +11587,72 @@ def _(rid, params: dict) -> dict:
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
+    """Answer one rendered approval, by the id it was rendered with.
+
+    Two things changed here and both are deliberate.
+
+    ``approval_id`` is required. The handler used to resolve whichever request
+    was oldest in the session queue, and that queue is shared with every
+    parallel subagent — so a second request arriving between the card being
+    drawn and the owner tapping it silently inherited the answer.
+
+    ``all`` is gone as an *approval* path. It turned one tap into a
+    session-wide grant covering requests the owner had never seen. A bulk
+    **deny** is still available, because declining things nobody looked at is
+    safe in a way approving them is not.
+
+    The actor is taken from the authenticated session, never from ``params``.
+    A response that names its own author is not attribution.
+    """
     session, err = _sess(params, rid)
     if err:
         return err
     try:
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import deny_all_pending, resolve_gateway_approval
 
-        return _ok(
-            rid,
-            {
-                "resolved": resolve_gateway_approval(
-                    session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
+        choice = params.get("choice", "deny")
+        actor = _authenticated_actor(session)
+
+        if params.get("all"):
+            if choice != "deny":
+                return _err(
+                    rid, 4019,
+                    "bulk approval is not available; answer each request by its "
+                    "approval_id. Bulk deny is allowed.",
                 )
-            },
-        )
+            return _ok(rid, {"resolved": deny_all_pending(
+                session["session_key"], actor=actor,
+                reason=params.get("reason") or None,
+            )})
+
+        approval_id = str(params.get("approval_id") or "").strip()
+        if not approval_id:
+            return _err(
+                rid, 4020,
+                "approval_id is required; it is carried on the approval.request "
+                "event this answers",
+            )
+        return _ok(rid, {"resolved": resolve_gateway_approval(
+            session["session_key"], choice,
+            approval_id=approval_id, actor=actor,
+            reason=params.get("reason") or None,
+        )})
     except Exception as e:
         return _err(rid, 5004, str(e))
+
+
+def _authenticated_actor(session: dict) -> str:
+    """Who this session belongs to, as the transport established it.
+
+    Never a client-supplied field. The websocket was authenticated before any
+    RPC was accepted, so the session it resolved to *is* the identity — and it
+    is the only thing here a caller cannot choose for itself.
+    """
+    for key in ("owner", "user", "account"):
+        value = str(session.get(key) or "").strip()
+        if value:
+            return f"session:{value}"
+    return f"session:{str(session.get('session_key') or 'unknown').strip()}"
 
 
 # ── Methods: config ──────────────────────────────────────────────────

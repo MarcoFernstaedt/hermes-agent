@@ -25,6 +25,8 @@ from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import requires_ipv6
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -1617,6 +1619,7 @@ class TestDualStackBind:
         assert adapter._host == "127.0.0.1"
 
     @pytest.mark.asyncio
+    @requires_ipv6
     async def test_default_bind_serves_both_families(self):
         """Binding the real server with the default host opens v4 AND v6 sockets.
 
@@ -1657,6 +1660,7 @@ class TestDualStackBind:
             await adapter.disconnect()
 
     @pytest.mark.asyncio
+    @requires_ipv6
     async def test_default_bind_rejects_existing_ipv6_listener(self):
         """A specific IPv6 listener must block the wildcard dual-stack bind."""
         blocker = await asyncio.start_server(

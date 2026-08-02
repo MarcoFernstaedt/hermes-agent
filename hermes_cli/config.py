@@ -262,16 +262,47 @@ _CONFIG_LOAD_FAILURE_WITHOUT_LKG: set[str] = set()
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
-# merged_value, env_ref_snapshot) — the managed-file signature is folded in so
-# editing the managed-scope config.yaml invalidates the cache (see
-# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
-# changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
-# (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
-# _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
-# the user's on-disk values without defaults merged in.
-_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Cached tuple is (signature, merged_value, env_ref_snapshot). The signature
+# covers the user file *and* the managed file, so editing the managed-scope
+# config.yaml invalidates the cache (see managed_scope), and the env snapshot
+# invalidates it when a referenced ${VAR} changes value (late .env load,
+# in-process rotation — #58514).
+#
+# Each file contributes a *content* signature rather than only (mtime_ns, size).
+# The stat pair alone is not a fingerprint: a rewrite that keeps the length and
+# lands inside the filesystem's timestamp granularity is invisible to it, which
+# is not a hypothetical — coarse mtime filesystems, containers with low-
+# resolution clocks, and any tool that writes, edits and writes again inside one
+# tick all produce it. The failure is silent and total: the cache serves the old
+# parse as current configuration, so a setting the owner just changed does not
+# take effect and nothing reports a problem.
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Any], Dict[str, Optional[str]]]] = {}
+# path -> (signature, raw yaml dict). Same pattern and the same content
+# signature as _LOAD_CONFIG_CACHE, for read_raw_config() — used when callers
+# want the user's on-disk values without defaults merged in.
+_RAW_CONFIG_CACHE: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Any]]] = {}
+
+
+def _content_signature(path: "Path") -> Optional[Tuple[int, int, str]]:
+    """``(mtime_ns, size, digest)`` for a file, or None when it is not there.
+
+    The digest is what makes invalidation deterministic; the stat pair is kept
+    in front of it only because it makes two different files with identical
+    contents distinguishable in the cache key, which costs nothing.
+
+    Reading the bytes here is not extra work in practice: every caller that
+    misses the cache is about to read the same file, and the expensive part of
+    a config load is the YAML parse, not the read. Getting this wrong the cheap
+    way meant serving a stale parse as current configuration.
+    """
+    import hashlib
+
+    try:
+        st = path.stat()
+        data = path.read_bytes()
+    except (FileNotFoundError, OSError):
+        return None
+    return (st.st_mtime_ns, st.st_size, hashlib.sha256(data).hexdigest())
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -7156,22 +7187,23 @@ def read_raw_config() -> Dict[str, Any]:
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
 
-    Cached on the config file's (mtime_ns, size) — same strategy as
+    Cached on the config file's content signature — same strategy as
     ``load_config()``. Returns a deepcopy on every call since some callers
     mutate the result before passing to ``save_config()``.
     """
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()
-            st = config_path.stat()
-            cache_key = (st.st_mtime_ns, st.st_size)
-        except (FileNotFoundError, OSError):
+        except Exception:
+            return {}
+        cache_key = _content_signature(config_path)
+        if cache_key is None:
             return {}
 
         path_key = str(config_path)
         cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2])
+        if cached is not None and cached[0] == cache_key:
+            return copy.deepcopy(cached[1])
 
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -7182,7 +7214,7 @@ def read_raw_config() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
-        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        _RAW_CONFIG_CACHE[path_key] = (cache_key, copy.deepcopy(data))
         return data
 
 
@@ -7463,11 +7495,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         config_path = get_config_path()
         path_key = str(config_path)
 
-        try:
-            st = config_path.stat()
-            user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
-        except FileNotFoundError:
-            user_sig = None
+        # Content signature, not (mtime_ns, size): see `_content_signature`.
+        user_sig: Optional[Tuple[int, int, str]] = _content_signature(config_path)
 
         # Managed scope: fold the managed config file's (mtime, size) into the
         # cache signature so editing /etc/hermes/config.yaml invalidates the
@@ -7476,11 +7505,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         managed_dir = managed_scope.get_managed_dir()
         managed_cfg_path = (managed_dir / "config.yaml") if managed_dir else None
-        try:
-            mst = managed_cfg_path.stat() if managed_cfg_path else None
-            managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
-        except OSError:
-            managed_sig = (0, 0)
+        managed_sig = (
+            _content_signature(managed_cfg_path) if managed_cfg_path else None
+        ) or (0, 0, "")
         managed_config, managed_status = managed_scope.load_managed_config_with_status()
         if managed_status == "absent":
             # Absence is an authoritative source transition, not a transient
@@ -7488,17 +7515,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # administrator deliberately removed.
             _SECURITY_MANAGED_LKG_BY_PATH.pop(path_key, None)
 
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
+        # Combined cache signature: user file + managed file, each by content.
+        # None only when the user config is absent AND no managed file exists
+        # (nothing to cache on).
         if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
-                user_sig[0],
-                user_sig[1],
-                managed_sig[0],
-                managed_sig[1],
-            )
-        elif managed_sig != (0, 0):
-            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
+            cache_sig: Optional[Tuple[Any, ...]] = (user_sig, managed_sig)
+        elif managed_sig != (0, 0, ""):
+            cache_sig = ((0, 0, ""), managed_sig)
         else:
             cache_sig = None
 
@@ -7506,7 +7529,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if (
             cached is not None
             and cache_sig is not None
-            and cached[:4] == cache_sig
+            and cached[0] == cache_sig
             and managed_status != "failed"
         ):
             # File signatures match, but the cached expansion is only valid if
@@ -7514,9 +7537,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # Without this, a load_config() that ran before load_hermes_dotenv()
             # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
             # life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
+            env_snapshot = cached[2]
             if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                return copy.deepcopy(cached[1]) if want_deepcopy else cached[1]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
         failed_without_lkg = False
@@ -7622,22 +7645,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # (deepcopy=True) callers can mutate freely without affecting the
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object. The cached tuple is
-            # (user_mtime, user_size, managed_mtime, managed_size, value,
-            # env_ref_snapshot). The snapshot records the environment values
-            # this expansion was made against so later loads can detect env
-            # drift (late .env load, in-process rotation) — see cache hit above.
+            # (signature, value, env_ref_snapshot). The snapshot records the
+            # environment values this expansion was made against so later loads
+            # can detect env drift (late .env load, in-process rotation) — see
+            # the cache hit above.
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (
-                cache_sig[0],
-                cache_sig[1],
-                cache_sig[2],
-                cache_sig[3],
-                cached_copy,
-                env_snapshot,
-            )
+            _LOAD_CONFIG_CACHE[path_key] = (cache_sig, cached_copy, env_snapshot)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.

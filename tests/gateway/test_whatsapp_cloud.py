@@ -1968,8 +1968,12 @@ class TestDispatchInteractiveReplyApproval:
 
         calls = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            "tools.approval.resolve_oldest_gateway_approval",
+            # `actor` is now required: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            lambda session_key, choice, *, actor, reason=None: (
+                calls.append((session_key, choice, actor)) or 1
+            ),
         )
 
         raw = {
@@ -1983,7 +1987,7 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "whatsapp:button")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
@@ -2000,8 +2004,10 @@ class TestDispatchInteractiveReplyApproval:
 
         choices_seen = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: choices_seen.append(choice) or 1,
+            "tools.approval.resolve_oldest_gateway_approval",
+            lambda session_key, choice, *, actor, reason=None: (
+                choices_seen.append(choice) or 1
+            ),
         )
 
         raw = {
@@ -2075,8 +2081,12 @@ class TestDispatchInteractiveReplyAuthorization:
         adapter._exec_approval_state["app1"] = "sess-app-1"
         calls = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            "tools.approval.resolve_oldest_gateway_approval",
+            # `actor` is now required: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            lambda session_key, choice, *, actor, reason=None: (
+                calls.append((session_key, choice, actor)) or 1
+            ),
         )
 
         raw = {
@@ -2106,8 +2116,12 @@ class TestDispatchInteractiveReplyAuthorization:
         )
         calls = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            "tools.approval.resolve_oldest_gateway_approval",
+            # `actor` is now required: a grant nobody can be traced to cannot
+            # be reviewed afterwards, so the adapter has to say who tapped.
+            lambda session_key, choice, *, actor, reason=None: (
+                calls.append((session_key, choice, actor)) or 1
+            ),
         )
 
         raw = {
@@ -2121,7 +2135,7 @@ class TestDispatchInteractiveReplyAuthorization:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "whatsapp:button")]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")

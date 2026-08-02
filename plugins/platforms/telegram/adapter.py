@@ -5091,7 +5091,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        The buttons call ``resolve_oldest_gateway_approval(, actor="telegram:button")`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
         """
         if not self._bot:
@@ -6144,8 +6144,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Resolve the approval — unblocks the agent thread
                 try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
+                    from tools.approval import resolve_oldest_gateway_approval
+                    count = resolve_oldest_gateway_approval(session_key, choice, actor="telegram:button")
                     logger.info(
                         "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                         count, session_key, choice, user_display,

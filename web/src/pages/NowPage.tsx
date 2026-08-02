@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowUpRight,
@@ -12,6 +12,24 @@ import {
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { HubContext } from "@/lib/api";
+import { projectOutcomes } from "@/lib/nowOutcomes";
+import {
+  gateSentence,
+  visibleSections,
+  type NowContent,
+  type NowSectionId,
+} from "@/lib/nowOrder";
+import {
+  readStoredOverride,
+  resolveOverride,
+  today as localDay,
+  writeStoredOverride,
+} from "@/lib/nowOverride";
+import {
+  WORK_STATE_LABEL,
+  rankOutcomes,
+  workStateFor,
+} from "@/lib/outcomeRanking";
 import { cn } from "@/lib/utils";
 
 /**
@@ -68,16 +86,155 @@ export function NowView({
   refreshing: boolean;
   onRefresh: () => void;
 }) {
+  // The top three, ranked from real projected state. `override` is Marco's
+  // replacement and beats the score outright — the point of an override is
+  // that his judgement wins, so the page must not quietly re-rank around it.
+  //
+  // Read from storage rather than starting at null. It was `useState(null)`,
+  // so the override lasted exactly as long as the component: a refresh, a trip
+  // to Progress and back, or the tab being restored from the background all
+  // silently reinstated Imperator's suggestion. The owner made a decision, the
+  // page acknowledged it, and then reversed it when they were not looking.
+  const [storedOverride, setStoredOverride] = useState(readStoredOverride);
+  const candidates = projectOutcomes(data);
+  // Resolved against the candidates that actually exist right now, so a choice
+  // about a review item that has since been answered stops suppressing the
+  // suggestion for something still on the list.
+  const override = resolveOverride(storedOverride, {
+    day: localDay(),
+    candidateIds: candidates.map((c) => c.id),
+  });
+  const ranking = rankOutcomes(candidates, { overrideId: override });
+
+  const chooseOverride = (id: string | null) => {
+    writeStoredOverride(id);
+    setStoredOverride(id === null ? null : { day: localDay(), id });
+  };
+
+  const progress = data?.sections.progress;
+  // The order Now is read in comes from `nowOrder`, which existed as data with
+  // nothing rendering from it. For a screen-reader user the reading order *is*
+  // the design, so leaving it implied by JSX nesting meant any later layout
+  // refactor could change what Marco hears first with no test noticing.
+  const nowContent: NowContent = {
+    outcome: ranking.top.find((i) => i.recommended)?.title ?? null,
+    routines: progress?.available ? (progress.routines ?? null) : null,
+    incomeGate: progress?.available && progress.income_gate
+      ? { met: progress.income_gate.open, label: "Income gate" }
+      : null,
+    exception: data?.sections.guardrails?.halted
+      ? { summary: data.sections.guardrails.note, actionRequired: true }
+      : null,
+  };
+  const routineLine = gateSentence(nowContent);
+
   const jobs = data?.sections.jobs;
   const review = data?.sections.review;
   const guardrails = data?.sections.guardrails;
   const capabilities = data?.sections.capabilities;
   const health = data?.sections.health;
 
+  /** The sections `nowOrder` knows about, keyed by id so it can order them. */
+  const orderedSections: Partial<Record<NowSectionId, React.ReactNode>> = {
+    outcome: (
+            <section
+              aria-labelledby="outcomes-h"
+              data-now-section="outcome"
+              className="flex flex-col gap-2"
+            >
+              <h3 id="outcomes-h" className="text-sm font-semibold text-midground">
+                Today&rsquo;s three
+                {ranking.consideredCount > ranking.top.length && (
+                  <span className="ml-2 font-normal text-text-tertiary">
+                    {ranking.top.length} of {ranking.consideredCount}
+                  </span>
+                )}
+              </h3>
+              <ul className="flex flex-col gap-2">
+                {ranking.top.map((item) => {
+                  const state = workStateFor(item);
+                  return (
+                    <li
+                      key={item.id}
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-sm",
+                        item.recommended
+                          ? "border-primary/40 bg-primary/10"
+                          : "border-current/10",
+                      )}
+                    >
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="font-medium text-foreground">{item.title}</span>
+                        {/* Words, not a colour: the recommendation has to be
+                            announced, not merely tinted. */}
+                        {item.recommended && (
+                          <span className="rounded border border-primary/40 px-1.5 py-0.5 text-xs text-primary">
+                            Imperator suggests starting here
+                          </span>
+                        )}
+                      </div>
+                      {/* Why it ranked where it did. A recommendation the owner
+                          cannot interrogate is obeyed without thought or
+                          ignored entirely. */}
+                      <p className="mt-1 text-xs text-text-secondary">{item.why}</p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        {WORK_STATE_LABEL[state]}
+                      </p>
+                      {!item.recommended && (
+                        <button
+                          type="button"
+                          onClick={() => chooseOverride(item.id)}
+                          className="mt-2 rounded-md border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
+                        >
+                          Start with this instead
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {override && (
+                <button
+                  type="button"
+                  onClick={() => chooseOverride(null)}
+                  className="self-start rounded-md border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
+                >
+                  Use Imperator&rsquo;s suggestion again
+                </button>
+              )}
+            </section>
+    ),
+    gate: (
+            <section
+              aria-labelledby="gate-h"
+              data-now-section="gate"
+              className="flex flex-col gap-1 rounded-lg border border-current/10 px-4 py-3"
+            >
+              <h3 id="gate-h" className="text-sm font-semibold text-midground">
+                Routines and income
+              </h3>
+              <p className="text-xs text-text-secondary">{routineLine}</p>
+              {progress?.intention && (
+                /* The owner's own words about today, from last night's
+                   reflection. Never synthesised: absent when unwritten. */
+                <p className="mt-1 text-xs text-text-tertiary">
+                  Last night you wrote: {progress.intention}
+                </p>
+              )}
+              <Link
+                to="/progress"
+                className="self-start text-xs text-text-tertiary underline-offset-2 hover:text-midground hover:underline"
+              >
+                Progress
+              </Link>
+            </section>
+    ),
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
       <header className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-lg font-semibold">Now</h1>
+        <h2 className="text-lg font-semibold">Now</h2>
         {data && (
           <span className="font-mono-ui text-xs text-text-tertiary">
             as of {new Date(data.generated_at).toLocaleTimeString()}
@@ -106,6 +263,17 @@ export function NowView({
         </div>
       ) : (
         <>
+          {/* Rendered in the order `nowOrder` declares, not the order these
+              happen to be written in. For a screen-reader user the reading
+              order *is* the design, so leaving it implied by JSX nesting meant
+              a later layout refactor could change what Marco hears first and
+              no test would notice. `visibleSections` also drops anything with
+              nothing to say — an absent thing is absent, not an empty card
+              that costs a heading and a swipe to discover it says nothing. */}
+          {visibleSections(nowContent).map((section) => (
+            <Fragment key={section.id}>{orderedSections[section.id]}</Fragment>
+          ))}
+
           {/* The lead. Everything below is the evidence behind these lines. */}
           <section aria-labelledby="attention-h" className="flex flex-col gap-2">
             <h2 id="attention-h" className="sr-only">

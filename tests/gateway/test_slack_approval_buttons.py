@@ -214,11 +214,11 @@ class TestSlackApprovalAction:
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
         ack.assert_called_once()
-        mock_resolve.assert_called_once_with("agent:main:slack:group:C1:1111", "once")
+        mock_resolve.assert_called_once_with("agent:main:slack:group:C1:1111", "once", actor="slack:button")
 
         # Message should be updated with decision
         mock_client.chat_update.assert_called_once()
@@ -242,7 +242,7 @@ class TestSlackApprovalAction:
             "value": "some-session",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
         # Should have acked but NOT resolved
@@ -268,10 +268,10 @@ class TestSlackApprovalAction:
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
-        mock_resolve.assert_called_once_with("session-key", "deny")
+        mock_resolve.assert_called_once_with("session-key", "deny", actor="slack:button")
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
 
@@ -295,7 +295,7 @@ class TestSlackApprovalAction:
             "value": "agent:main:slack:group:C1:1111",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
         ack.assert_called_once()

@@ -1077,11 +1077,19 @@ def handle_function_call(
     # request/execution middleware layers legitimately rewrite args, so
     # snapshotting here produced false mismatches on real tools (found live on
     # the terminal tool). Only the tier decision is made here.
+    #
+    # `tier_for_call`, not `get_tier`: some tools are gated by their arguments
+    # rather than their name — `browser_console(expression=...)` is a read
+    # until it is arbitrary JavaScript. Asking the name-level question here
+    # skipped the integrity snapshot for exactly the calls that most need one.
     _integrity_gated = False
     try:
-        from hermes_cli.module_permissions import Tier, get_tier
+        from hermes_cli.module_permissions import Tier, tier_for_call
 
-        _integrity_gated = bool(tool_call_id) and get_tier(function_name) is not Tier.AUTO
+        _integrity_gated = (
+            bool(tool_call_id)
+            and tier_for_call(function_name, function_args) is not Tier.AUTO
+        )
     except Exception:
         _integrity_gated = False
 
@@ -1190,22 +1198,19 @@ def handle_function_call(
         except Exception as _mw_err:
             logger.debug("tool_request middleware error: %s", _mw_err)
 
-    # THE canonical integrity boundary: the payload as it stands after every
-    # legitimate request-side transform, which is what actually heads to
-    # execution. Snapshotting earlier compared a pre-transform payload against a
-    # post-transform one and refused honest calls. The window this protects is
-    # narrow and deliberate — anything that mutates the payload between here and
-    # dispatch was not part of what the tier gate authorised.
-    if _integrity_gated:
-        try:
-            from hermes_cli import approval_integrity as _integrity
-
-            _integrity.record_grant(
-                tool_call_id, function_name, function_args,
-                context={"middleware": [str(t) for t in _tool_middleware_trace][:8]},
-            )
-        except Exception:
-            pass
+    # A grant used to be recorded here, unconditionally, for every gated call —
+    # before anyone had approved anything. That made `verify_at_execution`
+    # answer a much smaller question than it appeared to: not "did a human
+    # authorise this" but "did the payload change since we snapshotted it".
+    # A grant always existed, so the check always passed.
+    #
+    # It is gone. The grant is now written by `execution_capability.mint()`,
+    # which runs at the approval-response boundary, so a record exists if and
+    # only if somebody actually said yes. And the payload binding it provided
+    # is done better one layer down: the capability carries the argument hash
+    # and it is compared inside `registry.dispatch()`, at the chokepoint, with
+    # the arguments the handler is about to receive rather than a snapshot two
+    # hops upstream of them.
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -1325,7 +1330,22 @@ def handle_function_call(
 
                     refused = _integrity.verify_at_execution(
                         tool_call_id or "", function_name, next_args,
-                        gated=_integrity_gated,
+                        # Not `gated=_integrity_gated` any more. That flag made
+                        # a gated call with no grant fail closed, which was
+                        # right while a grant was written here — and is a
+                        # deadlock now that the grant is written by the human's
+                        # answer, which happens *downstream* of this check,
+                        # inside dispatch. Asking for the evidence before
+                        # anybody has been asked to provide it refuses every
+                        # gated call forever.
+                        #
+                        # The tier gate lives at the chokepoint now and it is
+                        # the thing that refuses. What survives here is the
+                        # half that still holds at this point in the call: a
+                        # payload that changed after a grant was recorded, and
+                        # a replay of a grant that has already authorised one
+                        # execution, both still fail closed in enforce.
+                        gated=False,
                     )
                     if refused is not None:
                         return refused

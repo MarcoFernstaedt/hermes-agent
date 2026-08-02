@@ -40,11 +40,48 @@ def _is_registry_register_call(node: ast.AST) -> bool:
     )
 
 
-def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
+def _iter_import_time_statements(body: list) -> "list":
+    """Flatten statements that actually execute when the module is imported.
 
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+    Descends into module-level ``for`` / ``while`` / ``if`` / ``try`` / ``with``
+    bodies, because a ``registry.register()`` inside one of those *does* run on
+    import — but never into ``def`` or ``class``, because those only run when
+    called, which is the distinction the original check was protecting.
+
+    This matters more than it looks. Registration is very often written as a
+    loop over a tuple of tool specs, and treating that as "not registering"
+    silently hid five modules from the agent's catalogue — including the entire
+    Gmail and Calendar integrations, whose own comment reads "Self-register on
+    import (tools.registry.discover_builtin_tools imports this)" while
+    discovery skipped them.
+    """
+    out = []
+    for node in body:
+        out.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            nested = getattr(node, field, None)
+            if isinstance(nested, list):
+                out.extend(_iter_import_time_statements(nested))
+        for handler in getattr(node, "handlers", []) or []:
+            out.extend(_iter_import_time_statements(handler.body))
+        # `match` keeps its executable branches under cases[*].body rather than
+        # a plain `body` attribute, so the generic walk above misses them
+        # entirely. A module-level match/case runs on import like any other
+        # control flow.
+        for case in getattr(node, "cases", []) or []:
+            out.extend(_iter_import_time_statements(case.body))
+    return out
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when importing the module would call ``registry.register(...)``.
+
+    Inspects every statement that runs at import time, including inside
+    module-level loops and try/except blocks, but never inside a function or
+    class body — a helper that calls ``registry.register()`` when *invoked* is
+    not a self-registering tool module.
 
     A cheap text prefilter avoids the ``ast.parse`` cost for files that do not
     mention both ``registry`` and ``register`` — a necessary condition for a
@@ -61,7 +98,10 @@ def _module_registers_tools(module_path: Path) -> bool:
     except SyntaxError:
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    return any(
+        _is_registry_register_call(stmt)
+        for stmt in _iter_import_time_statements(tree.body)
+    )
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
@@ -212,6 +252,165 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+
+
+#: How the dispatch-time permission gate behaves.
+#:
+#: ``enforce``  a non-AUTO tool without a valid capability is refused.
+#: ``observe``  the refusal is audited and the call proceeds. **Default.**
+#:
+#: Default `observe` on purpose, and it is a real limitation rather than a
+#: preference. `get_tier()` returns ALWAYS_APPROVAL for any *unregistered*
+#: tool — deliberately, so an unknown tool is never treated as safe — and most
+#: tools in this repository have never been registered. Switching straight to
+#: `enforce` would therefore refuse nearly every call in the product, which is
+#: not a safety improvement, it is an outage. `observe` makes the gap
+#: measurable: every call that *would* be refused is audited with its tool
+#: name, so the registration backlog can be worked off against real traffic
+#: and the switch flipped once the audit is quiet.
+#:
+#: This mirrors HERMES_APPROVAL_INTEGRITY_MODE, which exists for the same
+#: reason. Both must reach `enforce` for the tier system to mean anything, and
+#: neither is there yet.
+_GATE_MODE_ENV = "HERMES_TOOL_GATE_MODE"
+
+_GATE_MODES = ("enforce", "observe", "off")
+
+
+class GateModeError(RuntimeError):
+    """The gate mode could not be determined. Always a refusal."""
+
+
+def tool_gate_mode() -> str:
+    """The configured mode, or raise.
+
+    Unset and misspelled both **raise** rather than falling back to
+    ``observe``. The fallback was the bug: a typo in a deployment
+    (``HERMES_TOOL_GATE_MODE=enfore``) silently downgraded a machine that had
+    been deliberately switched to enforcement, and an unset variable made
+    "nobody has decided yet" indistinguishable from "somebody chose to
+    measure". A security control whose *absence* selects its weakest setting
+    is not a control.
+
+    `observe` is still the shipped default, but it is now a default the
+    *product* states explicitly rather than one that happens when the
+    environment is empty — see `hermes_constants.DEFAULT_TOOL_GATE_MODE` and
+    the launcher that exports it.
+    """
+    import os
+
+    raw = os.environ.get(_GATE_MODE_ENV)
+    if raw is None:
+        raise GateModeError(
+            f"{_GATE_MODE_ENV} is not set; refusing to guess a permission mode"
+        )
+    value = raw.strip().lower()
+    if value not in _GATE_MODES:
+        raise GateModeError(
+            f"{_GATE_MODE_ENV}={raw!r} is not one of {_GATE_MODES}; refusing to "
+            "guess a permission mode"
+        )
+    return value
+
+
+def _capability_refusal(
+    name: str, args: dict, capability, *, session_id: str = "",
+    tool_call_id: str | None = None,
+) -> "str | None":
+    """The refusal message for a gated call, or None to proceed.
+
+    This is where the approval chain terminates. `hermes_cli.tool_capability`
+    asks the human when nothing has been approved yet, mints at the response
+    boundary, and this consumes — all before the handler is entered, and with
+    the arguments as they finally stand, which is the only version of them the
+    handler will ever see.
+
+    Fails closed: any error establishing the capability is a refusal, because
+    an exception in the permission layer must never read as permission — and
+    that now includes not knowing what mode we are in. A missing or misspelled
+    `HERMES_TOOL_GATE_MODE` refuses the call outright rather than resolving to
+    the weakest setting.
+    """
+    try:
+        mode = tool_gate_mode()
+    except GateModeError as exc:
+        message = f"{name} was refused: {exc}"
+        _audit_gate(name, message, enforced=True)
+        return message
+    if mode == "off":
+        return None
+    try:
+        from hermes_cli import tool_capability
+
+        tool_capability.authorise(
+            tool_name=name,
+            args=args,
+            session_id=session_id,
+            # An explicit id wins over the contextvar. The agent loop's inline
+            # tools know their call id directly and are not always inside the
+            # observability context the registry path relies on.
+            tool_call_id=tool_call_id if tool_call_id is not None else _current_tool_call_id(),
+            token=capability,
+            trusted_tools=_trusted_tools(),
+            # Only `enforce` asks. In `observe` the call runs whatever the
+            # owner answers, so a card here would be a question whose answer is
+            # discarded — which teaches the owner that these cards do not mean
+            # anything, and is a worse outcome than the gap being measured.
+            prompt=mode == "enforce",
+        )
+        return None
+    except Exception as exc:
+        message = (
+            f"{name} requires the owner's approval and it was not established: {exc}"
+        )
+        _audit_gate(name, message, enforced=mode == "enforce")
+        return message if mode == "enforce" else None
+
+
+def _current_tool_call_id() -> str:
+    """The call the agent loop is inside, bound as a contextvar upstream.
+
+    A capability has to name which call it authorises, and the id already
+    travels with the approval hooks — reading it here avoids threading a new
+    argument through every middleware layer, and keeps the binding available
+    to any caller that reaches dispatch, not only the ones that remembered.
+    """
+    try:
+        from tools.approval import get_current_tool_call_id
+
+        return get_current_tool_call_id()
+    except Exception:
+        return ""
+
+
+def _trusted_tools() -> tuple:
+    """APPROVAL-tier tools the owner opted into running without a prompt.
+
+    Read at call time and never cached: a trust setting revoked mid-session
+    has to take effect on the next call, not the next restart.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        value = (load_config() or {}).get("approvals", {}).get("trusted_tools", [])
+        return tuple(str(v) for v in value) if isinstance(value, (list, tuple)) else ()
+    except Exception:
+        # Unable to read the trust list ⇒ trust nothing.
+        return ()
+
+
+def _audit_gate(name: str, message: str, *, enforced: bool) -> None:
+    try:
+        from hermes_cli import audit_log
+
+        audit_log.record(
+            actor="agent", module="registry", tool=name,
+            action="capability_missing",
+            outcome="refused" if enforced else "observed",
+            detail={"reason": message[:200], "enforced": enforced},
+        )
+    except Exception:
+        pass
 
 
 class ToolRegistry:
@@ -630,11 +829,29 @@ class ToolRegistry:
         try:
             from hermes_cli.agent_scopes import enforce_dispatch
 
-            refusal = enforce_dispatch(name)
+            refusal = enforce_dispatch(name, args)
             if refusal is not None:
                 return json.dumps({"error": refusal, "refused": True})
         except Exception:
             pass
+
+        # The permission tier, actually consumed. Until now `resolve()` had no
+        # production caller: a tool's tier was recorded and never enforced, and
+        # this function reached handlers without consulting it — so Gmail was
+        # protected only because its own handler contained a Gmail-shaped gate.
+        #
+        # `capability` is the one-use ticket minted when a human decided. No
+        # ticket, wrong tool, changed arguments, replayed, or expired ⇒ the
+        # handler is not called at all.
+        gate_refusal = _capability_refusal(
+            name, args, kwargs.pop("capability", None),
+            # Read, not popped: the handler still needs it. Consent given in
+            # one conversation must not authorise a call in another.
+            session_id=str(kwargs.get("session_id") or ""),
+        )
+        if gate_refusal is not None:
+            return json.dumps({"error": gate_refusal, "refused": True})
+
         try:
             if entry.is_async:
                 from model_tools import _run_async

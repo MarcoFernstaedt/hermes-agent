@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import requires_unprivileged
+
 from tools import lazy_deps as ld
 
 
@@ -127,6 +129,7 @@ class TestAbiStamp:
         assert not (target / "stalepkg").exists()
         assert (target / ld._TARGET_STAMP_NAME).read_text().strip() == ld._python_abi_tag()
 
+    @requires_unprivileged
     def test_readonly_target_reports_error(self, tmp_path):
         # A path under a non-writable parent should surface a clean error,
         # not raise.

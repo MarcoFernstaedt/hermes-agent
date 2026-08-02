@@ -178,9 +178,12 @@ def pre_dispatch_check(tool_name: str, args: Any, tier: Any = None) -> Optional[
     """
     if tier is None:
         try:
-            from hermes_cli.module_permissions import get_tier
+            from hermes_cli.module_permissions import tier_for_call
 
-            tier = get_tier(tool_name)
+            # The call's tier, not the name's: `categorize` returns None for
+            # AUTO and skips every guard below, so a tool that is AUTO by name
+            # and dangerous by argument would walk past the secret scan.
+            tier = tier_for_call(tool_name, args)
         except Exception:
             tier = None
     category = categorize(tool_name, tier)

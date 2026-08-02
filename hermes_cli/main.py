@@ -836,16 +836,71 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
 
 
 def _termux_bundled_skills_fingerprint() -> str:
-    """Cheap invalidation key for Termux bundled-skill startup sync."""
+    """Cheap invalidation key for Termux bundled-skill startup sync.
+
+    Fingerprints the *tree*, not `skills/` itself. A directory's mtime changes
+    when its own entries change and not when anything below them does, so
+    `skills/writing/new-skill/SKILL.md` — a skill added inside an existing
+    category, which is the normal way skills arrive — left the top-level stat
+    untouched and the sync was skipped. The new skill simply never appeared,
+    and nothing reported a problem.
+
+    The walk is bounded and reads no file contents: one `scandir` per directory
+    under `skills/`, folded into a digest. That is materially more work than a
+    single `stat` and materially less than being wrong.
+    """
     git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
     if git_fp:
         return git_fp
     skills_dir = PROJECT_ROOT / "skills"
-    try:
-        stat = skills_dir.stat()
-        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
-    except OSError:
+    tree = _directory_tree_fingerprint(skills_dir)
+    if tree is None:
         return f"skills:{__version__}:{__release_date__}:missing"
+    return f"skills:{__version__}:{__release_date__}:{tree}"
+
+
+def _directory_tree_fingerprint(root: Path, *, max_entries: int = 20000) -> Optional[str]:
+    """A digest over every path under ``root``, or None when it is not there.
+
+    Each file contributes its path, size and mtime; each directory contributes
+    its path. Paths are what make a nested addition visible — a new file has a
+    new path whatever the timestamps do — and sorting keeps the digest stable
+    across filesystems that enumerate in different orders.
+
+    ``max_entries`` is a fuse, not a policy: past it the digest incorporates
+    the count and stops, so an unexpectedly enormous tree degrades to a coarser
+    key instead of stalling startup.
+    """
+    import hashlib
+
+    if not root.exists():
+        return None
+    digest = hashlib.sha256()
+    seen = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            rel_dir = os.path.relpath(dirpath, root)
+            digest.update(rel_dir.encode("utf-8", "replace"))
+            digest.update(b"\0d\0")
+            for name in sorted(filenames):
+                seen += 1
+                if seen > max_entries:
+                    digest.update(f"truncated:{seen}".encode("utf-8"))
+                    return digest.hexdigest()
+                path = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    digest.update(f"{name}:unreadable".encode("utf-8", "replace"))
+                    continue
+                digest.update(
+                    f"{name}:{st.st_size}:{st.st_mtime_ns}".encode("utf-8", "replace")
+                )
+                digest.update(b"\0f\0")
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _termux_bundled_skills_stamp_path() -> Path:
@@ -12855,7 +12910,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "tools", "undo", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13687,6 +13742,21 @@ def main():
     )
     from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
+
+    # =========================================================================
+    # undo command — the journal, reachable
+    # =========================================================================
+    undo_parser = subparsers.add_parser(
+        "undo",
+        help="Show and reverse recorded agent actions",
+        description="The undo journal: what can still be taken back, what a "
+        "reversal failed on and needs a person, and what is being "
+        "reversed right now. A conflict — the note changed since, "
+        "or the saved previous version is gone — is reported rather "
+        "than decided on your behalf.",
+    )
+    from hermes_cli.undo.cli import register_cli as _register_undo_cli
+    _register_undo_cli(undo_parser)
 
     # =========================================================================
     # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
@@ -15315,6 +15385,15 @@ def main():
         args.func(args)
     else:
         parser.print_help()
+
+
+# State the shipped permission modes explicitly at process start.
+# `tools.registry.tool_gate_mode()` refuses when its variable is unset
+# rather than falling back to its weakest setting, so the product has to
+# say what the default is. Never overwrites an operator's own value.
+from hermes_constants import apply_default_gate_modes as _apply_gate_modes
+
+_apply_gate_modes()
 
 
 if __name__ == "__main__":

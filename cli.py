@@ -15630,6 +15630,13 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    # State the shipped permission modes explicitly. `tool_gate_mode()`
+    # refuses when its variable is unset, so the product has to say what
+    # the default is rather than the check falling back to its weakest
+    # setting. Never overwrites an operator's own value.
+    from hermes_constants import apply_default_gate_modes
+
+    apply_default_gate_modes()
     global _active_worktree
 
     # Force UTF-8 stdio on Windows before any banner/print() runs — the

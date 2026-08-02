@@ -298,6 +298,19 @@ class LifeRepository:
                     (habit_id, day, value, value - previous, note, stamp),
                 )
 
+    def reflection(self, day: str) -> dict | None:
+        """One day's reflection row, or None when nothing was written.
+
+        `today()` returns the reflection for the day it is asked about; this
+        reads any day, which is what a caller needs to find yesterday's
+        "tomorrow" line — the owner's own statement of what today is for.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM daily_reflections WHERE day = ?", (_valid_day(day),)
+            ).fetchone()
+        return dict(row) if row else None
+
     def set_reflection(
         self,
         *,

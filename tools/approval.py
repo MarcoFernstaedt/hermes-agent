@@ -12,6 +12,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -197,6 +199,17 @@ def reset_current_observability_context(
     turn_token, tool_token = tokens
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+def get_current_tool_call_id(default: str = "") -> str:
+    """The tool call this thread is inside, if the agent loop bound one.
+
+    The dispatch chokepoint needs it to say *which* call a decision was about,
+    and it is already bound here as a contextvar for the approval hooks — so
+    the correlation identity is available at the gate without threading a new
+    argument through every middleware layer.
+    """
+    return _approval_tool_call_id.get() or default
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -943,19 +956,27 @@ def _home_prefix_fold_regex(path: str):
     patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
     required (``+``), so a bare home with no path under it is not folded.
 
-    Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / HERMES_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
-    because the resolved home is stable across calls on this hot path.
+    Returns ``None`` for an unset or degenerate path — a bare root such as
+    ``/``, ``C:\\`` or ``""`` — so a stray HOME / HERMES_HOME cannot rewrite
+    unrelated filesystem prefixes. Cached because the resolved home is stable
+    across calls on this hot path.
+
+    The guard used to require *two* components below the root, which silently
+    disabled every absolute-path check for anyone whose home is a single
+    segment. ``/root`` is the case that matters: for the root user, and in
+    almost every container, ``~/.ssh/authorized_keys`` was guarded and
+    ``/root/.ssh/authorized_keys`` — the same file, written the way an agent
+    actually writes it — was not. One component is a real home; zero is a root.
+
+    A lone Windows drive designator is still rejected: ``C:`` has one component
+    and folding it would rewrite the entire filesystem to ``~/``.
     """
     if not path:
         return None
     components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
-    if len(components) < 2:
+    if not components:
+        return None
+    if len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0]):
         return None
     body = r"[/\\]+".join(re.escape(c) for c in components)
     # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
@@ -2027,11 +2048,41 @@ _permanent_approved: set = set()
 # resolves every pending approval in the session.
 
 
-class _ApprovalEntry:
-    """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+#: How long a rendered approval stays answerable. A card the owner walked away
+#: from must not still be live an hour later, and the agent thread that is
+#: blocked on it gives up on the approval timeout anyway.
+APPROVAL_ID_TTL_SECONDS = 900.0
 
-    def __init__(self, data: dict):
+
+def approval_snapshot_digest(payload: dict) -> str:
+    """A hash of the approval exactly as it was rendered to the owner.
+
+    Bound into the approval id so a decision cannot be applied to a different
+    request than the one the owner read. Without it, "approve" meant "approve
+    whatever is at the front of the queue *now*" — and the queue is shared with
+    every parallel subagent, so a second request arriving between render and
+    tap silently inherited the answer.
+    """
+    body = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+class _ApprovalEntry:
+    """One pending approval inside a gateway session.
+
+    Addressed by an opaque id rather than by position. The previous design
+    resolved the *oldest* entry, or — with ``resolve_all`` — every entry in the
+    session at once, which made a single tap a session-wide grant covering
+    requests the owner had never seen.
+    """
+    __slots__ = ("id", "event", "data", "result", "reason", "actor",
+                 "snapshot_digest", "created_at", "expires_at", "resolved")
+
+    def __init__(self, data: dict, *, now: Optional[float] = None):
+        ts = time.time() if now is None else now
+        # Opaque: a uuid4, not a queue index or a session-derived value.
+        # Guessing one must not be a way to answer somebody else's prompt.
+        self.id = uuid.uuid4().hex
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -2039,6 +2090,18 @@ class _ApprovalEntry:
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: Optional[str] = None
+        #: The authenticated identity that answered. Set by the transport from
+        #: what it authenticated, never from a client-supplied field.
+        self.actor: Optional[str] = None
+        self.snapshot_digest: str = ""
+        self.created_at = ts
+        self.expires_at = ts + APPROVAL_ID_TTL_SECONDS
+        #: One use. A second response to the same id resolves nothing.
+        self.resolved = False
+
+    def is_live(self, now: Optional[float] = None) -> bool:
+        ts = time.time() if now is None else now
+        return not self.resolved and ts <= self.expires_at
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -2070,40 +2133,143 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
-    """Called by the gateway's /approve or /deny handler to unblock
-    waiting agent thread(s).
+class ApprovalAuthorityError(RuntimeError):
+    """A response could not be attributed to a specific approval. Refusal."""
 
-    When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
 
-    *reason* is an optional free-text explanation attached to an explicit
-    deny (``/deny <reason>``).  It is relayed back to the agent in the
-    BLOCKED message so it can adapt instead of only hearing "denied".
+def resolve_gateway_approval(
+    session_key: str,
+    choice: str,
+    *,
+    approval_id: str,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Answer exactly one rendered approval, once.
 
-    Returns the number of approvals resolved (0 means nothing was pending).
+    ``approval_id`` is the opaque id carried on the request the owner actually
+    saw. ``actor`` is the identity the *transport* authenticated — never a
+    client-supplied field, because a response that names its own author is not
+    attribution.
+
+    What this replaces, and why. The old signature took a session key and an
+    optional ``resolve_all``, and answered the oldest pending entry — or every
+    entry in the session at once. Three things were wrong with that:
+
+    * A tap applied to whatever was at the front of the queue *at that moment*.
+      The queue is shared with every parallel subagent, so a second request
+      arriving between render and tap silently inherited the answer.
+    * ``resolve_all`` turned one tap into a session-wide grant covering
+      requests the owner had never been shown.
+    * Nothing recorded who answered, so the audit could say a decision was made
+      but not by whom.
+
+    Returns 1 when it resolved that approval, 0 when the id is unknown, already
+    used, or expired. Never more than 1 — there is no longer any way to answer
+    more than one thing at a time.
     """
+    if not approval_id or not str(approval_id).strip():
+        raise ApprovalAuthorityError(
+            "an approval response must name the approval it answers"
+        )
+    if not actor or not str(actor).strip():
+        raise ApprovalAuthorityError(
+            "an approval response must carry the identity that authenticated it"
+        )
+
+    ts = time.time() if now is None else now
     with _lock:
-        queue = _gateway_queues.get(session_key)
-        if not queue:
+        queue = _gateway_queues.get(session_key) or []
+        target = None
+        for entry in queue:
+            if entry.id == approval_id:
+                target = entry
+                break
+        if target is None or not target.is_live(ts):
             return 0
-        if resolve_all:
-            targets = list(queue)
-            queue.clear()
-        else:
-            targets = [queue.pop(0)]
+        target.resolved = True
+        queue.remove(target)
         if not queue:
             _gateway_queues.pop(session_key, None)
 
-    for entry in targets:
-        entry.result = choice
+    target.result = choice
+    target.actor = str(actor).strip()
+    if reason:
+        target.reason = reason
+    target.event.set()
+    return 1
+
+
+def deny_all_pending(
+    session_key: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Deny every pending approval in a session. Cannot approve anything.
+
+    Bulk resolution survives only in this direction, and the asymmetry is the
+    whole point: denying things the owner never saw is safe — nothing happens —
+    while approving them is exactly the session-wide grant that had to go.
+    Session teardown, ``/stop`` and interrupt all use this.
+    """
+    ts = time.time() if now is None else now
+    with _lock:
+        queue = _gateway_queues.pop(session_key, []) or []
+    live = [e for e in queue if e.is_live(ts)]
+    for entry in live:
+        entry.resolved = True
+        entry.result = "deny"
+        entry.actor = (str(actor).strip() or "system")
         if reason:
             entry.reason = reason
         entry.event.set()
-    return len(targets)
+    return len(live)
+
+
+def resolve_oldest_gateway_approval(
+    session_key: str,
+    choice: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Answer the single pending approval, for surfaces that cannot carry an id.
+
+    A migration path, not a peer of `resolve_gateway_approval`. Several chat
+    adapters put approval buttons on a message whose callback payload has no
+    room for an opaque id yet; until each carries one, this is how their taps
+    arrive.
+
+    It keeps the property that matters by refusing to guess: a **positive**
+    choice is only applied when exactly one approval is live, so an approval
+    can never land on a request the owner was not looking at. With two or more
+    pending it returns 0 and the caller must surface an id-carrying prompt. A
+    deny is allowed against the oldest regardless — declining the wrong thing
+    costs a retry, approving the wrong thing costs whatever it did.
+    """
+    ts = time.time() if now is None else now
+    with _lock:
+        live = [e for e in (_gateway_queues.get(session_key) or []) if e.is_live(ts)]
+        if not live:
+            return 0
+        if choice != "deny" and len(live) > 1:
+            return 0
+        target = live[0]
+    return resolve_gateway_approval(
+        session_key, choice, approval_id=target.id, actor=actor,
+        reason=reason, now=ts,
+    )
+
+
+def pending_approval_ids(session_key: str, now: Optional[float] = None) -> list[str]:
+    """The ids currently answerable in a session. For diagnostics and tests."""
+    ts = time.time() if now is None else now
+    with _lock:
+        return [e.id for e in (_gateway_queues.get(session_key) or []) if e.is_live(ts)]
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -2645,6 +2811,9 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    extra_approval_data: Optional[dict] = None,
+    once_only: bool = False,
+    on_authoritative_response=None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2681,20 +2850,98 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        extra_approval_data: Structured fields merged into the payload the
+            gateway approval card receives — a preview of what is about to
+            happen, so the owner judges the action rather than a one-line
+            label. Cannot overwrite the allowlist keys: a caller-supplied
+            ``pattern_key`` would let a preview redirect which pattern the
+            decision is recorded against.
+        once_only: This action may be approved for *this* call and no other.
+            No session cache short-circuit, no ``--yolo`` bypass, no
+            ``cron_mode: approve`` auto-approval, and a ``session``/``always``
+            answer is honoured for this call but never persisted. Reserved for
+            irreversible actions, where a standing grant is the whole risk: an
+            action that can be pre-approved once and then repeated unattended
+            is an APPROVAL-tier action wearing a stricter label.
+        on_authoritative_response: Called at the exact point a positive
+            outcome is produced, with ``(choice, decided_by, receipt)``, and
+            **only** on paths where something actually authorised the action.
+            This is the trusted response boundary: it is where an execution
+            capability may be minted, and putting it here rather than at the
+            caller is what makes a pre-consent grant unspellable.
+
+            ``decided_by`` names the provenance, because five different code
+            paths in this function return ``approved: True`` and only two of
+            them are a person answering a prompt. It is one of
+            ``human_gateway``, ``human_cli``, ``standing_session``,
+            ``standing_permanent`` or ``owner_bypass``. The auto-approve paths
+            — a cron job under ``cron_mode: approve``, and the historical
+            non-interactive fall-open — call it **not at all**: nobody
+            consented, so there is nothing to mint, and a caller that requires
+            a capability will refuse.
+
+            Raising from the callback turns the approval into a refusal. That
+            is deliberate and is the fail-closed edge: if the evidence cannot
+            be recorded, the action does not happen.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
+    def _authorised(choice: str, decided_by: str, actor: str) -> Optional[dict]:
+        """The trusted response boundary. Returns a refusal, or None to allow.
+
+        Called only where something actually authorised the action, and never
+        on the two auto-approve paths where nothing did. If recording the
+        evidence fails, the approval becomes a refusal — an action whose
+        consent cannot be written down does not happen.
+        """
+        if on_authoritative_response is None:
+            return None
+        try:
+            on_authoritative_response(choice, decided_by, uuid.uuid4().hex, actor)
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Approval evidence could not be recorded for %s (%s): %s",
+                pattern_key, decided_by, exc,
+            )
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: this action was approved but the approval could "
+                    f"not be recorded ({exc}). It has NOT run. Ask again."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
-        return {"approved": True, "message": None}
+    if not once_only and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
+        # The owner turned the gate off for this session; that session key is
+        # the identity responsible for anything it lets through.
+        return _authorised(
+            "once", "owner_bypass", f"yolo:{get_current_session_key(default='')}"
+        ) or {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
+    if not once_only and is_approved(session_key, pattern_key):
+        # A standing grant is still human consent — given earlier, and to a
+        # class of calls rather than to this one. Naming it separately is what
+        # lets a caller decide the two are not interchangeable.
+        with _lock:
+            permanent = any(
+                alias in _permanent_approved
+                for alias in _approval_key_aliases(pattern_key)
+            )
+        decided_by = "standing_permanent" if permanent else "standing_session"
+        # A standing grant answers for a prior human decision about this
+        # pattern; the pattern is what identifies it.
+        return _authorised(
+            "session", decided_by, f"{decided_by}:{pattern_key}"
+        ) or {"approved": True, "message": None}
 
     if approval_callback is None:
         try:
@@ -2709,7 +2956,9 @@ def _run_approval_gate(
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
+            # `cron_mode: approve` is a standing grant by another name, so a
+            # once-only action refuses it the way it refuses --yolo.
+            if once_only or _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
                     "message": cron_deny_message,
@@ -2764,6 +3013,20 @@ def _run_approval_gate(
                 "description": redact_sensitive_text(description),
                 "allow_permanent": True,
             }
+            if extra_approval_data:
+                # Merged, then the allowlist keys re-asserted: a caller-supplied
+                # `pattern_key` would let a preview redirect which pattern the
+                # decision is recorded against — approving one thing and
+                # granting another.
+                approval_data.update(extra_approval_data)
+                approval_data["pattern_key"] = pattern_key
+                approval_data["pattern_keys"] = [pattern_key]
+            if once_only:
+                # Say so in the payload, not only in the handler. A card that
+                # offers "always" for an action that cannot be granted always
+                # is a card that lies about what the button does.
+                approval_data["allow_permanent"] = False
+                approval_data["choices"] = ["once", "deny"]
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2801,13 +3064,19 @@ def _run_approval_gate(
                     "user_consent": False,
                 }
 
-            if choice == "session":
-                approve_session(session_key, pattern_key)
-            elif choice == "always":
-                approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
-            return {"approved": True, "message": None}
+            # A once-only decision covers this call and nothing after it, so
+            # nothing is written to the session or permanent allowlist even if
+            # a surface managed to send back "session" or "always".
+            if not once_only:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
+            return _authorised(
+                choice, "human_gateway", decision.get("actor") or ""
+            ) or {"approved": True, "message": None}
 
         # No notify callback (e.g. API server without an attached chat):
         # queue for /approve /deny review, agent sees approval_required.
@@ -2843,14 +3112,20 @@ def _run_approval_gate(
             "description": description,
         }
 
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+    # Same rule as the gateway branch: a once-only answer is honoured for this
+    # call and written nowhere. The CLI prompt still offers [s]ession/[a]lways
+    # — refusing to *persist* them is what makes the tier non-negotiable.
+    if not once_only:
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return _authorised(
+        choice, "human_cli", f"cli:{_local_cli_actor()}"
+    ) or {"approved": True, "message": None}
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
@@ -2943,6 +3218,9 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    preview: Optional[dict] = None,
+    once_only: bool = False,
+    on_authoritative_response=None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -2970,6 +3248,16 @@ def request_tool_approval(
             on the same tool).
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
+        preview: Structured description of exactly what will happen, carried
+            on the approval request so the card shows the thing being judged
+            rather than a one-line label. For a send that means the sender,
+            every recipient, the subject and the body — deliberately *not*
+            redacted, because the card must describe the real action and a
+            redacted preview would describe a different one.
+        once_only: Approval covers this call and no other — no session cache,
+            no ``--yolo`` bypass, no ``cron_mode: approve``, nothing persisted.
+            This is what ALWAYS_APPROVAL means in practice, and it is the only
+            thing that makes the tier different from APPROVAL.
 
     Returns:
         ``{"approved": True, "message": None}`` when allowed, or
@@ -3021,6 +3309,9 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        extra_approval_data={"preview": preview} if preview else None,
+        once_only=once_only,
+        on_authoritative_response=on_authoritative_response,
     )
 
 
@@ -3076,6 +3367,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
     entry = _ApprovalEntry(approval_data)
+    # The id travels *on the payload the owner is shown*, and the digest is
+    # taken over that exact payload. A response naming this id is therefore a
+    # response to this rendering of this request — not to whatever is at the
+    # front of a shared queue when the tap arrives.
+    approval_data["approval_id"] = entry.id
+    approval_data["expires_at"] = entry.expires_at
+    entry.snapshot_digest = approval_snapshot_digest(approval_data)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -3167,7 +3465,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
+    return {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": entry.reason,
+        # Who answered, as the transport authenticated them. Carried out so the
+        # capability minted from this decision can name an approver rather than
+        # recording that "someone" said yes.
+        "actor": entry.actor,
+        "approval_id": entry.id,
+    }
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -3926,3 +4233,13 @@ def request_elicitation_consent(
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
+
+
+def _local_cli_actor() -> str:
+    """Who is at the terminal. The CLI's authenticated identity is the OS user."""
+    import getpass
+
+    try:
+        return getpass.getuser() or "unknown"
+    except Exception:
+        return "unknown"

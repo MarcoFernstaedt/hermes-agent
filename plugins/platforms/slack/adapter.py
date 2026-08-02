@@ -3806,7 +3806,7 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        The buttons call ``resolve_oldest_gateway_approval(, actor="slack:button")`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
         """
         if not self._app:
@@ -4267,9 +4267,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Resolve the approval — this unblocks the agent thread
         try:
-            from tools.approval import resolve_gateway_approval
+            from tools.approval import resolve_oldest_gateway_approval
 
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_oldest_gateway_approval(session_key, choice, actor="slack:button")
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count,

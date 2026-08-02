@@ -1000,7 +1000,7 @@ class TeamsAdapter(BasePlatformAdapter):
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
     ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
         """Handle an Adaptive Card Action.Execute button click."""
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import resolve_oldest_gateway_approval, has_blocking_approval
 
         action = ctx.activity.value.action
         data = action.data or {}
@@ -1066,7 +1066,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        resolve_gateway_approval(session_key, choice)
+        resolve_oldest_gateway_approval(session_key, choice, actor="teams:button")
 
         label_map = {
             "once": "✅ Allowed (once)",

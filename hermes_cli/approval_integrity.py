@@ -69,10 +69,32 @@ def canonical_hash(tool_name: str, args: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+class IntegrityModeError(RuntimeError):
+    """The integrity mode could not be determined. Always a refusal."""
+
+
 def mode() -> str:
-    """Current enforcement mode: ``observe`` (default), ``enforce`` or ``off``."""
-    raw = (os.environ.get("HERMES_APPROVAL_INTEGRITY") or "observe").strip().lower()
-    return raw if raw in {"observe", "enforce", "off"} else "observe"
+    """Current enforcement mode: ``observe``, ``enforce`` or ``off``.
+
+    Unset and misspelled both raise. Falling back to ``observe`` meant a typo
+    in a deployment silently downgraded a machine somebody had deliberately
+    switched to enforcing, and made "nobody configured this" look identical to
+    "somebody chose to measure". The shipped default is still observe, but the
+    product states it at startup (`hermes_constants.apply_default_gate_modes`)
+    rather than the check inventing it.
+    """
+    raw = os.environ.get("HERMES_APPROVAL_INTEGRITY")
+    if raw is None:
+        raise IntegrityModeError(
+            "HERMES_APPROVAL_INTEGRITY is not set; refusing to guess a mode"
+        )
+    value = raw.strip().lower()
+    if value not in {"observe", "enforce", "off"}:
+        raise IntegrityModeError(
+            f"HERMES_APPROVAL_INTEGRITY={raw!r} is not one of "
+            "('enforce', 'observe', 'off'); refusing to guess a mode"
+        )
+    return value
 
 
 def _evict_locked(now: float) -> None:
@@ -114,7 +136,16 @@ def record_grant(
     never payload data and never affects the digest.
 
     No-op when integrity is off or there is no call id to key on."""
-    if not tool_call_id or mode() == "off":
+    if not tool_call_id:
+        return
+    try:
+        if mode() == "off":
+            return
+    except IntegrityModeError:
+        # Cannot tell whether to record. Recording anyway would create
+        # evidence in a process whose policy is unknown; not recording is the
+        # conservative half, and `verify_at_execution` refuses on the same
+        # condition.
         return
     now = time.time()
     trail = tuple((context or {}).get("middleware", ()) or ())
@@ -184,7 +215,12 @@ def verify_at_execution(
     """
     if not tool_call_id:
         return None
-    m = mode()
+    try:
+        m = mode()
+    except IntegrityModeError as exc:
+        return (
+            f"Approval integrity for '{tool_name}' cannot be evaluated: {exc}"
+        )
     if m == "off":
         return None
     enforced = m == "enforce"

@@ -58,6 +58,10 @@ class TestResolveVerifyFallback:
 
         monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ssl-cert.pem")
         monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
+        # `REQUESTS_CA_BUNDLE` too: it is the third source the resolver reads,
+        # and leaving a real one set would make the fallback under test never
+        # be reached.
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
         result = _resolve_verify(auth_state={"tls": {}})
         assert result is True
 
@@ -66,6 +70,7 @@ class TestResolveVerifyFallback:
 
         monkeypatch.setenv("HERMES_CA_BUNDLE", "/nonexistent/hermes-ca.pem")
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
         result = _resolve_verify(auth_state={"tls": {}})
         assert result is True
 
@@ -93,10 +98,17 @@ class TestResolveVerifyFallback:
         assert result is False
 
     def test_no_ca_bundle_returns_true(self, monkeypatch):
+        """"No CA bundle" means none of the three the resolver reads.
+
+        This cleared two and left `REQUESTS_CA_BUNDLE`, which is set on any
+        machine behind a TLS-inspecting proxy — so the resolver found a bundle,
+        returned a real `SSLContext`, and the test reported a defect in code
+        that was working exactly as specified.
+        """
         from hermes_cli.auth import _resolve_verify
 
-        monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
-        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            monkeypatch.delenv(var, raising=False)
         result = _resolve_verify(auth_state={"tls": {}})
         assert result is True
 

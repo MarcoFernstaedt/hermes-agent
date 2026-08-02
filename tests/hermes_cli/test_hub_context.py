@@ -17,6 +17,18 @@ def home(tmp_path, monkeypatch):
     (h / "state").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: h)
+    # Modules that did `from hermes_constants import get_hermes_home` hold
+    # their own binding, so patching the source module alone leaves them
+    # pointing at the real home. That is not a theoretical concern: with the
+    # life router unpatched, every test in this file shared one progress
+    # database, so a test that completed a routine left the income gate open
+    # for the next one and the failure appeared in a test that had done
+    # nothing wrong.
+    for module in ("hermes_cli.life.router",):
+        try:
+            monkeypatch.setattr(f"{module}.get_hermes_home", lambda: h)
+        except AttributeError:
+            pass
     return h
 
 
@@ -25,7 +37,9 @@ def test_payload_shape(home):
 
     out = collect_hub_context()
     assert isinstance(out["attention"], list) and out["attention"]
-    assert set(out["sections"]) == {"jobs", "review", "guardrails", "capabilities", "health"}
+    assert set(out["sections"]) == {
+        "jobs", "review", "guardrails", "capabilities", "progress", "health",
+    }
     assert isinstance(out["generated_at"], str)
 
 
@@ -58,7 +72,9 @@ def test_unknown_section_names_are_ignored_not_fatal(home):
     out = collect_hub_context(["health", "not_a_section"])
     assert set(out["sections"]) == {"health"}
     # All-unknown falls back to everything rather than returning nothing.
-    assert len(collect_hub_context(["nope"])["sections"]) == 5
+    from hermes_cli.hub_context import _SECTION_FNS
+
+    assert len(collect_hub_context(["nope"])["sections"]) == len(_SECTION_FNS)
 
 
 def test_halt_leads_the_attention_list(home, monkeypatch):
@@ -149,3 +165,124 @@ def test_tool_returns_the_same_assembler_output(home):
         body = json.loads(body)
     assert "sections" in body
     assert set(body["sections"]) == {"health"}
+
+
+class TestProgressIsWhatNowSaysAboutTheDay:
+    """The routines the owner keeps had no representation in the payload.
+
+    `hub_context` reported jobs, review, guardrails, capabilities and health,
+    and said nothing about the day they had already written down — so a Now
+    screen built on it answered "what needs me?" with everything except the
+    part most likely to be acted on. There is exactly one record of those
+    routines; this reads it rather than defining "done" a second time.
+    """
+
+    def test_an_uninitialised_store_says_so_rather_than_reporting_no_routines(
+        self, home
+    ):
+        # "Never set up" and "set up and all done" are different facts, and a
+        # screen that conflates them tells the owner their day is finished.
+        from hermes_cli.hub_context import collect_hub_context
+
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["available"] is False
+        assert "not initialised" in section["reason"]
+
+    def test_it_reports_completion_from_the_progress_store(self, home, monkeypatch):
+        from hermes_cli.life.repository import LifeRepository
+        from hermes_cli.life.router import default_database_path
+        from hermes_cli.hub_context import collect_hub_context
+
+        repo = LifeRepository(default_database_path())
+        repo.migrate()
+        today = repo.today()
+        total = today["totals"]["active"]
+        assert total, "the seeded store should carry the default routines"
+
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["available"] is True
+        assert section["routines"] == {"completed": 0, "total": total}
+        assert len(section["incomplete"]) <= total
+
+    def test_a_completed_routine_is_not_listed(self, home):
+        from hermes_cli.life.repository import LifeRepository
+        from hermes_cli.life.router import default_database_path
+        from hermes_cli.hub_context import collect_hub_context
+
+        repo = LifeRepository(default_database_path())
+        repo.migrate()
+        today = repo.today()
+        habit = today["habits"][0]
+        repo.set_entry(
+            habit["id"], day=today["day"], value=float(habit["target"]), note="",
+        )
+
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        listed = {item["id"] for item in section["incomplete"]}
+        assert habit["id"] not in listed
+        assert section["routines"]["completed"] == 1
+
+    def test_the_income_gate_travels_with_it(self, home):
+        # The gate is what constrains the day rather than merely filling it.
+        from hermes_cli.life.repository import LifeRepository
+        from hermes_cli.life.router import default_database_path
+        from hermes_cli.hub_context import collect_hub_context
+
+        LifeRepository(default_database_path()).migrate()
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["income_gate"]["open"] is False
+        assert section["income_gate"]["message"]
+
+    def test_a_closed_gate_leads_the_routine_line_in_attention(self, home):
+        from hermes_cli.life.repository import LifeRepository
+        from hermes_cli.life.router import default_database_path
+        from hermes_cli.hub_context import collect_hub_context
+
+        LifeRepository(default_database_path()).migrate()
+        lines = collect_hub_context()["attention"]
+        gate = next(i for i, line in enumerate(lines) if "Income gate" in line)
+        routines = next(i for i, line in enumerate(lines) if "routines done today" in line)
+        assert gate < routines
+
+    def test_yesterdays_written_intention_is_carried_and_never_invented(
+        self, home
+    ):
+        """Their words, or nothing. No placeholder, no derived stand-in."""
+        from datetime import date, timedelta
+
+        from hermes_cli.life.repository import LifeRepository
+        from hermes_cli.life.router import default_database_path
+        from hermes_cli.hub_context import collect_hub_context
+
+        repo = LifeRepository(default_database_path())
+        repo.migrate()
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["intention"] is None
+
+        # "Yesterday" relative to the day the *section* reports, not to this
+        # process's own clock. Computing it independently made the test a
+        # midnight race: run it either side of the rollover and the two dates
+        # disagree by one, the reflection lands on a day nothing reads, and the
+        # failure looks like the carry being broken.
+        yesterday = (
+            date.fromisoformat(section["day"]) - timedelta(days=1)
+        ).isoformat()
+        repo.set_reflection(
+            day=yesterday, wake_time="", bedtime="", energy=None, mood="",
+            win="", obstacle="", lesson="", tomorrow="Finish the packet for Acme.",
+        )
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["intention"] == "Finish the packet for Acme."
+
+    def test_a_broken_progress_store_does_not_break_the_payload(
+        self, home, monkeypatch
+    ):
+        from hermes_cli import hub_context
+
+        monkeypatch.setitem(
+            hub_context._SECTION_FNS, "progress",
+            lambda: (_ for _ in ()).throw(RuntimeError("db is on fire")),
+        )
+        out = hub_context.collect_hub_context()
+        assert out["sections"]["progress"]["available"] is False
+        assert out["sections"]["health"]["available"] is True

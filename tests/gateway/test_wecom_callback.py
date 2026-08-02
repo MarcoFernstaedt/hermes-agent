@@ -6,7 +6,20 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from plugins.platforms.wecom.callback_adapter import (
+    DEFUSEDXML_AVAILABLE,
+    WecomCallbackAdapter,
+)
+
+# WeCom callbacks are parsed with `defusedxml`, which ships in the optional
+# `wecom` extra. Without it the adapter's `ET` is None and every parse fails
+# with an AttributeError about NoneType — a missing optional dependency
+# reported as a parsing defect. The adapter already exposes the flag; the tests
+# just never consulted it.
+pytestmark = pytest.mark.skipif(
+    not DEFUSEDXML_AVAILABLE,
+    reason="defusedxml is not installed (optional `wecom` extra)",
+)
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
 

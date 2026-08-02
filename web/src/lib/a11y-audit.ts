@@ -90,3 +90,68 @@ export function auditA11y(html: string): A11yFinding[] {
 export function isAccessible(html: string): boolean {
   return auditA11y(html).length === 0;
 }
+
+/**
+ * Landmark and heading rules for a whole *page shell*, not a fragment.
+ *
+ * Separate from `auditA11y` on purpose: "exactly one h1" is a true statement
+ * about a page and a false one about a card, so running these over a component
+ * fragment would produce failures that mean nothing. Call this only on output
+ * that represents a complete route.
+ *
+ * These three are the ones an NVDA user hits first and hardest:
+ *
+ *  - `skip-link`: the first focusable thing on the page must jump to the main
+ *    content. Without it, reaching the page's actual content means tabbing
+ *    through the entire navigation on every single route change.
+ *  - `main-landmark`: exactly one `<main>`. Zero means the `M` shortcut and
+ *    "skip to main" have nothing to land on; more than one means neither knows
+ *    where to go.
+ *  - `single-h1`: exactly one `<h1>`. The heading list is how a screen-reader
+ *    user builds a mental map of a page, and two h1s describe two pages.
+ */
+export function auditPageShell(html: string): A11yFinding[] {
+  const findings: A11yFinding[] = [...auditA11y(html)];
+
+  const mains = html.match(/<main\b/gi) ?? [];
+  if (mains.length !== 1) {
+    findings.push({
+      rule: "main-landmark",
+      detail: `expected exactly one <main>, found ${mains.length}`,
+    });
+  }
+
+  const h1s = html.match(/<h1\b/gi) ?? [];
+  if (h1s.length !== 1) {
+    findings.push({
+      rule: "single-h1",
+      detail: `expected exactly one <h1>, found ${h1s.length}`,
+    });
+  }
+
+  // The skip link must target the main landmark's id, and must come before it
+  // in source order — a skip link after the navigation it is meant to skip is
+  // decoration.
+  const skip = html.match(/<a\b[^>]*href\s*=\s*"#([^"]+)"[^>]*>/i);
+  const mainId = html.match(/<main\b[^>]*\bid\s*=\s*"([^"]+)"/i);
+  if (!skip || !mainId) {
+    findings.push({
+      rule: "skip-link",
+      detail: !mainId
+        ? "<main> has no id for a skip link to target"
+        : "no in-page skip link found",
+    });
+  } else if (skip[1] !== mainId[1]) {
+    findings.push({
+      rule: "skip-link",
+      detail: `skip link targets #${skip[1]} but <main> is #${mainId[1]}`,
+    });
+  } else if ((skip.index ?? 0) > (mainId.index ?? 0)) {
+    findings.push({
+      rule: "skip-link",
+      detail: "the skip link comes after <main>, so it skips nothing",
+    });
+  }
+
+  return findings;
+}

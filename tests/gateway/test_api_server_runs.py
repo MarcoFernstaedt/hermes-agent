@@ -363,22 +363,33 @@ class TestRunEvents:
         adapter._run_approval_sessions[run_id] = "session-123"
 
         async with TestClient(TestServer(app)) as cli:
-            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
                 approval_resp = await cli.post(
                     f"/v1/runs/{run_id}/approval",
                     json={"choice": "once", "all": "false"},
                 )
 
         assert approval_resp.status == 200
+        # The oldest-only resolver, and nothing else. A quoted "false" that
+        # coerced to True would have taken the bulk path instead.
         mock_resolve.assert_called_once_with(
             "session-123",
             "once",
-            resolve_all=False,
+            actor="api:client",
         )
 
     @pytest.mark.asyncio
-    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
-        """Same client session_id must not let one run approve another run's queue."""
+    async def test_bulk_approve_is_refused_outright(self, auth_adapter):
+        """Bulk *approve* no longer exists, which is stronger than scoping it.
+
+        This used to check that `resolve_all` with a positive choice stayed
+        inside the caller's own run. It did — and it still granted every
+        request in that run's queue, including ones the caller had never been
+        shown. A tap on one card cannot be consent for a request that arrived
+        after it was rendered, so the positive bulk path is gone: the API
+        refuses it with a 400 and both queues are left exactly as they were.
+        Bulk *deny* remains, because withholding consent en masse is safe.
+        """
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(auth_adapter, "_create_agent") as mock_create:
@@ -428,15 +439,27 @@ class TestRunEvents:
                 )
                 approval_data = await approval_resp.json()
 
-                assert approval_resp.status == 200
-                assert approval_data["resolved"] == 1
-                assert attacker_entry.result == "always"
-                assert attacker_entry.event.is_set()
+                assert approval_resp.status == 400
+                assert "deny all" in str(approval_data)
+                # Nothing was resolved anywhere — not the caller's own queue,
+                # and certainly not the other run's.
+                assert attacker_entry.result is None
+                assert not attacker_entry.event.is_set()
                 assert victim_entry.result is None
                 assert not victim_entry.event.is_set()
+
+                # Bulk *deny* is still available, and is still scoped.
+                deny_resp = await cli.post(
+                    f"/v1/runs/{attacker_run}/approval",
+                    json={"choice": "deny", "resolve_all": True},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert deny_resp.status == 200
+                assert (await deny_resp.json())["resolved"] == 1
+                assert attacker_entry.result == "deny"
+                assert victim_entry.result is None
                 with approval_mod._lock:
                     assert approval_mod._gateway_queues[victim_run] == [victim_entry]
-                    assert victim_run in approval_mod._gateway_queues
                     assert attacker_run not in approval_mod._gateway_queues
 
                 # Clean up the synthetic pending victim approval and unblock the

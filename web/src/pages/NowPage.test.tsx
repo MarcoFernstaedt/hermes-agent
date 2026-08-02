@@ -119,3 +119,182 @@ describe("NowView", () => {
     expect(auditA11y(html)).toEqual([]);
   });
 });
+
+
+/**
+ * The ranked outcomes, rendered by the *real* `NowView`.
+ *
+ * `nowOrder.ts` and `outcomeRanking.ts` were previously tested in isolation
+ * while the page rendered its old composition and imported neither — the
+ * contract was asserted and unenforced. These render the shipped component
+ * against a real payload, which is the only version of the check that can
+ * catch that.
+ */
+describe("today's three", () => {
+  const withWork = context({
+    review: {
+      available: true,
+      counts: { pending: 1 },
+      pending: [
+        { id: "r1", kind: "write", title: "Approve the invoice reply", risk: "high", source: "gmail" },
+      ],
+    },
+    jobs: {
+      available: true,
+      counts: {},
+      next_actions: [
+        { id: 7, company: "Acme", role: "Engineer", fit_score: 0.8 },
+      ],
+    },
+  });
+
+  function render(data: HubContext) {
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        <NowView data={data} error={false} refreshing={false} onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+  }
+
+  it("shows the projected outcomes on the page", () => {
+    const html = render(withWork);
+    expect(html).toContain("Approve the invoice reply");
+    expect(html).toContain("Engineer");
+  });
+
+  it("marks exactly one recommendation, in words rather than colour", () => {
+    const html = render(withWork);
+    const marks = html.match(/Imperator suggests starting here/g) ?? [];
+    expect(marks).toHaveLength(1);
+  });
+
+  it("shows why the recommendation ranked first", () => {
+    // A recommendation the owner cannot interrogate is obeyed without thought
+    // or ignored entirely.
+    const html = render(withWork);
+    expect(html).toMatch(/consequence is severe|you committed to it/);
+  });
+
+  it("states each item's work state in words", () => {
+    const html = render(withWork);
+    expect(html).toMatch(/Waiting for you|Not started|Imperator is working/);
+  });
+
+  it("offers a native keyboard-operable control to replace the recommendation", () => {
+    const html = render(withWork);
+    expect(html).toMatch(/<button[^>]*type="button"[^>]*>Start with this instead<\/button>/);
+  });
+
+  it("renders nothing at all when there is no real work", () => {
+    // No placeholder row, no "get started" prompt — an empty hub is empty.
+    const html = render(context());
+    expect(html).not.toContain("Today");
+    expect(html).not.toContain("Imperator suggests starting here");
+  });
+
+  it("says three of nine when it considered more than it shows", () => {
+    const many = context({
+      review: {
+        available: true,
+        counts: { pending: 9 },
+        pending: Array.from({ length: 9 }, (_, i) => ({
+          id: `r${i}`, kind: "write", title: `Decision ${i}`, risk: "low", source: "x",
+        })),
+      },
+    });
+    expect(render(many)).toContain("3 of 9");
+  });
+
+  it("passes the accessibility audit with outcomes present", () => {
+    expect(auditA11y(render(withWork))).toEqual([]);
+  });
+});
+
+describe("Progress is what Now says about the day", () => {
+  /**
+   * Now had no Progress in it at all. It ranked review items, job packets,
+   * dated capability fields and platform health, and said nothing about the
+   * routines the owner actually keeps — so "what needs me?" answered with
+   * everything except the part of the day they had already written down.
+   *
+   * There is exactly one record of those routines. Now reads it rather than
+   * computing a second view of the same day that could disagree with the
+   * Progress screen.
+   */
+  const progress = (over: Record<string, unknown> = {}) =>
+    context({
+      progress: {
+        available: true,
+        day: "2026-07-29",
+        routines: { completed: 2, total: 5 },
+        income_gate: { open: false, message: "Income gate closed." },
+        incomplete: [
+          {
+            id: 1, name: "One direct income action", category: "income",
+            value: 0, target: 1, unit: "check", income: true,
+          },
+          {
+            id: 4, name: "Move body", category: "health",
+            value: 0, target: 1, unit: "check", income: false,
+          },
+        ],
+        intention: null,
+        ...over,
+      },
+    });
+
+  it("states routine completion in words", () => {
+    expect(render(progress())).toContain("2 of 5 routines done.");
+  });
+
+  it("says whether the income gate is met", () => {
+    expect(render(progress())).toContain("Income gate not met yet.");
+    expect(
+      render(progress({ income_gate: { open: true, message: "" } })),
+    ).toContain("Income gate met.");
+  });
+
+  it("puts unfinished routines into the ranking", () => {
+    const html = render(progress());
+    expect(html).toContain("One direct income action");
+    expect(html).toContain("Move body");
+  });
+
+  it("shows the owner's own words about today when they wrote them", () => {
+    const html = render(progress({ intention: "Finish the packet for Acme." }));
+    expect(html).toContain("Finish the packet for Acme.");
+  });
+
+  it("invents nothing when they did not", () => {
+    // No placeholder, no "set an intention" prompt. An absent thing is absent.
+    expect(render(progress())).not.toContain("Last night you wrote");
+  });
+
+  it("renders no routine section at all when Progress is unavailable", () => {
+    const html = render(
+      context({ progress: { available: false, reason: "progress store not initialised" } }),
+    );
+    expect(html).not.toContain("Routines and income");
+    // And says so where unavailable sources are named, rather than silently
+    // looking like a day with no routines.
+    expect(html).toContain("progress");
+  });
+
+  it("reads in the order nowOrder declares", () => {
+    // For a screen-reader user the reading order *is* the design. Asserting the
+    // rendered DOM rather than the data model is the point: `nowOrder` existed
+    // with nothing rendering from it, so the order it declared was a claim
+    // nothing checked.
+    const html = render(progress());
+    const rendered = [...html.matchAll(/data-now-section="([a-z]+)"/g)].map((m) => m[1]);
+    expect(rendered).toEqual(["outcome", "gate"]);
+  });
+
+  it("drops a section with nothing to say rather than rendering it empty", () => {
+    // An empty card still costs a screen-reader user a heading, a landmark and
+    // a swipe to discover it says nothing — every morning.
+    const html = render(context());
+    const rendered = [...html.matchAll(/data-now-section="([a-z]+)"/g)].map((m) => m[1]);
+    expect(rendered).not.toContain("gate");
+  });
+});

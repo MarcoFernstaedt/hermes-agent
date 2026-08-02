@@ -35,7 +35,13 @@ export function ThreePane({
         {list}
       </aside>
 
-      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto rounded-lg border border-border">
+      {/* The detail pane, not a landmark. This block renders inside the
+          page's one <main>; a second one here would give the skip link and
+          the `M` shortcut two destinations. */}
+      <section
+        aria-label="Detail"
+        className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto rounded-lg border border-border"
+      >
         {context && (
           <button
             type="button"
@@ -48,7 +54,7 @@ export function ThreePane({
           </button>
         )}
         {detail}
-      </main>
+      </section>
 
       {context && showContext && (
         <aside

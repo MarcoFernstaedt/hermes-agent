@@ -2540,10 +2540,42 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     from hermes_cli.middleware import run_tool_execution_middleware
 
+    def _gated_execute(next_args: dict) -> Any:
+        """The capability gate for the agent loop's *inline* tools.
+
+        Most tools reach their handler through `registry.dispatch()`, which
+        consumes a capability before entering it. The branches above do not —
+        `memory`, `delegate_task`, `todo`, `session_search`, `clarify` and
+        `read_terminal` are executed straight from this function, so the
+        chokepoint never saw them and their permission tier was decorative.
+        `memory` writes durable state that is injected into every future turn
+        and `delegate_task` spawns subagents; neither is a tool the tier system
+        should be unable to reach.
+
+        Gating here rather than in each branch is deliberate: every branch
+        converges on this one call, so a branch added later is covered by
+        construction rather than by whoever adds it remembering.
+
+        The registry path is skipped — it does its own check, and running both
+        would consume one capability twice and refuse the second.
+        """
+        payload = next_args if isinstance(next_args, dict) else function_args
+        if function_name in _INLINE_GATED_TOOLS:
+            refusal = _inline_capability_refusal(
+                function_name, payload,
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=tool_call_id or "",
+            )
+            if refusal is not None:
+                return _finish_agent_tool(
+                    json.dumps({"error": refusal, "refused": True}), payload
+                )
+        return _execute(payload)
+
     return run_tool_execution_middleware(
         function_name,
         function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+        _gated_execute,
         original_args=function_args,
         task_id=effective_task_id or "",
         session_id=getattr(agent, "session_id", "") or "",
@@ -3471,3 +3503,30 @@ __all__ = [
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]
+
+
+#: Tools the agent loop runs inline, bypassing `registry.dispatch()`. Anything
+#: here is gated by `_gated_execute` instead. `clarify` and `read_terminal` are
+#: AUTO and pass straight through; they are listed so the set matches the
+#: branches above rather than encoding a guess about which ones matter.
+_INLINE_GATED_TOOLS = frozenset(
+    {"todo", "memory", "session_search", "delegate_task", "clarify", "read_terminal"}
+)
+
+
+def _inline_capability_refusal(
+    tool_name: str, args, *, session_id: str, tool_call_id: str
+) -> "str | None":
+    """Same contract as the registry's gate, for the inline path.
+
+    Delegates to the identical helper so there is one implementation of "may
+    this run", not two that can drift. Fails closed on anything it cannot
+    establish, including not knowing the gate mode.
+    """
+    from tools.registry import _capability_refusal, _current_tool_call_id
+
+    return _capability_refusal(
+        tool_name, args if isinstance(args, dict) else {}, None,
+        session_id=session_id,
+        tool_call_id=tool_call_id or _current_tool_call_id(),
+    )

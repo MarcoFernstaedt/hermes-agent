@@ -84,6 +84,7 @@ import {
   type CommandPaletteItem,
 } from "@/components/CommandPalette";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { SkipToMain } from "@/components/SkipToMain";
 import { GlobalStopControl } from "@/components/GlobalStopControl";
 import { Glance } from "@/components/Glance";
 import { QuickChatFrame } from "@/components/QuickChatFrame";
@@ -1025,6 +1026,10 @@ export default function App() {
         maxHeight: "var(--app-vvh, 100dvh)",
       }}
     >
+      {/* First in DOM order, so it is the first thing Tab reaches. A skip link
+          placed after the navigation skips nothing. */}
+      <SkipToMain />
+
       <SelectionSwitcher />
 
       <CommandPalette
@@ -1306,6 +1311,9 @@ export default function App() {
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
+            {/* Layout only. The page-level <main> is inside
+                `PageHeaderProvider` — it always was, and adding a second one
+                here is what broke the single-landmark rule. */}
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",

@@ -533,10 +533,10 @@ class TestTelegramApprovalCallback:
         query.from_user.id = "12345"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
                 await adapter._handle_callback_query(update, context)
 
-        mock_resolve.assert_called_once_with("agent:main:telegram:group:12345:99", "once")
+        mock_resolve.assert_called_once_with("agent:main:telegram:group:12345:99", "once", actor="telegram:button")
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
 
@@ -571,14 +571,14 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1):
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" not in adapter._typing_paused
 
     @pytest.mark.asyncio
     async def test_typing_stays_paused_when_resolve_returns_zero(self):
-        """If resolve_gateway_approval reports 0 resolves, the agent thread
+        """If resolve_oldest_gateway_approval reports 0 resolves, the agent thread
         was never unblocked, so typing should NOT be force-resumed."""
         adapter = _make_adapter()
         adapter._approval_state[6] = "agent:main:telegram:group:12345:99"
@@ -599,7 +599,7 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=0):
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" in adapter._typing_paused
@@ -624,7 +624,7 @@ class TestTelegramApprovalCallback:
         query.from_user.id = "12345"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1):
                 await adapter._handle_callback_query(update, context)
 
         edit_kwargs = query.edit_message_text.call_args[1]
@@ -652,10 +652,10 @@ class TestTelegramApprovalCallback:
         query.from_user.id = "12345"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            with patch("tools.approval.resolve_oldest_gateway_approval", return_value=1) as mock_resolve:
                 await adapter._handle_callback_query(update, context)
 
-        mock_resolve.assert_called_once_with("some-session", "deny")
+        mock_resolve.assert_called_once_with("some-session", "deny", actor="telegram:button")
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "Denied" in edit_kwargs["text"]
 
@@ -681,7 +681,7 @@ class TestTelegramApprovalCallback:
         update.callback_query = query
         context = MagicMock()
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             await adapter._handle_callback_query(update, context)
 
         mock_resolve.assert_not_called()
@@ -713,7 +713,7 @@ class TestTelegramApprovalCallback:
         query.from_user.id = "12345"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
                 await adapter._handle_callback_query(update, context)
 
         # Should NOT resolve — already handled
@@ -739,7 +739,7 @@ class TestTelegramApprovalCallback:
 
         # Model picker callback should be handled (not crash)
         # We just verify it doesn't try to resolve an approval
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             with patch.object(adapter, "_handle_model_picker_callback", new_callable=AsyncMock):
                 await adapter._handle_callback_query(update, context)
 
@@ -763,7 +763,7 @@ class TestTelegramApprovalCallback:
         update.callback_query = query
         context = MagicMock()
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("tools.approval.resolve_oldest_gateway_approval") as mock_resolve:
             with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
                 # Allow the caller — the new fail-closed allowlist gate
                 # (#24457) rejects empty TELEGRAM_ALLOWED_USERS, but this

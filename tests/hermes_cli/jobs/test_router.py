@@ -149,8 +149,11 @@ def test_jobs_list_summary_and_asset_contract(jobs_db, packet_root, monkeypatch)
     # time-independent — freshness semantics themselves are covered at the
     # repository level with an explicit `now`.
     import sqlite3
-    from datetime import datetime, timezone
 
+    # No `from datetime import datetime` here. `datetime` is imported at module
+    # scope, and re-importing it inside the function made the name local for
+    # the *whole* function body — so the `class FrozenDateTime(datetime)` forty
+    # lines above raised UnboundLocalError before this line ever ran.
     recent = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with sqlite3.connect(jobs_db) as connection:
         connection.execute(

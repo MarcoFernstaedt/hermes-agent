@@ -1780,13 +1780,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 self._exec_approval_state[approval_id] = session_key
                 return False
             try:
-                from tools.approval import resolve_gateway_approval
+                from tools.approval import resolve_oldest_gateway_approval
             except ImportError:
                 logger.warning(
                     "[whatsapp_cloud] approval resolver unavailable"
                 )
                 return False
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_oldest_gateway_approval(session_key, choice, actor="whatsapp:button")
             if not count:
                 logger.info(
                     "[whatsapp_cloud] approval resolver reported no waiter "

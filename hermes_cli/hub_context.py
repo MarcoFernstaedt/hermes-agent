@@ -40,7 +40,9 @@ _MAX_ACTIONS = 5
 _MAX_PENDING = 5
 _MAX_DUE = 5
 
-SECTION_NAMES = ("attention", "jobs", "review", "guardrails", "capabilities", "health")
+SECTION_NAMES = (
+    "attention", "jobs", "review", "guardrails", "capabilities", "progress", "health",
+)
 
 
 def _utcnow() -> datetime:
@@ -187,6 +189,87 @@ def _capabilities_section() -> dict[str, Any]:
     }
 
 
+def _progress_section() -> dict[str, Any]:
+    """Today's routines, from the Progress store — the day's own record.
+
+    Now had no Progress in it at all. It ranked review items, job packets,
+    dated capability fields and platform health, and said nothing about the
+    routines the owner actually keeps, so "what needs me?" answered with
+    everything except the part of the day they had already written down.
+    Whatever Now says about routines has to come from here, because there is
+    exactly one record of them and it is this one.
+
+    Only *incomplete* routines are listed. A finished one is not something that
+    needs the owner, and putting it on Now would make the screen longer in
+    proportion to how well the day is going.
+    """
+    from hermes_cli.life.repository import LifeRepository
+    from hermes_cli.life.router import default_database_path
+
+    path = default_database_path()
+    if not path.is_file():
+        # Never set up. Distinct from "set up and empty", which is a real
+        # answer about the day; this is no answer at all.
+        return {"available": False, "reason": "progress store not initialised"}
+
+    repo = LifeRepository(path)
+    today = repo.today()
+    habits = today.get("habits") or []
+    # `complete` is computed by the repository against the habit's own target.
+    # Recomputing it here would be a second definition of "done" that could
+    # disagree with the Progress screen about the same day.
+    incomplete = [
+        {
+            "id": h.get("id"),
+            "name": h.get("name"),
+            "category": h.get("category"),
+            "value": h.get("value"),
+            "target": h.get("target"),
+            "unit": h.get("unit"),
+            "income": h.get("category") == "income",
+        }
+        for h in habits
+        if not h.get("complete")
+    ]
+    totals = today.get("totals") or {}
+    gate = today.get("income_gate") or {}
+    return {
+        "available": True,
+        "day": today.get("day"),
+        "routines": {
+            "completed": int(totals.get("completed") or 0),
+            "total": int(totals.get("active") or len(habits)),
+        },
+        "income_gate": {
+            "open": bool(gate.get("open")),
+            "message": gate.get("message") or "",
+        },
+        "incomplete": incomplete[:_MAX_DUE],
+        # What the owner wrote last night about today. Their words, and the
+        # only thing on Now that is a stated intention rather than a derived
+        # one — which is exactly why it must not be synthesised when absent.
+        "intention": _carried_intention(repo, today.get("day")),
+    }
+
+
+def _carried_intention(repo, day: str | None) -> str | None:
+    """Yesterday's "tomorrow" line, which is today's stated intention.
+
+    Returns None rather than a guess. Nothing on Now invents an outcome: if the
+    owner did not write one, the section is absent, not empty.
+    """
+    if not day:
+        return None
+    try:
+        from datetime import date, timedelta
+
+        previous = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+        reflection = repo.reflection(previous) or {}
+        return (reflection.get("tomorrow") or "").strip() or None
+    except Exception:
+        return None
+
+
 def _health_section() -> dict[str, Any]:
     """The app's own condition, so the agent can mention a real problem."""
     from hermes_cli.health import collect_health
@@ -237,6 +320,22 @@ def _attention(sections: dict[str, Any]) -> list[str]:
     if due:
         lines.append(f"{len(due)} tracked item{'s' if len(due) != 1 else ''} due or overdue.")
 
+    progress = sections.get("progress", {})
+    if progress.get("available"):
+        routines = progress.get("routines") or {}
+        total = int(routines.get("total") or 0)
+        done = int(routines.get("completed") or 0)
+        if total and done < total:
+            # The income gate first when it is closed: it is the one routine
+            # that gates the others, and saying "3 of 7 routines" without it
+            # describes the day without describing the constraint on it.
+            if not (progress.get("income_gate") or {}).get("open"):
+                lines.append(
+                    (progress.get("income_gate") or {}).get("message")
+                    or "Income gate closed."
+                )
+            lines.append(f"{done} of {total} routines done today.")
+
     health = sections.get("health", {})
     if health.get("status") in {"warn", "error"}:
         lines.append(f"Platform health is {health['status']}: {', '.join(health.get('problems', []))}.")
@@ -251,6 +350,7 @@ _SECTION_FNS: dict[str, Callable[[], dict[str, Any]]] = {
     "review": _review_section,
     "guardrails": _guardrails_section,
     "capabilities": _capabilities_section,
+    "progress": _progress_section,
     "health": _health_section,
 }
 
