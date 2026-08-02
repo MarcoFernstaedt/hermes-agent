@@ -1007,6 +1007,73 @@ export type SpotifyMediaCommand =
   | { action: "shuffle"; shuffle_state: boolean; device_id?: string }
   | { action: "repeat"; repeat_state: SpotifyRepeatState; device_id?: string };
 
+/** One recorded action, as the undo surface renders it. */
+export interface UndoEntry {
+  id: string;
+  action: string;
+  actor: string;
+  session_id: string;
+  target: string;
+  status: string;
+  rollback: string;
+  rollback_detail: string;
+  outcome: string;
+  created_at: number;
+  claimed_at: number | null;
+  undone_at: number | null;
+  reversible: boolean;
+  needs_repair: boolean;
+  in_flight: boolean;
+  /** True when the action created something, so its reversal is a delete. */
+  creates_note: boolean;
+  permanence: string;
+}
+
+/** Why an entry cannot be safely reverted. Never a reason to decide for the owner. */
+export interface UndoConflict {
+  kind: string;
+  message: string;
+  rel?: string;
+  backup?: string;
+  expected_sha256?: string;
+  actual_sha256?: string;
+  note_exists?: boolean;
+}
+
+export interface UndoPreview extends UndoEntry {
+  conflict: UndoConflict | null;
+  can_undo: boolean;
+  /** False for `backup_missing`: there is nothing to restore, so forcing is a
+   *  button that can only fail. */
+  can_force: boolean;
+}
+
+/**
+ * Three lists, not one. "This can be taken back", "this could not be and needs
+ * somebody", and "this is being taken back right now" are three different
+ * claims about the world.
+ */
+export interface UndoSummary {
+  stack: UndoEntry[];
+  repairs: UndoEntry[];
+  in_flight: UndoEntry[];
+  counts: { stack: number; repairs: number; in_flight: number };
+}
+
+export interface UndoApplyResult {
+  undone: boolean;
+  entry?: UndoEntry;
+  reason?: string;
+  /** Nothing was attempted; the entry is untouched and still offerable. */
+  refused?: boolean;
+  message?: string;
+  conflict?: UndoConflict;
+  canForce?: boolean;
+  /** It ran and did not take. Retrying is not the next step; looking is. */
+  failed?: boolean;
+  needsRepair?: boolean;
+}
+
 export type GitReviewScope = "uncommitted" | "branch" | "lastTurn";
 
 export interface GitStatusFile {
@@ -1148,6 +1215,28 @@ export interface AudiobookProgress {
 
 export const api = {
   buildWsUrl,
+
+  // ── Undo ───────────────────────────────────────────────────────────
+  // Over the same `hermes_cli.undo.surface` the gateway RPC and `hermes undo`
+  // go through, so this screen cannot disagree with a terminal about what an
+  // entry means or what forcing does.
+  getUndo: (session = "", limit = 50) =>
+    fetchJSON<UndoSummary>(
+      `/api/undo?session=${encodeURIComponent(session)}&limit=${limit}`,
+    ),
+  previewUndo: (entryId: string) =>
+    fetchJSON<UndoPreview>(`/api/undo/${encodeURIComponent(entryId)}`),
+  applyUndo: (body: { entryId?: string; force?: boolean; sessionId?: string }) =>
+    fetchJSON<UndoApplyResult>("/api/undo/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entryId: body.entryId ?? "",
+        force: body.force ?? false,
+        sessionId: body.sessionId ?? "",
+      }),
+    }),
+
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getProvenance: () => fetchJSON<SystemProvenance>("/api/system/provenance"),
   getSystemHealth: () => fetchJSON<SystemHealth>("/api/system/health"),

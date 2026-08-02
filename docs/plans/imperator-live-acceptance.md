@@ -26,6 +26,7 @@ The commits this candidate adds over the previous FAIL-HOLD candidate
 | `8b2aa9092` | `1d812449b` | the undo surface (RPC + `hermes undo`); content-keyed cache invalidation; the missing slash-command import |
 | `b00c133b4` | `86d000cbf` | the approval fixtures, updated to the id-and-actor contract the gateway now enforces |
 | `1009624d4` | `f869c0454` | `observe` measures without asking — a card whose answer is discarded is worse than no card |
+| _(this one)_ | | the undo screen: `/api/undo` endpoints, an Undo page, and the view logic they share |
 
 **These commits are unsigned.** `commit.gpgsign` is on and `user.signingkey`
 points at `/home/claude/.ssh/commit_signing_key.pub`, which is a zero-byte file
@@ -116,8 +117,8 @@ reported as undetermined rather than local.
 
 **Undo.** The journal had no production reader. `hermes_cli/undo/surface.py` is
 the one place that renders entries and applies decisions; the gateway's
-`undo.list`/`undo.preview`/`undo.apply` and the new `hermes undo` command are
-both thin over it. A refusal (nothing attempted, entry still offerable) and a
+`undo.list`/`undo.preview`/`undo.apply`, the `hermes undo` command, and the
+`/api/undo` routes behind the dashboard's Undo page are all thin over it. A refusal (nothing attempted, entry still offerable) and a
 failure (ran, did not take, entry needs a person) are different answers.
 
 **Qualification defects.** `gateway/slash_commands.py` called
@@ -176,9 +177,6 @@ worse than a FAIL.
   `release/owner-main-4c21` @ `4c21fd39c98456b6f195901712fed83e90d77241`. The
   separate `release/owner-main-fab8` @ `fab8f79c9` worktree is clean and is not
   the active mapping. Reported, not changed.
-* **No undo *screen* was built.** The RPC that a screen would consume exists
-  and is tested (`undo.list`, `undo.preview`, `undo.apply`), and `hermes undo`
-  is a complete surface for a shell. A dashboard page is not in this candidate.
 * **A source-review PASS does not authorise deployment.**
 
 ---
@@ -387,7 +385,29 @@ values must be `[redacted]`.
 
 ## 5. Undo
 
-### 5a. Through the new surface
+### 5a. Through the dashboard
+
+Open **Undo** in the nav.
+
+1. Have the agent write a note. It appears under “Can be undone”. Press Undo:
+   the file goes back and the row disappears.
+2. Edit that note in Obsidian, then press Undo. The banner explains that the
+   file changed since — it does **not** say "something went wrong" — the entry
+   stays in the list, and an **Undo anyway** button appears beside it.
+3. Press Undo anyway. The older version is restored.
+4. Delete the backup a journal entry points at, then open that entry. There is
+   **no** Undo anyway button: there is nothing to restore, so offering it would
+   be a promise the page cannot keep.
+5. Force a reversal to fail (make the vault read-only mid-undo). The banner
+   says it needs a person rather than another attempt, **no** force button is
+   offered, and the entry moves to “Needs attention” — which renders above the
+   ordinary stack.
+6. With nothing wrong, confirm “Needs attention” and “In progress” are absent
+   rather than rendered empty.
+7. Log out (clear the session token) and request `/api/undo` directly. It must
+   return 401: the journal names every file the agent touched.
+
+### 5b. Through the command line
 
 ```
 hermes undo                 # stack, repairs, in-flight
@@ -407,7 +427,7 @@ hermes undo repairs         # exits 1 when there is anything to look at
 5. The same four steps through the RPC (`undo.preview`, `undo.apply` with and
    without `force`). The answers must match the CLI exactly.
 
-### 5b. The states that need a person
+### 5c. The states that need a person
 
 1. Trigger undo twice concurrently (two tabs, or the card and the shortcut).
    The reversal runs **once**; the loser is told it is already in progress.

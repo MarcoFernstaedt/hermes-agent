@@ -39,6 +39,7 @@ import {
   FileText,
   Compass,
   GitBranch,
+  Undo2,
   Globe,
   Heart,
   KeyRound,
@@ -119,6 +120,7 @@ const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const GitPage = lazy(() => import("@/pages/GitPage"));
+const UndoPage = lazy(() => import("@/pages/UndoPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const JobsPage = lazy(() => import("@/pages/JobsPage"));
 const NowPage = lazy(() => import("@/pages/NowPage"));
@@ -236,6 +238,7 @@ const BUILTIN_MODULES: BuiltinModule[] = [
   { path: "/progress", component: ProgressPage, nav: { label: "Progress", icon: Activity } },
   { path: "/files", component: FilesPage, nav: { label: "Files", icon: FolderOpen } },
   { path: "/git", component: GitPage, nav: { label: "Git", icon: GitBranch } },
+  { path: "/undo", component: UndoPage, nav: { label: "Undo", icon: Undo2 } },
   { path: "/analytics", component: AnalyticsPage, nav: { label: "Analytics", labelKey: "analytics", icon: BarChart3 } },
   { path: "/logs", component: LogsPage, nav: { label: "Logs", labelKey: "logs", icon: FileText } },
   { path: "/cron", component: CronPage, nav: { label: "Cron", labelKey: "cron", icon: Clock } },

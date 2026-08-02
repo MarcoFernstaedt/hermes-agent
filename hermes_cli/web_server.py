@@ -2832,6 +2832,105 @@ class GitBranchSwitchBody(BaseModel):
     branch: str
 
 
+# ── Undo ─────────────────────────────────────────────────────────────
+#
+# Over `hermes_cli.undo.surface`, which the gateway RPC and `hermes undo` also
+# go through, so a browser, a terminal and the TUI cannot disagree about what
+# an entry means or what forcing does.
+
+
+class UndoApplyBody(BaseModel):
+    entryId: str = ""
+    force: bool = False
+    sessionId: str = ""
+    actor: str = "agent"
+
+
+@app.get("/api/undo")
+async def undo_list_route(session: str = "", limit: int = 50):
+    """The undo stack, the repair list, and anything mid-reversal.
+
+    Three lists rather than one: "this can be taken back", "this could not be
+    and needs somebody", and "this is being taken back right now" are three
+    different claims, and collapsing them reports one of the last two as a
+    state it is not in.
+    """
+    from hermes_cli.undo import surface
+
+    try:
+        return await asyncio.to_thread(
+            surface.summary, session_id=session, limit=limit
+        )
+    except Exception as exc:
+        _log.exception("undo list failed")
+        raise HTTPException(status_code=500, detail=f"The undo journal could not be read: {exc}")
+
+
+@app.post("/api/undo/apply")
+async def undo_apply_route(body: UndoApplyBody):
+    """Reverse one recorded action, or say why it was refused.
+
+    A refusal and a failure come back as 200 with a body, not as an HTTP
+    error: the call worked, and the answer — the structured conflict report,
+    or the repair state — is the only part a screen can act on. An error
+    envelope would throw it away.
+    """
+    from hermes_cli.undo import surface
+
+    def _run():
+        entry_id = (body.entryId or "").strip()
+        if entry_id:
+            return surface.apply(entry_id, force=bool(body.force))
+        return surface.apply_last(
+            actor=body.actor or "agent",
+            session_id=body.sessionId or "",
+            force=bool(body.force),
+        )
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except surface.UndoRefused as exc:
+        report = exc.report or {}
+        return {
+            "undone": False,
+            "refused": True,
+            "message": str(exc),
+            "conflict": report,
+            "canForce": bool(report) and report.get("kind") != "backup_missing",
+        }
+    except surface.UndoFailed as exc:
+        return {
+            "undone": False,
+            "failed": True,
+            "needsRepair": True,
+            "message": str(exc),
+            "entry": exc.entry,
+        }
+    except Exception as exc:
+        _log.exception("undo apply failed")
+        raise HTTPException(status_code=500, detail=f"The undo could not be run: {exc}")
+
+    if result is None:
+        return {"undone": False, "reason": "nothing to undo"}
+    return {"undone": True, "entry": result}
+
+
+@app.get("/api/undo/{entry_id}")
+async def undo_preview_route(entry_id: str):
+    """What undoing this would do, and what stands in the way. Changes nothing.
+
+    Declared after `/api/undo/apply` so the path parameter cannot shadow the
+    literal route. They differ by method today, which makes the ordering
+    invisible until somebody adds a GET.
+    """
+    from hermes_cli.undo import surface
+
+    try:
+        return await asyncio.to_thread(surface.preview, entry_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"That undo entry could not be read: {exc}")
+
+
 @app.get("/api/git/status")
 async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
