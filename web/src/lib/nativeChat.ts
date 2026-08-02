@@ -80,8 +80,31 @@ export type NativeChatStatus =
   /** Retries are exhausted. Nothing further happens without the owner. */
   | "error";
 
-/** What the gateway did with a prompt. `queued` is a success, not a failure. */
-export type SubmitOutcome = "accepted" | "queued" | "steered";
+/**
+ * What the gateway did with a prompt. `queued` is a success, not a failure.
+ *
+ * `unresolved` is the one that is neither: an earlier submission of this exact
+ * message was claimed and then interrupted before its outcome was recorded, so
+ * it may or may not be in the conversation. The caller must show it rather than
+ * retrying, because a silent retry is how one prompt becomes two.
+ */
+export type SubmitOutcome = "accepted" | "queued" | "steered" | "unresolved";
+
+/** What the gateway knows about one held message, keyed by its client token. */
+export interface ReconcileReport {
+  token: string;
+  /**
+   * `unknown` — never seen, so the message did not land.
+   * `in_flight` — claimed and still running here.
+   * `settled` — it ran; `result` carries what was decided.
+   * `failed` — proven not to have happened, so a resend is not a duplicate.
+   * `unresolved` — claimed, then interrupted, or the record could not be read.
+   */
+  state: "unknown" | "in_flight" | "settled" | "failed" | "unresolved" | string;
+  /** True only when the gateway can prove the message never landed. */
+  resend?: boolean;
+  result?: Record<string, unknown>;
+}
 
 /**
  * A fresh idempotency key for one composed message.
@@ -396,8 +419,57 @@ export class NativeChatSession {
     const status = res?.status;
     if (status === "queued" || res?.queued === true) return "queued";
     if (status === "steered") return "steered";
+    if (status === "unresolved") return "unresolved";
     this.setStatus("working");
     return "accepted";
+  }
+
+  /**
+   * Ask, before resending, which held messages actually landed.
+   *
+   * A client that went offline holding composed messages has to decide, per
+   * message, between losing it and sending it twice. `submit` makes the second
+   * choice safe once the message has gone, but a client that would rather ask
+   * first needs somewhere to ask — and after a gateway restart the answer is
+   * not in this tab's memory, it is in the gateway's durable record.
+   *
+   * Returns the tokens that are safe to resend. A token is only in that list
+   * when the gateway has no record of it at all, which is the one state that
+   * proves the message did not land. A live claim, a recorded outcome, an
+   * interrupted submission, and a lookup that failed are all excluded, because
+   * none of them is evidence that nothing happened.
+   */
+  async reconcile(clientTokens: string[]): Promise<ReconcileReport[]> {
+    if (this.closed) throw new Error("session is closed");
+    if (!this.liveId) throw new Error("session is not open");
+    const tokens = clientTokens.filter((t) => typeof t === "string" && t.trim());
+    if (!tokens.length) return [];
+
+    const res = await this.transport.request<{ tokens?: ReconcileReport[] }>(
+      "prompt.reconcile",
+      { session_id: this.liveId, client_tokens: tokens },
+    );
+    return Array.isArray(res?.tokens) ? res.tokens : [];
+  }
+
+  /**
+   * The subset of `clientTokens` that provably never reached the gateway.
+   *
+   * Fails closed twice over: a token missing from the report is not resent
+   * (the gateway did not answer for it, which is not the same as answering
+   * "no"), and a reconcile call that throws resends nothing at all.
+   */
+  async tokensSafeToResend(clientTokens: string[]): Promise<string[]> {
+    let report: ReconcileReport[];
+    try {
+      report = await this.reconcile(clientTokens);
+    } catch {
+      return [];
+    }
+    const safe = new Set(
+      report.filter((r) => r?.resend === true).map((r) => r.token),
+    );
+    return clientTokens.filter((t) => safe.has(t));
   }
 
   /**

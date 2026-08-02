@@ -2010,7 +2010,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         The buttons carry ``hermes_action`` in their value dict so that
         ``_handle_card_action_event`` can intercept them and call
-        ``resolve_gateway_approval()`` to unblock the waiting agent thread.
+        ``resolve_oldest_gateway_approval(, actor="feishu:button")`` to unblock the waiting agent thread.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -2866,8 +2866,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Approval %s already resolved while validating callback", approval_id)
             return
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            from tools.approval import resolve_oldest_gateway_approval
+            count = resolve_oldest_gateway_approval(state["session_key"], choice, actor="feishu:button")
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

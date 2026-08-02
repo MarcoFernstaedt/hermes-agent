@@ -137,19 +137,98 @@ def rfc_message_id(fingerprint: str) -> str:
     return f"<{fingerprint[:32]}.imperator@localhost>"
 
 
+#: The shape of a Gmail message id. Gmail returns an opaque URL-safe token —
+#: in practice lowercase hex, historically 16 characters, but the API documents
+#: only "an immutable ID". The check below is therefore a *shape* check, not a
+#: format claim: it establishes that the provider returned an identifier rather
+#: than something an identifier could be coerced out of.
+_PROVIDER_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
+_PROVIDER_ID_MIN = 6
+_PROVIDER_ID_MAX = 256
+
+
+def valid_provider_message_id(value: Any) -> str:
+    """The provider's message id, or "" when what came back is not one.
+
+    This exists because `str(result.get("id") or "")` accepted anything that
+    was not falsy. A `{"id": {"nested": 1}}` became the string
+    ``"{'nested': 1}"``; a `{"id": True}` became ``"True"``; a `{"id": 1}`
+    became ``"1"``. Each of those is non-empty, so each was reported to the
+    owner as a confirmed send and written to the idempotency row as proof —
+    a claim of delivery resting on a value the provider never issued.
+
+    Only a `str` is considered. Coercing is the bug: an `int` id is not a
+    Gmail id that needs converting, it is a response that does not match the
+    contract, and the honest reading of a response that does not match the
+    contract is that the outcome is unknown.
+    """
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if not (_PROVIDER_ID_MIN <= len(candidate) <= _PROVIDER_ID_MAX):
+        return ""
+    if not set(candidate) <= _PROVIDER_ID_CHARS:
+        return ""
+    return candidate
+
+
+#: Kinds of evidence that a message was *not* delivered, strong enough to make
+#: an ambiguous send sendable again. Each one is a positive statement by an
+#: authority, not the absence of a statement.
+NON_DELIVERY_PROOF_KINDS = frozenset({
+    # The owner looked in Sent themselves and says it is not there. The owner
+    # is the authority on their own mailbox; nothing else in this list is
+    # available without one.
+    "owner_confirmed",
+    # The provider rejected the message permanently: a 5xx SMTP/`permanentFailure`
+    # status or a bounce naming this Message-ID. The provider stating that it
+    # did not deliver is different in kind from a search not finding it.
+    "provider_permanent_failure",
+})
+
+
 #: Provider diagnostics can echo recipients, subjects, or fragments of the
 #: message. Durable records get a bounded, shape-only summary instead.
 _ERROR_LIMIT = 120
 
 
-def _safe_error(exc: Exception) -> str:
-    """The exception's *type* and a bounded excerpt — never the whole thing.
+def _safe_error(exc: Exception, scrub: Any = ()) -> str:
+    """The exception's *type* and a bounded, scrubbed excerpt.
 
     A raw provider error is a durable record of whatever the provider chose to
     quote back, which for a mail API is often the recipients and the subject.
+    Bounding the length was never enough for that: a 550 rejection quotes the
+    recipient and the subject inside the first sixty characters, and the row it
+    lands in outlives the message.
+
+    ``scrub`` is the concrete strings this send is *known* to contain — the
+    sender, the recipients, the subject. They are removed by value rather than
+    by pattern, which is the only reliable way: there is no regex for "this
+    particular subject line". Credentials that wandered into the diagnostic go
+    through the shared redactor on top.
     """
     text = str(exc).replace("\n", " ").strip()
-    return f"{type(exc).__name__}: {text[:_ERROR_LIMIT]}" if text else type(exc).__name__
+    if not text:
+        return type(exc).__name__
+
+    # Longest first, so removing a recipient does not leave the domain behind
+    # when the address also appears inside a longer quoted string.
+    for secret in sorted(
+        {str(s).strip() for s in (scrub or ()) if str(s).strip()},
+        key=len, reverse=True,
+    ):
+        text = text.replace(secret, "[redacted]")
+
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text)
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    return f"{type(exc).__name__}: {text[:_ERROR_LIMIT]}"
 
 
 def _require_owner_approval(
@@ -197,7 +276,7 @@ def _require_owner_approval(
 
 
 def reconcile_ambiguous_send(
-    *, fingerprint: str, search=None, store=None
+    *, fingerprint: str, search=None, store=None, proof: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Answer "did that actually send?" by looking, not by waiting.
 
@@ -205,6 +284,23 @@ def reconcile_ambiguous_send(
     the answer is unknown and useless once it is knowable. The deterministic
     RFC Message-ID is what makes it knowable: it either appears in Sent or it
     does not, and no content comparison is involved.
+
+    The two directions are not symmetric, and treating them as if they were
+    was the defect this signature exists to fix. **Finding** the message is
+    proof it was delivered: the id is broker-controlled, so nothing else could
+    have put it there. **Not finding** it is not proof of anything. Gmail's
+    `rfc822msgid:` index is eventually consistent and routinely lags a send by
+    seconds to minutes; a throttled or partially-served query returns an empty
+    page; a filter or a rule can move a message out of `SENT`. Settling
+    `failed` on that emptiness marks the message sendable again — and the case
+    where it is wrong is exactly the case that matters, because the message
+    already went out and the owner sends a second copy.
+
+    So a negative search leaves the row `ambiguous`. Clearing it requires
+    ``proof``: a dict with a ``kind`` from `NON_DELIVERY_PROOF_KINDS` and an
+    ``actor`` naming who or what is making the claim. That is the owner having
+    looked, or the provider having said it failed permanently — a positive
+    statement by an authority, rather than a question that returned nothing.
 
     Idempotent and owner-fenced. Reconciliation claims the row the same way a
     send does, so two reconcilers cannot both settle it, and a terminal row is
@@ -244,12 +340,42 @@ def reconcile_ambiguous_send(
             return None
 
     try:
-        provider_id = search(rfc_id)
+        found = search(rfc_id)
     except Exception as exc:
         # Could not look. Still ambiguous — an unreachable provider is not
         # evidence either way.
         return {"reconciled": False, "state": "ambiguous",
                 "reason": f"could not search: {_safe_error(exc)}"}
+
+    # The same shape check the send path applies. A search that returns a dict,
+    # a list, a bool or a number has not found a message; it has returned
+    # something a message id could be coerced out of, and coercing it here
+    # would settle the row `succeeded` on the strength of a malformed reply.
+    provider_id = valid_provider_message_id(found)
+    if found not in (None, "", [], {}) and not provider_id:
+        return {
+            "reconciled": False,
+            "state": "ambiguous",
+            "reason": "the Sent search returned a malformed result; the outcome "
+                      "is still unknown",
+        }
+
+    accepted_proof = _accepted_non_delivery_proof(proof)
+    if not provider_id and accepted_proof is None:
+        # The important half of this function. See the docstring: an empty
+        # search result is a question that returned nothing, not an answer.
+        return {
+            "reconciled": False,
+            "state": "ambiguous",
+            "reason": (
+                "not found in Sent, which is not proof it was not delivered — "
+                "Gmail's message-id index lags a send and a throttled query "
+                "returns nothing. Check the Sent folder yourself, then "
+                "reconcile with proof of non-delivery."
+            ),
+            "rfc_message_id": rfc_id,
+            "needs": sorted(NON_DELIVERY_PROOF_KINDS),
+        }
 
     # Take ownership before writing, so two reconcilers cannot both settle.
     owner = store.adopt_ambiguous(key)
@@ -266,13 +392,43 @@ def reconcile_ambiguous_send(
                detail={"fingerprint": fingerprint[:16], "outcome": "delivered"})
         return {"reconciled": True, "state": "succeeded", "message_id": provider_id}
 
-    # Not in Sent: it never landed, so the message becomes sendable again.
-    store.settle_reconciled(key, owner, state="failed",
-                            result={"error": "not found in Sent"})
+    # An authority stated it did not land, so the message becomes sendable
+    # again — and the audit row records who said so, because this is the write
+    # that permits a second copy of an irreversible action.
+    store.settle_reconciled(
+        key, owner, state="failed",
+        result={"error": "confirmed not delivered",
+                "proof_kind": accepted_proof["kind"],
+                "proof_actor": accepted_proof["actor"],
+                "rfc_message_id": rfc_id},
+    )
     _audit("send.reconciled", target="1 message",
-           detail={"fingerprint": fingerprint[:16], "outcome": "not_delivered"})
+           detail={"fingerprint": fingerprint[:16], "outcome": "not_delivered",
+                   "proof_kind": accepted_proof["kind"],
+                   "proof_actor": accepted_proof["actor"]})
     return {"reconciled": True, "state": "failed",
-            "note": "not found in Sent; this message can be sent again"}
+            "proof_kind": accepted_proof["kind"],
+            "note": "confirmed not delivered; this message can be sent again"}
+
+
+def _accepted_non_delivery_proof(proof: Any) -> dict[str, str] | None:
+    """Validate an offered proof of non-delivery, or None if it is not one.
+
+    Deliberately strict, and deliberately not a truthiness check: the effect of
+    accepting this is that an irreversible action becomes repeatable. An
+    unattributed claim is refused because a grant nobody can be traced to
+    cannot be reviewed afterwards, which is the same rule the capability
+    approver identity follows.
+    """
+    if not isinstance(proof, dict):
+        return None
+    kind = proof.get("kind")
+    actor = proof.get("actor")
+    if not isinstance(kind, str) or kind not in NON_DELIVERY_PROOF_KINDS:
+        return None
+    if not isinstance(actor, str) or not actor.strip():
+        return None
+    return {"kind": kind, "actor": actor.strip()}
 
 
 def _handle_gmail_send(args: dict, **_kw) -> str:
@@ -310,6 +466,13 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
     fingerprint = send_fingerprint(sender=sender, to=to, subject=subject, body=body)
     store = IdempotencyStore(get_hermes_home() / "state" / "idempotency.sqlite3")
     key = f"gmail_send:{fingerprint}"
+
+    # Everything about this message that must not survive into a durable error
+    # record. A 550 rejection quotes the recipient and the subject back, and
+    # bounding the excerpt does not help when both appear in the first sixty
+    # characters. These are removed by value, because there is no pattern for
+    # "this particular subject line".
+    scrub: tuple[str, ...] = (sender, subject, *to)
 
     won, prior, attempt = store.claim(key)
     if not won:
@@ -390,10 +553,14 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
             message_id=rfc_message_id(fingerprint),
         )
     except Exception as exc:
-        store.settle_pre_dispatch(key, attempt, result={"error": _safe_error(exc)})
+        store.settle_pre_dispatch(
+            key, attempt, result={"error": _safe_error(exc, scrub)}
+        )
         _audit("send.failed", target=f"{len(to)} recipient(s)",
                detail={"stage": "compose", "fingerprint": fingerprint[:16]})
-        return tool_error(f"send failed before anything was sent: {exc}")
+        return tool_error(
+            f"send failed before anything was sent: {_safe_error(exc, scrub)}"
+        )
 
     # Past this line an unexplained failure is ambiguous, not failed: a
     # provider that accepted the message and then dropped the response looks
@@ -403,24 +570,29 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
 
     try:
         result = GmailClient().send_message(raw)
-        message_id = str((result or {}).get("id") or "")
+        # `valid_provider_message_id`, not `str(... or "")`. Coercion made a
+        # dict, a list, a bool and an integer all read as confirmations: each
+        # stringifies to something non-empty, so each was reported to the owner
+        # as a delivered message and stored as the id to reconcile against.
+        message_id = valid_provider_message_id((result or {}).get("id"))
         if not message_id:
-            # A `{}` or id-less response is not a confirmation. Reading it as
-            # success reported "sent" on the strength of the call returning —
-            # which is the same class of claim as reporting delivery because a
-            # request was made. Without the provider's own identifier there is
-            # nothing to reconcile against, so this is unverified, not done.
+            # A `{}`, id-less, or malformed response is not a confirmation.
+            # Reading it as success reported "sent" on the strength of the call
+            # returning — which is the same class of claim as reporting
+            # delivery because a request was made. Without the provider's own
+            # identifier there is nothing to reconcile against, so this is
+            # unverified, not done.
             store.settle_dispatched(
                 key, attempt, state="ambiguous",
-                result={"error": "provider returned no message id",
+                result={"error": "provider returned no usable message id",
                         "rfc_message_id": rfc_message_id(fingerprint)},
             )
             _audit("send.ambiguous", target=f"{len(to)} recipient(s)",
                    detail={"fingerprint": fingerprint[:16], "reason": "no_provider_id"})
             return tool_error(
-                "Gmail accepted the request but returned no message id, so the "
-                "outcome cannot be confirmed. It may have been delivered. Check "
-                "the Sent folder before trying again."
+                "Gmail accepted the request but did not return a usable message "
+                "id, so the outcome cannot be confirmed. It may have been "
+                "delivered. Check the Sent folder before trying again."
             )
         store.settle_dispatched(
             key, attempt, state="succeeded",
@@ -432,15 +604,15 @@ def _handle_gmail_send(args: dict, **_kw) -> str:
         # here is what turns one send into two.
         store.settle_dispatched(
             key, attempt, state="ambiguous",
-            result={"error": _safe_error(exc),
+            result={"error": _safe_error(exc, scrub),
                     "rfc_message_id": rfc_message_id(fingerprint)},
         )
         _audit("send.ambiguous", target=f"{len(to)} recipient(s)",
                detail={"fingerprint": fingerprint[:16]})
         return tool_error(
             "the send was handed to Gmail and the outcome is unknown: "
-            f"{_safe_error(exc)}. It may have been delivered. Check the Sent "
-            "folder before trying again."
+            f"{_safe_error(exc, scrub)}. It may have been delivered. Check the "
+            "Sent folder before trying again."
         )
 
     # Counts and identifiers only — never the body, never a recipient's content.

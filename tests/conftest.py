@@ -389,6 +389,21 @@ def _hermetic_environment(tmp_path, monkeypatch):
         raising=False,
     )
 
+    # 3c. Permission gate modes, stated explicitly.
+    #
+    #     `tool_gate_mode()` refuses to run when its variable is unset rather
+    #     than falling back to `observe` — a control whose absence selects its
+    #     own weakest setting is not a control. Production entry points call
+    #     `apply_default_gate_modes()`; tests are not production, so they say
+    #     it here. A test that wants a different mode still sets its own.
+    from hermes_constants import (
+        DEFAULT_APPROVAL_INTEGRITY_MODE,
+        DEFAULT_TOOL_GATE_MODE,
+    )
+
+    monkeypatch.setenv("HERMES_TOOL_GATE_MODE", DEFAULT_TOOL_GATE_MODE)
+    monkeypatch.setenv("HERMES_APPROVAL_INTEGRITY", DEFAULT_APPROVAL_INTEGRITY_MODE)
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

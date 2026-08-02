@@ -6459,7 +6459,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         Send a button-based exec approval prompt for a dangerous command.
 
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        The buttons call ``resolve_oldest_gateway_approval(, actor="discord:button")`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
         """
         if not self._client or not DISCORD_AVAILABLE:
@@ -7780,7 +7780,7 @@ def _define_discord_view_classes() -> None:
         Interactive button view for exec approval of dangerous commands.
 
         Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
-        Clicking a button calls ``resolve_gateway_approval()`` to unblock the
+        Clicking a button calls ``resolve_oldest_gateway_approval(, actor="discord:button")`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
         Only users in the allowed list can click.  Times out after 5 minutes.
         """
@@ -7879,8 +7879,8 @@ def _define_discord_view_classes() -> None:
 
             # Unblock the waiting agent thread via the gateway approval queue
             try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                from tools.approval import resolve_oldest_gateway_approval
+                count = resolve_oldest_gateway_approval(self.session_key, choice, actor="discord:button")
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

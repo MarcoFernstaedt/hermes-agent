@@ -14,7 +14,6 @@ endpoint stays free of per-vendor trivia and a new integration is one function.
 from __future__ import annotations
 
 import os
-import shutil
 from typing import List, Optional
 
 from hermes_cli.capability_status import CapabilityStatus
@@ -114,120 +113,246 @@ def home_assistant_status() -> CapabilityStatus:
     return status
 
 
-#: Speech-to-text providers other than the local model, and the credential
-#: each one needs. Checking only `faster_whisper` reported "not installed" on a
-#: machine where dictation worked perfectly through a remote provider — and,
-#: worse, told the owner nothing about audio leaving the device.
-_REMOTE_STT_KEYS = {
-    "groq": ("GROQ_API_KEY",),
-    "openai": ("VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"),
-    "elevenlabs": ("ELEVENLABS_API_KEY",),
-    "mistral": ("MISTRAL_API_KEY",),
-    "xai": ("XAI_API_KEY",),
-    "deepinfra": ("DEEPINFRA_API_KEY",),
+def resolved_stt() -> dict:
+    """What transcription would actually do, asked of the code that does it.
+
+    This calls `tools.transcription_tools._get_provider` — the same resolver
+    `transcribe_audio` calls, on the same config — rather than re-deriving the
+    answer from environment variables. The re-derived version was wrong in four
+    separate ways, each of which made the card describe a different product:
+
+    * it ignored ``stt.enabled: false``, so a deliberately disabled microphone
+      surface reported as working;
+    * it ignored an explicit ``stt.provider``, so a machine pinned to Groq was
+      reported as transcribing locally because `faster_whisper` happened to be
+      importable;
+    * it never looked at command-type providers, so a working
+      ``stt.providers.<name>`` setup reported "nothing can transcribe";
+    * it treated "a credential is present" as "this provider is what runs",
+      which is not the same claim and was frequently the wrong one.
+
+    ``allow_install=False``: resolving must not install a package as a side
+    effect of rendering a status card.
+    """
+    from tools import transcription_tools as stt_tools
+
+    config = stt_tools._load_stt_config()
+    enabled = stt_tools.is_stt_enabled(config)
+    explicit = isinstance(config, dict) and "provider" in config
+    requested = ""
+    if isinstance(config, dict):
+        requested = str(config.get("provider") or "").strip().lower()
+
+    provider = stt_tools._get_provider(config, allow_install=False)
+    return {
+        "enabled": enabled,
+        "explicit": explicit,
+        "requested": requested,
+        "provider": provider,
+        "available": provider not in ("", "none"),
+        "privacy": stt_tools.stt_privacy(provider),
+    }
+
+
+def resolved_tts() -> dict:
+    """What spoken replies would actually do, asked the same way.
+
+    `edge-tts` being importable was never the question: `tts.provider` chooses
+    among eleven built-ins plus command and plugin providers, and the answer
+    determines both whether anything speaks and whether the text leaves the
+    machine.
+    """
+    from hermes_cli.tool_tiers import LOCAL_TTS_PROVIDERS
+    from tools import tts_tool
+
+    config = tts_tool._load_tts_config()
+    provider = tts_tool._get_provider(config)
+    command_config = tts_tool._resolve_command_provider_config(provider, config)
+
+    if command_config is not None:
+        kind, privacy = "command", "unknown"
+    elif provider in LOCAL_TTS_PROVIDERS:
+        kind, privacy = "builtin", "local"
+    elif provider in tts_tool.BUILTIN_TTS_PROVIDERS:
+        kind, privacy = "builtin", "remote"
+    elif _tts_plugin_registered(provider):
+        kind, privacy = "plugin", "unknown"
+    else:
+        # An unrecognised name is not a provider; `text_to_speech_tool` falls
+        # through its elif chain to the Edge default, so that is what would
+        # actually speak. Reporting the typo back as if it were the provider
+        # would understate what happens to the reply text.
+        provider, kind, privacy = tts_tool.DEFAULT_PROVIDER, "builtin", "remote"
+
+    return {"provider": provider, "kind": kind, "privacy": privacy}
+
+
+def _tts_plugin_registered(provider: str) -> bool:
+    """Whether a TTS plugin claims this name. Discovery is not forced.
+
+    `text_to_speech_tool` re-runs discovery with `force=True` when a first
+    lookup misses. A status card must not: forcing plugin discovery is real
+    work with real import side effects, and being one refresh out of date is a
+    smaller error than doing that on a page load.
+    """
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return get_provider((provider or "").strip().lower()) is not None
+    except Exception:
+        return False
+
+
+#: Human-readable reasons a resolved-away provider is unavailable, keyed by
+#: what the owner asked for. Only used to write the next action.
+_STT_REMEDIES = {
+    "local": "Install faster-whisper, or set HERMES_LOCAL_STT_COMMAND to a local whisper CLI.",
+    "local_command": "Set HERMES_LOCAL_STT_COMMAND to a working local whisper CLI.",
+    "groq": "Set GROQ_API_KEY.",
+    "openai": "Set OPENAI_API_KEY (or VOICE_TOOLS_OPENAI_KEY).",
+    "mistral": "Install the mistralai package and set MISTRAL_API_KEY.",
+    "xai": "Set XAI_API_KEY.",
+    "elevenlabs": "Set ELEVENLABS_API_KEY.",
+    "deepinfra": "Set DEEPINFRA_API_KEY.",
 }
-
-
-def _remote_stt_providers() -> list:
-    """Which remote transcription providers have a credential present."""
-    import os
-
-    return sorted(
-        name
-        for name, keys in _REMOTE_STT_KEYS.items()
-        if any(os.environ.get(k) for k in keys)
-    )
 
 
 def voice_status() -> CapabilityStatus:
     """Speech-to-text and text-to-speech, reported as they actually work.
 
-    Two corrections over the first version of this adapter, both of which made
-    it describe a different product from the one that ships:
+    The rule this adapter now follows: *ask the runtime, do not re-derive it*.
+    Both halves resolve through the same functions the transcription and
+    speech paths call, on the same config, so the card cannot claim a provider
+    the runtime would not pick, cannot miss one the runtime would, and cannot
+    call a remote provider local.
 
-    *Capture is the browser's, and it exists.* `web/src/lib/use-dictation.ts`
-    holds a real push-to-talk implementation — `getUserMedia`, `MediaRecorder`,
-    and a POST to `/api/audio/transcribe` — wired into the chat composer. The
-    earlier reading of this file as "no capture path" was wrong. The microphone
-    is opened by the page, per press, and the tracks are stopped when the press
-    ends; there is no always-listening mode and no server-side device access.
-
-    *Transcription is not only local.* Six providers are supported and the
-    local model is merely the default. Checking `faster_whisper` alone reported
-    "install faster-whisper to enable push-to-talk" on machines where dictation
-    already worked through Groq or OpenAI.
-
-    The second correction matters beyond accuracy: if a remote provider is the
-    one in use, the recording leaves the machine. That is the single fact an
-    owner needs before pressing the button, so it is stated on the card rather
-    than left to be inferred from a config file.
+    The capture half is separate and stated unconditionally, because it is
+    true regardless of provider: `web/src/lib/use-dictation.ts` opens the
+    microphone per press through `getUserMedia`/`MediaRecorder` and stops the
+    tracks when the press ends. There is no always-listening mode and no
+    server-side device access.
     """
     status = CapabilityStatus(
         key="voice",
         label="Voice",
         purpose="Push-to-talk. Never always-listening.",
     )
-    local_stt = _is_importable("faster_whisper")
-    remote_stt = _remote_stt_providers()
-    stt = local_stt or bool(remote_stt)
 
-    tts = shutil.which("edge-tts") is not None or _is_importable("edge_tts")
+    try:
+        stt = resolved_stt()
+    except Exception as exc:  # pragma: no cover - defensive
+        status.supported = False
+        status.detail = f"The transcription resolver could not be consulted: {exc}"
+        status.next_action = "Check the install, then re-run the status command."
+        return status
+    try:
+        tts = resolved_tts()
+    except Exception as exc:  # pragma: no cover - defensive
+        tts = {"provider": "", "kind": "unknown", "privacy": "unknown"}
+        status.notes.append(f"The speech resolver could not be consulted: {exc}")
 
-    status.supported = stt or tts
-    status.configured = stt and tts
+    stt_ok = bool(stt["available"])
+    tts_ok = bool(tts["provider"])
+
+    status.supported = stt_ok or tts_ok
+    status.configured = stt_ok and tts_ok
     # A local model is not a credential; a remote provider's key is, and it is
     # already held in the secure store rather than here.
-    status.has_credential = stt and tts
+    status.has_credential = stt_ok and tts_ok
 
-    # The half that is true regardless of which providers are installed: the
-    # capture path is in the page and it works.
     status.notes.append(
         "The microphone is opened by the page, per press, and released when "
         "the press ends. Nothing listens between presses."
     )
     status.notes.append("Audio is not retained after transcription.")
-    if remote_stt and not local_stt:
-        status.notes.append(
-            f"Transcription runs on a remote provider ({', '.join(remote_stt)}), "
-            "so the recording leaves this machine."
-        )
-    elif local_stt:
-        status.notes.append(
-            "Transcription runs locally; the recording does not leave this machine."
-        )
 
-    if not stt and not tts:
+    # Privacy, stated from the provider that would actually run — never from
+    # what happens to be installed alongside it.
+    if stt_ok:
+        if stt["privacy"] == "local":
+            status.notes.append(
+                f"Transcription runs locally ({stt['provider']}); the recording "
+                "does not leave this machine."
+            )
+        elif stt["privacy"] == "remote":
+            status.notes.append(
+                f"Transcription runs on a remote provider ({stt['provider']}), "
+                "so the recording leaves this machine."
+            )
+        else:
+            status.notes.append(
+                f"Transcription runs through a configured provider "
+                f"({stt['provider']}) whose destination this cannot determine. "
+                "Check what that command or plugin does before dictating "
+                "anything sensitive."
+            )
+    if tts_ok:
+        if tts["privacy"] == "remote":
+            status.notes.append(
+                f"Spoken replies are generated by a remote provider "
+                f"({tts['provider']}), so the reply text leaves this machine."
+            )
+        elif tts["privacy"] == "unknown":
+            status.notes.append(
+                f"Spoken replies run through a configured {tts['kind']} provider "
+                f"({tts['provider']}) whose destination this cannot determine."
+            )
+
+    if not stt["enabled"]:
+        status.detail = (
+            "Transcription is switched off in config (stt.enabled: false), so "
+            "the push-to-talk button records nothing that can be read back."
+        )
+        status.next_action = "Set stt.enabled: true in config.yaml to re-enable it."
+        return status
+
+    if not stt_ok and not tts_ok:
         status.detail = (
             "Push-to-talk capture is built into the composer, but nothing can "
             "transcribe it and nothing can speak back."
         )
         status.next_action = (
             "Install faster-whisper for local transcription (or set a provider "
-            "key), and edge-tts for spoken replies."
+            "key), and configure a TTS provider for spoken replies."
         )
         return status
-    if not stt:
-        status.detail = (
-            "Spoken replies are available; nothing can transcribe what the "
-            "composer records."
-        )
-        status.next_action = (
-            "Install faster-whisper, or set a key for one of the remote "
-            "transcription providers."
-        )
+    if not stt_ok:
+        if stt["explicit"] and stt["requested"]:
+            status.detail = (
+                f"Spoken replies are available. Transcription is pinned to "
+                f"'{stt['requested']}' in config, and that provider is not "
+                "usable on this machine, so nothing transcribes — the local "
+                "model is deliberately not substituted for an explicit choice."
+            )
+            status.next_action = _STT_REMEDIES.get(
+                stt["requested"],
+                f"Make the '{stt['requested']}' provider usable, or change "
+                "stt.provider to one that is.",
+            )
+        else:
+            status.detail = (
+                "Spoken replies are available; nothing can transcribe what the "
+                "composer records."
+            )
+            status.next_action = (
+                "Install faster-whisper, or set a key for one of the remote "
+                "transcription providers."
+            )
         return status
-    if not tts:
+    if not tts_ok:
         status.detail = (
             "Push-to-talk dictation is available end to end; nothing can speak "
             "replies back."
         )
-        status.next_action = "Install edge-tts to enable spoken replies."
+        status.next_action = "Configure a TTS provider to enable spoken replies."
         return status
 
     status.detail = (
-        "Push-to-talk dictation and spoken replies are both available. The full "
-        "microphone-to-speaker path crosses physical devices and has not been "
-        "proven from here."
+        f"Push-to-talk dictation ({stt['provider']}) and spoken replies "
+        f"({tts['provider']}) are both available. The full microphone-to-speaker "
+        "path crosses physical devices and has not been proven from here."
     )
     status.next_action = "Run the push-to-talk acceptance check on the target device."
     return status

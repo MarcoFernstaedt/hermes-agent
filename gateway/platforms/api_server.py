@@ -5234,13 +5234,29 @@ class APIServerAdapter(BasePlatformAdapter):
             or _coerce_request_bool(body.get("resolve_all"), default=False)
         )
         try:
-            from tools.approval import resolve_gateway_approval
-
-            resolved = resolve_gateway_approval(
-                approval_session_key,
-                choice,
-                resolve_all=resolve_all,
+            from tools.approval import (
+                deny_all_pending,
+                resolve_oldest_gateway_approval,
             )
+
+            if resolve_all and choice != "deny":
+                # Bulk approval is not available: it granted requests the
+                # caller had never been shown. Bulk deny still is.
+                return web.json_response(
+                    _openai_error(
+                        "approving all pending requests at once is not "
+                        "available; answer each one, or deny all"
+                    ),
+                    status=400,
+                )
+            if resolve_all:
+                resolved = deny_all_pending(
+                    approval_session_key, actor="api:client",
+                )
+            else:
+                resolved = resolve_oldest_gateway_approval(
+                    approval_session_key, choice, actor="api:client",
+                )
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
             return web.json_response(_openai_error(str(exc)), status=500)

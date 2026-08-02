@@ -12,6 +12,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -2047,11 +2048,41 @@ _permanent_approved: set = set()
 # resolves every pending approval in the session.
 
 
-class _ApprovalEntry:
-    """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+#: How long a rendered approval stays answerable. A card the owner walked away
+#: from must not still be live an hour later, and the agent thread that is
+#: blocked on it gives up on the approval timeout anyway.
+APPROVAL_ID_TTL_SECONDS = 900.0
 
-    def __init__(self, data: dict):
+
+def approval_snapshot_digest(payload: dict) -> str:
+    """A hash of the approval exactly as it was rendered to the owner.
+
+    Bound into the approval id so a decision cannot be applied to a different
+    request than the one the owner read. Without it, "approve" meant "approve
+    whatever is at the front of the queue *now*" — and the queue is shared with
+    every parallel subagent, so a second request arriving between render and
+    tap silently inherited the answer.
+    """
+    body = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+class _ApprovalEntry:
+    """One pending approval inside a gateway session.
+
+    Addressed by an opaque id rather than by position. The previous design
+    resolved the *oldest* entry, or — with ``resolve_all`` — every entry in the
+    session at once, which made a single tap a session-wide grant covering
+    requests the owner had never seen.
+    """
+    __slots__ = ("id", "event", "data", "result", "reason", "actor",
+                 "snapshot_digest", "created_at", "expires_at", "resolved")
+
+    def __init__(self, data: dict, *, now: Optional[float] = None):
+        ts = time.time() if now is None else now
+        # Opaque: a uuid4, not a queue index or a session-derived value.
+        # Guessing one must not be a way to answer somebody else's prompt.
+        self.id = uuid.uuid4().hex
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -2059,6 +2090,18 @@ class _ApprovalEntry:
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: Optional[str] = None
+        #: The authenticated identity that answered. Set by the transport from
+        #: what it authenticated, never from a client-supplied field.
+        self.actor: Optional[str] = None
+        self.snapshot_digest: str = ""
+        self.created_at = ts
+        self.expires_at = ts + APPROVAL_ID_TTL_SECONDS
+        #: One use. A second response to the same id resolves nothing.
+        self.resolved = False
+
+    def is_live(self, now: Optional[float] = None) -> bool:
+        ts = time.time() if now is None else now
+        return not self.resolved and ts <= self.expires_at
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -2090,40 +2133,143 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
-    """Called by the gateway's /approve or /deny handler to unblock
-    waiting agent thread(s).
+class ApprovalAuthorityError(RuntimeError):
+    """A response could not be attributed to a specific approval. Refusal."""
 
-    When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
 
-    *reason* is an optional free-text explanation attached to an explicit
-    deny (``/deny <reason>``).  It is relayed back to the agent in the
-    BLOCKED message so it can adapt instead of only hearing "denied".
+def resolve_gateway_approval(
+    session_key: str,
+    choice: str,
+    *,
+    approval_id: str,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Answer exactly one rendered approval, once.
 
-    Returns the number of approvals resolved (0 means nothing was pending).
+    ``approval_id`` is the opaque id carried on the request the owner actually
+    saw. ``actor`` is the identity the *transport* authenticated — never a
+    client-supplied field, because a response that names its own author is not
+    attribution.
+
+    What this replaces, and why. The old signature took a session key and an
+    optional ``resolve_all``, and answered the oldest pending entry — or every
+    entry in the session at once. Three things were wrong with that:
+
+    * A tap applied to whatever was at the front of the queue *at that moment*.
+      The queue is shared with every parallel subagent, so a second request
+      arriving between render and tap silently inherited the answer.
+    * ``resolve_all`` turned one tap into a session-wide grant covering
+      requests the owner had never been shown.
+    * Nothing recorded who answered, so the audit could say a decision was made
+      but not by whom.
+
+    Returns 1 when it resolved that approval, 0 when the id is unknown, already
+    used, or expired. Never more than 1 — there is no longer any way to answer
+    more than one thing at a time.
     """
+    if not approval_id or not str(approval_id).strip():
+        raise ApprovalAuthorityError(
+            "an approval response must name the approval it answers"
+        )
+    if not actor or not str(actor).strip():
+        raise ApprovalAuthorityError(
+            "an approval response must carry the identity that authenticated it"
+        )
+
+    ts = time.time() if now is None else now
     with _lock:
-        queue = _gateway_queues.get(session_key)
-        if not queue:
+        queue = _gateway_queues.get(session_key) or []
+        target = None
+        for entry in queue:
+            if entry.id == approval_id:
+                target = entry
+                break
+        if target is None or not target.is_live(ts):
             return 0
-        if resolve_all:
-            targets = list(queue)
-            queue.clear()
-        else:
-            targets = [queue.pop(0)]
+        target.resolved = True
+        queue.remove(target)
         if not queue:
             _gateway_queues.pop(session_key, None)
 
-    for entry in targets:
-        entry.result = choice
+    target.result = choice
+    target.actor = str(actor).strip()
+    if reason:
+        target.reason = reason
+    target.event.set()
+    return 1
+
+
+def deny_all_pending(
+    session_key: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Deny every pending approval in a session. Cannot approve anything.
+
+    Bulk resolution survives only in this direction, and the asymmetry is the
+    whole point: denying things the owner never saw is safe — nothing happens —
+    while approving them is exactly the session-wide grant that had to go.
+    Session teardown, ``/stop`` and interrupt all use this.
+    """
+    ts = time.time() if now is None else now
+    with _lock:
+        queue = _gateway_queues.pop(session_key, []) or []
+    live = [e for e in queue if e.is_live(ts)]
+    for entry in live:
+        entry.resolved = True
+        entry.result = "deny"
+        entry.actor = (str(actor).strip() or "system")
         if reason:
             entry.reason = reason
         entry.event.set()
-    return len(targets)
+    return len(live)
+
+
+def resolve_oldest_gateway_approval(
+    session_key: str,
+    choice: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Answer the single pending approval, for surfaces that cannot carry an id.
+
+    A migration path, not a peer of `resolve_gateway_approval`. Several chat
+    adapters put approval buttons on a message whose callback payload has no
+    room for an opaque id yet; until each carries one, this is how their taps
+    arrive.
+
+    It keeps the property that matters by refusing to guess: a **positive**
+    choice is only applied when exactly one approval is live, so an approval
+    can never land on a request the owner was not looking at. With two or more
+    pending it returns 0 and the caller must surface an id-carrying prompt. A
+    deny is allowed against the oldest regardless — declining the wrong thing
+    costs a retry, approving the wrong thing costs whatever it did.
+    """
+    ts = time.time() if now is None else now
+    with _lock:
+        live = [e for e in (_gateway_queues.get(session_key) or []) if e.is_live(ts)]
+        if not live:
+            return 0
+        if choice != "deny" and len(live) > 1:
+            return 0
+        target = live[0]
+    return resolve_gateway_approval(
+        session_key, choice, approval_id=target.id, actor=actor,
+        reason=reason, now=ts,
+    )
+
+
+def pending_approval_ids(session_key: str, now: Optional[float] = None) -> list[str]:
+    """The ids currently answerable in a session. For diagnostics and tests."""
+    ts = time.time() if now is None else now
+    with _lock:
+        return [e.id for e in (_gateway_queues.get(session_key) or []) if e.is_live(ts)]
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -2742,7 +2888,7 @@ def _run_approval_gate(
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
-    def _authorised(choice: str, decided_by: str) -> Optional[dict]:
+    def _authorised(choice: str, decided_by: str, actor: str) -> Optional[dict]:
         """The trusted response boundary. Returns a refusal, or None to allow.
 
         Called only where something actually authorised the action, and never
@@ -2753,7 +2899,7 @@ def _run_approval_gate(
         if on_authoritative_response is None:
             return None
         try:
-            on_authoritative_response(choice, decided_by, uuid.uuid4().hex)
+            on_authoritative_response(choice, decided_by, uuid.uuid4().hex, actor)
             return None
         except Exception as exc:
             logger.warning(
@@ -2774,7 +2920,11 @@ def _run_approval_gate(
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
     if not once_only and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
-        return _authorised("once", "owner_bypass") or {"approved": True, "message": None}
+        # The owner turned the gate off for this session; that session key is
+        # the identity responsible for anything it lets through.
+        return _authorised(
+            "once", "owner_bypass", f"yolo:{get_current_session_key(default='')}"
+        ) or {"approved": True, "message": None}
 
     session_key = get_current_session_key()
     if not once_only and is_approved(session_key, pattern_key):
@@ -2787,7 +2937,11 @@ def _run_approval_gate(
                 for alias in _approval_key_aliases(pattern_key)
             )
         decided_by = "standing_permanent" if permanent else "standing_session"
-        return _authorised("session", decided_by) or {"approved": True, "message": None}
+        # A standing grant answers for a prior human decision about this
+        # pattern; the pattern is what identifies it.
+        return _authorised(
+            "session", decided_by, f"{decided_by}:{pattern_key}"
+        ) or {"approved": True, "message": None}
 
     if approval_callback is None:
         try:
@@ -2920,9 +3074,9 @@ def _run_approval_gate(
                     approve_session(session_key, pattern_key)
                     approve_permanent(pattern_key)
                     save_permanent_allowlist(_permanent_approved)
-            return _authorised(choice, "human_gateway") or {
-                "approved": True, "message": None
-            }
+            return _authorised(
+                choice, "human_gateway", decision.get("actor") or ""
+            ) or {"approved": True, "message": None}
 
         # No notify callback (e.g. API server without an attached chat):
         # queue for /approve /deny review, agent sees approval_required.
@@ -2969,7 +3123,9 @@ def _run_approval_gate(
             approve_permanent(pattern_key)
             save_permanent_allowlist(_permanent_approved)
 
-    return _authorised(choice, "human_cli") or {"approved": True, "message": None}
+    return _authorised(
+        choice, "human_cli", f"cli:{_local_cli_actor()}"
+    ) or {"approved": True, "message": None}
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
@@ -3211,6 +3367,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
     entry = _ApprovalEntry(approval_data)
+    # The id travels *on the payload the owner is shown*, and the digest is
+    # taken over that exact payload. A response naming this id is therefore a
+    # response to this rendering of this request — not to whatever is at the
+    # front of a shared queue when the tap arrives.
+    approval_data["approval_id"] = entry.id
+    approval_data["expires_at"] = entry.expires_at
+    entry.snapshot_digest = approval_snapshot_digest(approval_data)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -3302,7 +3465,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
+    return {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": entry.reason,
+        # Who answered, as the transport authenticated them. Carried out so the
+        # capability minted from this decision can name an approver rather than
+        # recording that "someone" said yes.
+        "actor": entry.actor,
+        "approval_id": entry.id,
+    }
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -4061,3 +4233,13 @@ def request_elicitation_consent(
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
+
+
+def _local_cli_actor() -> str:
+    """Who is at the terminal. The CLI's authenticated identity is the OS user."""
+    import getpass
+
+    try:
+        return getpass.getuser() or "unknown"
+    except Exception:
+        return "unknown"

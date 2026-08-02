@@ -254,7 +254,7 @@ class QQAdapter(BasePlatformAdapter):
         ] = None
 
         # Default interaction dispatcher: routes approval-button clicks to
-        # tools.approval.resolve_gateway_approval() and update-prompt clicks
+        # tools.approval.resolve_oldest_gateway_approval(, actor="qqbot:button") and update-prompt clicks
         # to ~/.hermes/.update_response. Set here so the cross-adapter gateway
         # contract (send_exec_approval / send_update_prompt) works out of the
         # box; callers can override with set_interaction_callback(None) or
@@ -1155,8 +1155,8 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(session_key, choice)
+                from tools.approval import resolve_oldest_gateway_approval
+                count = resolve_oldest_gateway_approval(session_key, choice, actor="qqbot:button")
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s "
                     "(choice=%s, operator=%s)",

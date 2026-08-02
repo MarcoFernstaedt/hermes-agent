@@ -269,45 +269,73 @@ class TestVoiceIsReportedAsItActuallyWorks:
     `web/src/lib/use-dictation.ts` holds a complete one — `getUserMedia`,
     `MediaRecorder`, and a POST to `/api/audio/transcribe`, wired into the
     composer.
+
+    These now drive the card through the *config the runtime reads*, because
+    the adapter resolves through `tools.transcription_tools` rather than
+    re-deriving from environment variables. `tests/hermes_cli/
+    test_voice_status_truthfulness.py` covers the resolver contract in depth.
     """
 
-    def test_a_remote_provider_key_counts_as_speech_to_text(self, monkeypatch):
-        import hermes_cli.capability_adapters as adapters
+    @pytest.fixture
+    def voice(self, monkeypatch):
+        """Drive the card by setting the config both resolvers read."""
 
-        monkeypatch.setattr(adapters, "_is_importable", lambda m: m != "faster_whisper")
-        monkeypatch.setenv("GROQ_API_KEY", "present")
-        status = adapters.voice_status()
-        assert status.supported is True
-        assert "install faster-whisper" not in (status.next_action or "").lower()
+        def configure(stt: dict, tts: dict):
+            monkeypatch.setattr(
+                "tools.transcription_tools._load_stt_config", lambda: stt
+            )
+            monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: tts)
+            import hermes_cli.capability_adapters as adapters
 
-    def test_it_says_when_the_recording_leaves_the_machine(self, monkeypatch):
-        # The single fact an owner needs before pressing the button.
-        import hermes_cli.capability_adapters as adapters
+            return adapters.voice_status()
 
-        monkeypatch.setattr(adapters, "_is_importable", lambda m: m != "faster_whisper")
-        monkeypatch.setenv("GROQ_API_KEY", "present")
-        notes = " ".join(adapters.voice_status().notes).lower()
-        assert "leaves this machine" in notes
+        return configure
 
-    def test_it_says_when_the_recording_does_not(self, monkeypatch):
-        import hermes_cli.capability_adapters as adapters
-
-        monkeypatch.setattr(adapters, "_is_importable", lambda m: True)
-        for key in ("GROQ_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY"):
-            monkeypatch.delenv(key, raising=False)
-        notes = " ".join(adapters.voice_status().notes).lower()
-        assert "does not leave this machine" in notes
-
-    def test_the_capture_path_is_described_however_it_is_configured(self, monkeypatch):
-        import hermes_cli.capability_adapters as adapters
-
-        monkeypatch.setattr(adapters, "_is_importable", lambda m: False)
-        monkeypatch.setattr(adapters.shutil, "which", lambda n: None)
+    @pytest.fixture(autouse=True)
+    def _no_local_whisper(self, monkeypatch):
+        monkeypatch.setattr("tools.transcription_tools._HAS_FASTER_WHISPER", False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._has_local_command", lambda: False
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._try_lazy_install_stt", lambda: False
+        )
         for key in ("GROQ_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY",
                     "ELEVENLABS_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY",
                     "DEEPINFRA_API_KEY"):
             monkeypatch.delenv(key, raising=False)
-        status = adapters.voice_status()
+
+    def test_a_remote_provider_counts_as_speech_to_text(self, voice, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "present")
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+        status = voice({"provider": "groq"}, {"provider": "edge"})
+        assert status.supported is True
+        assert "install faster-whisper" not in (status.next_action or "").lower()
+
+    def test_it_says_when_the_recording_leaves_the_machine(self, voice, monkeypatch):
+        # The single fact an owner needs before pressing the button.
+        monkeypatch.setenv("GROQ_API_KEY", "present")
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+        notes = " ".join(voice({"provider": "groq"}, {"provider": "edge"}).notes).lower()
+        assert "leaves this machine" in notes
+
+    def test_it_says_when_the_recording_does_not(self, voice, monkeypatch):
+        monkeypatch.setattr("tools.transcription_tools._HAS_FASTER_WHISPER", True)
+        notes = " ".join(
+            voice({"provider": "local"}, {"provider": "piper"}).notes
+        ).lower()
+        assert "does not leave this machine" in notes
+
+    def test_the_capture_path_is_described_however_it_is_configured(
+        self, voice, monkeypatch
+    ):
+        # Nothing can transcribe and nothing can speak: even then the composer
+        # still records, and the card must say so.
+        monkeypatch.setattr(
+            "hermes_cli.capability_adapters.resolved_tts",
+            lambda: {"provider": "", "kind": "unknown", "privacy": "unknown"},
+        )
+        status = voice({}, {})
         notes = " ".join(status.notes).lower()
         assert "nothing listens between presses" in notes
         # Even with nothing installed, the composer still records — so the card

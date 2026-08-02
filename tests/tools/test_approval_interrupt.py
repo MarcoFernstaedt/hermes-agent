@@ -113,7 +113,15 @@ class TestApprovalInterrupt:
         elapsed = time.monotonic() - start
 
         assert not t.is_alive(), "approval wait did not return after interrupt"
-        assert result_holder["result"] == {"resolved": True, "choice": "deny", "reason": None}
+        # `actor`/`approval_id` travel on every decision now: a resolution
+        # that cannot say who made it, or which card it answered, is not one.
+        # An interrupt is nobody's answer, so both are None here.
+        result = result_holder["result"]
+        assert result["resolved"] is True
+        assert result["choice"] == "deny"
+        assert result["reason"] is None
+        assert result["actor"] is None, "an interrupt was attributed to a person"
+        assert result["approval_id"]
         # Must be far below the 300s timeout — the interrupt, not the deadline,
         # is what released the wait.
         assert elapsed < 10, f"interrupt path too slow ({elapsed:.1f}s)"
@@ -157,4 +165,8 @@ class TestApprovalInterrupt:
         t.join(timeout=10)
         assert not t.is_alive()
         # Timed out (no resolution) because the foreign interrupt was ignored.
-        assert result_holder["result"] == {"resolved": False, "choice": None, "reason": None}
+        result = result_holder["result"]
+        assert result["resolved"] is False
+        assert result["choice"] is None
+        assert result["reason"] is None
+        assert result["actor"] is None

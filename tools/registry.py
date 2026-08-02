@@ -274,16 +274,48 @@ def invalidate_check_fn_cache() -> None:
 #: neither is there yet.
 _GATE_MODE_ENV = "HERMES_TOOL_GATE_MODE"
 
+_GATE_MODES = ("enforce", "observe", "off")
+
+
+class GateModeError(RuntimeError):
+    """The gate mode could not be determined. Always a refusal."""
+
 
 def tool_gate_mode() -> str:
+    """The configured mode, or raise.
+
+    Unset and misspelled both **raise** rather than falling back to
+    ``observe``. The fallback was the bug: a typo in a deployment
+    (``HERMES_TOOL_GATE_MODE=enfore``) silently downgraded a machine that had
+    been deliberately switched to enforcement, and an unset variable made
+    "nobody has decided yet" indistinguishable from "somebody chose to
+    measure". A security control whose *absence* selects its weakest setting
+    is not a control.
+
+    `observe` is still the shipped default, but it is now a default the
+    *product* states explicitly rather than one that happens when the
+    environment is empty — see `hermes_constants.DEFAULT_TOOL_GATE_MODE` and
+    the launcher that exports it.
+    """
     import os
 
-    value = (os.environ.get(_GATE_MODE_ENV) or "observe").strip().lower()
-    return value if value in ("enforce", "observe", "off") else "observe"
+    raw = os.environ.get(_GATE_MODE_ENV)
+    if raw is None:
+        raise GateModeError(
+            f"{_GATE_MODE_ENV} is not set; refusing to guess a permission mode"
+        )
+    value = raw.strip().lower()
+    if value not in _GATE_MODES:
+        raise GateModeError(
+            f"{_GATE_MODE_ENV}={raw!r} is not one of {_GATE_MODES}; refusing to "
+            "guess a permission mode"
+        )
+    return value
 
 
 def _capability_refusal(
-    name: str, args: dict, capability, *, session_id: str = ""
+    name: str, args: dict, capability, *, session_id: str = "",
+    tool_call_id: str | None = None,
 ) -> "str | None":
     """The refusal message for a gated call, or None to proceed.
 
@@ -294,9 +326,17 @@ def _capability_refusal(
     handler will ever see.
 
     Fails closed: any error establishing the capability is a refusal, because
-    an exception in the permission layer must never read as permission.
+    an exception in the permission layer must never read as permission — and
+    that now includes not knowing what mode we are in. A missing or misspelled
+    `HERMES_TOOL_GATE_MODE` refuses the call outright rather than resolving to
+    the weakest setting.
     """
-    mode = tool_gate_mode()
+    try:
+        mode = tool_gate_mode()
+    except GateModeError as exc:
+        message = f"{name} was refused: {exc}"
+        _audit_gate(name, message, enforced=True)
+        return message
     if mode == "off":
         return None
     try:
@@ -306,7 +346,10 @@ def _capability_refusal(
             tool_name=name,
             args=args,
             session_id=session_id,
-            tool_call_id=_current_tool_call_id(),
+            # An explicit id wins over the contextvar. The agent loop's inline
+            # tools know their call id directly and are not always inside the
+            # observability context the registry path relies on.
+            tool_call_id=tool_call_id if tool_call_id is not None else _current_tool_call_id(),
             token=capability,
             trusted_tools=_trusted_tools(),
         )
@@ -781,7 +824,7 @@ class ToolRegistry:
         try:
             from hermes_cli.agent_scopes import enforce_dispatch
 
-            refusal = enforce_dispatch(name)
+            refusal = enforce_dispatch(name, args)
             if refusal is not None:
                 return json.dumps({"error": refusal, "refused": True})
         except Exception:

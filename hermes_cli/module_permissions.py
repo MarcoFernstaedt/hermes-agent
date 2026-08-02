@@ -26,6 +26,22 @@ must agree — ``register_tool_permission`` raises on a conflicting tier, so a
 module quietly downgrading a tool the catalogue classifies is a loud error
 rather than a silent hole.
 
+Per-call escalation
+-------------------
+A tier is a property of a tool name, and some tools are not one action. The
+same ``browser_console`` that reads the page's log evaluates arbitrary
+JavaScript when given ``expression``; the same ``terminal`` that runs
+``git status`` runs ``curl … | sh``. Classifying those by name means either
+gating the harmless majority or leaving the dangerous minority permanently
+trustable — and "permanently trustable" is the specific failure, because the
+owner marks the *name* trusted and the dangerous call inherits the grant.
+
+``register_call_escalation`` attaches a predicate to a tool name that may
+*raise* the tier for one call based on its arguments. It can never lower one:
+the declared tier is a floor, so an escalation can only ever add friction.
+A predicate that raises an exception escalates to ALWAYS_APPROVAL, because a
+rule that could not decide has not decided the call is safe.
+
 Resolution reads the user's trusted-tools set (persisted in the settings store)
 and returns a decision. That decision is consumed at ``registry.dispatch()``,
 which is the one place every tool call passes through: a tool that needs
@@ -37,8 +53,11 @@ capability cannot exist without an authoritative human response. See
 from __future__ import annotations
 
 import enum
+import logging
 import threading
-from typing import Dict, Iterable, Set
+from typing import Any, Callable, Dict, Iterable, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 
 class Tier(str, enum.Enum):
@@ -64,6 +83,20 @@ _registry: Dict[str, Tier] = {}
 _declared: Dict[str, Tier] = {}
 _catalogue_cache: Dict[str, Tier] | None = None
 
+#: A rule that may raise one call's tier above its tool's declared tier.
+#: Returns the tier this call deserves, or None to leave it alone.
+CallEscalation = Callable[[Any], Optional[Tier]]
+
+#: Per-call escalation rules, by tool name. Like `_declared`, these describe
+#: what the build says rather than what a process accumulated, so
+#: `_reset_for_tests` leaves them alone: losing them would silently downgrade
+#: `browser_console(expression=...)` back to a read for the rest of the run.
+_escalations: Dict[str, tuple] = {}
+
+#: Strictness order. Used only to take a maximum — nothing here ever compares
+#: for "less strict than" in a way that could pick the weaker of two answers.
+_TIER_RANK = {Tier.AUTO: 0, Tier.APPROVAL: 1, Tier.ALWAYS_APPROVAL: 2}
+
 
 def _catalogue() -> Dict[str, Tier]:
     """The declared production catalogue, as a lookup.
@@ -80,9 +113,14 @@ def _catalogue() -> Dict[str, Tier]:
     global _catalogue_cache
     if _catalogue_cache is None:
         try:
-            from hermes_cli.tool_tiers import catalogue
+            from hermes_cli.tool_tiers import apply_escalations, catalogue
 
             _catalogue_cache = catalogue()
+            # Loaded together, deliberately. The per-call escalations are part
+            # of the same declaration as the tiers, and every lookup path goes
+            # through here — so there is no import-order rule that could leave
+            # `browser_console(expression=...)` classified as a read.
+            apply_escalations()
         except Exception:  # pragma: no cover - defensive
             _catalogue_cache = {}
     return _catalogue_cache
@@ -148,11 +186,63 @@ def get_tier(tool_name: str) -> Tier:
     return _catalogue().get(tool_name, Tier.ALWAYS_APPROVAL)
 
 
+def register_call_escalation(tool_name: str, predicate: CallEscalation) -> None:
+    """Attach a rule that may raise the tier of one call to ``tool_name``.
+
+    Registering the same predicate object twice is a no-op, so an import that
+    runs more than once does not stack duplicates. Order does not matter:
+    `tier_for_call` takes the strictest answer, not the first.
+    """
+    with _lock:
+        existing = _escalations.get(tool_name, ())
+        if predicate in existing:
+            return
+        _escalations[tool_name] = existing + (predicate,)
+
+
+def tier_for_call(tool_name: str, args: Any = None) -> Tier:
+    """The tier of *this* call: the declared tier, possibly raised.
+
+    The declared tier is a floor. An escalation that returns a weaker tier is
+    ignored rather than honoured, so no rule added later can turn a gated tool
+    into an ungated one by returning `Tier.AUTO`.
+    """
+    base = get_tier(tool_name)
+    with _lock:
+        predicates = _escalations.get(tool_name, ())
+    if not predicates:
+        return base
+
+    strictest = base
+    for predicate in predicates:
+        try:
+            raised = predicate(args)
+        except Exception:
+            # A rule that could not decide has not decided the call is safe.
+            logger.warning(
+                "permission escalation for %s raised; treating the call as "
+                "always-approval", tool_name, exc_info=True,
+            )
+            return Tier.ALWAYS_APPROVAL
+        if raised is None:
+            continue
+        if not isinstance(raised, Tier):
+            return Tier.ALWAYS_APPROVAL
+        if _TIER_RANK[raised] > _TIER_RANK[strictest]:
+            strictest = raised
+    return strictest
+
+
 def resolve(tool_name: str, trusted_tools: Iterable[str] = ()) -> Decision:
     """Decide whether ``tool_name`` may run automatically.
 
     ``trusted_tools`` is the user's opt-in set of APPROVAL-tier tools that
     should run without prompting. It has NO effect on ALWAYS_APPROVAL tools.
+
+    This answers the question at the level of a *name*, which is what the
+    settings UI asks. The gate asks about a call and must use `resolve_call`:
+    a tool whose dangerous form is reachable through an argument is not
+    described by its name alone.
     """
     tier = get_tier(tool_name)
     if tier is Tier.AUTO:
@@ -161,6 +251,25 @@ def resolve(tool_name: str, trusted_tools: Iterable[str] = ()) -> Decision:
         # Non-negotiable: destructive/irreversible tools always prompt.
         return Decision.REQUIRE_APPROVAL
     # APPROVAL tier: allow only if the user has explicitly trusted this tool.
+    trusted: Set[str] = set(trusted_tools)
+    return Decision.ALLOW if tool_name in trusted else Decision.REQUIRE_APPROVAL
+
+
+def resolve_call(
+    tool_name: str, args: Any = None, trusted_tools: Iterable[str] = ()
+) -> Decision:
+    """Decide whether *this call* to ``tool_name`` may run automatically.
+
+    Same rules as `resolve`, applied to the escalated tier. The consequence
+    worth stating: a tool the owner marked trusted still prompts for the
+    arguments an escalation raised to ALWAYS_APPROVAL, because that tier
+    ignores the trusted set by construction.
+    """
+    tier = tier_for_call(tool_name, args)
+    if tier is Tier.AUTO:
+        return Decision.ALLOW
+    if tier is Tier.ALWAYS_APPROVAL:
+        return Decision.REQUIRE_APPROVAL
     trusted: Set[str] = set(trusted_tools)
     return Decision.ALLOW if tool_name in trusted else Decision.REQUIRE_APPROVAL
 

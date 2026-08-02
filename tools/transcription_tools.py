@@ -247,6 +247,28 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "deepinfra",
 })
 
+#: Built-in providers that transcribe on this machine. Everything else in
+#: ``BUILTIN_STT_PROVIDERS`` uploads the recording to somebody's API.
+LOCAL_STT_PROVIDERS = frozenset({"local", "local_command"})
+
+
+def stt_privacy(provider: str) -> str:
+    """Where the recording goes: ``local``, ``remote``, or ``unknown``.
+
+    The third answer is the one worth having. A command-type provider runs a
+    program the owner declared, and that program is as likely to be a `curl`
+    to a hosted ASR API as it is to be a local binary; a plugin provider can do
+    anything at all. Reporting either as "local" because it is launched locally
+    would be a privacy claim about the audio that nothing here can support, so
+    they are reported as undetermined and the owner is told to check.
+    """
+    key = (provider or "").strip().lower()
+    if key in LOCAL_STT_PROVIDERS:
+        return "local"
+    if key in BUILTIN_STT_PROVIDERS:
+        return "remote"
+    return "unknown"
+
 
 # ---------------------------------------------------------------------------
 # Command-provider registry (``stt.providers.<name>: type: command``)
@@ -746,15 +768,25 @@ def _transcribe_command_stt(
     }
 
 
-def _get_provider(stt_config: dict) -> str:
+def _get_provider(stt_config: dict, *, allow_install: bool = True) -> str:
     """Determine which STT provider to use.
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
     auto-detect tries: local > groq (free) > openai (paid).
+
+    ``allow_install=False`` skips the lazy faster-whisper install, so a caller
+    that only wants to *report* what would happen can share this resolver
+    without installing a package as a side effect of rendering a status card.
+    Everything else about the decision is identical, which is the point: a
+    status screen that reimplemented this logic drifted from it, and then
+    described a different product from the one that runs.
     """
     if not is_stt_enabled(stt_config):
         return "none"
+
+    def _maybe_lazy_install() -> bool:
+        return bool(allow_install) and _try_lazy_install_stt()
 
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
@@ -768,7 +800,7 @@ def _get_provider(stt_config: dict) -> str:
             if _has_local_command():
                 return "local_command"
             # Try lazy-install before giving up
-            if _try_lazy_install_stt():
+            if _maybe_lazy_install():
                 return "local"
             logger.warning(
                 "STT provider 'local' configured but unavailable "
@@ -854,7 +886,7 @@ def _get_provider(stt_config: dict) -> str:
     if _has_local_command():
         return "local_command"
     # Try lazy-install before falling through to cloud providers
-    if _try_lazy_install_stt():
+    if _maybe_lazy_install():
         return "local"
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")

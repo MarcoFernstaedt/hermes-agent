@@ -126,6 +126,11 @@ class Capability:
     args_fingerprint: str
     tier: str
     receipt: str
+    #: Who approved. Not a display name — the identity the transport
+    #: authenticated, so "who said yes" has an answer that survives the
+    #: session it was said in. A grant with no approver is not evidence of
+    #: anyone's decision, so minting refuses without one.
+    approver: str
     source: str
     minted_at: float
     expires_at: float
@@ -160,7 +165,8 @@ class _Broker:
         tool_call_id: str,
         args: Any,
         source: str,
-        session_id: str = "",
+        session_id: str,
+        approver: str,
         tier: str = TIER_ALWAYS_APPROVAL,
         receipt: str = "",
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
@@ -179,10 +185,23 @@ class _Broker:
         """
         if not tool_name:
             raise CapabilityError("a capability needs the tool it authorises")
-        if not tool_call_id:
+        if not tool_call_id or not tool_call_id.strip():
             raise CapabilityError(
                 "a capability needs the call it authorises; refusing to mint one "
                 "that could match any call"
+            )
+        if not session_id or not session_id.strip():
+            # An empty session matched every session on consume, because the
+            # comparison was conditional on both sides being non-empty. A
+            # capability that spans conversations is not scoped to one.
+            raise CapabilityError(
+                "a capability needs the session it was approved in; refusing to "
+                "mint one that could match any session"
+            )
+        if not approver or not approver.strip():
+            raise CapabilityError(
+                "a capability needs the identity that approved it; a grant "
+                "nobody can be traced to is not evidence of a decision"
             )
         if source not in _VALID_SOURCES:
             raise CapabilityError(f"unknown capability source {source!r}")
@@ -206,6 +225,7 @@ class _Broker:
             args_fingerprint=argument_fingerprint(args),
             tier=tier,
             receipt=receipt,
+            approver=approver,
             source=source,
             minted_at=ts,
             expires_at=ts + max(int(ttl_seconds), 0),
@@ -222,8 +242,8 @@ class _Broker:
         *,
         tool_name: str,
         args: Any,
-        session_id: str = "",
-        tool_call_id: str = "",
+        session_id: str,
+        tool_call_id: str,
         tier: Optional[str] = None,
         now: Optional[float] = None,
     ) -> Capability:
@@ -238,6 +258,24 @@ class _Broker:
         it is, which call it is, and what the arguments finally became, and
         those four things are exactly what was approved.
         """
+        # Both identities are required, and required *before* the lookup.
+        # They used to default to "" and be compared only when both sides were
+        # non-empty, so a caller that omitted either got a comparison that
+        # could never fail — the binding was advisory for anyone who forgot to
+        # pass it, which is precisely who it needed to hold for.
+        if not tool_name or not tool_name.strip():
+            raise CapabilityError("a capability check needs the tool being run")
+        if not tool_call_id or not tool_call_id.strip():
+            raise CapabilityError(
+                f"{tool_name} was not told which call it is; refusing to match "
+                "an approval against an unidentified call"
+            )
+        if not session_id or not session_id.strip():
+            raise CapabilityError(
+                f"{tool_name} was not told which session it is in; refusing to "
+                "match an approval against an unidentified session"
+            )
+
         ts = time.time() if now is None else now
         fingerprint = argument_fingerprint(args)
 
@@ -267,11 +305,11 @@ class _Broker:
             raise CapabilityError(
                 f"the approval was for {cap.tool_name}, not {tool_name}"
             )
-        if tool_call_id and cap.tool_call_id != tool_call_id:
+        if cap.tool_call_id != tool_call_id:
             raise CapabilityError(
                 f"the approval for {tool_name} was for a different tool call"
             )
-        if session_id and cap.session_id and cap.session_id != session_id:
+        if cap.session_id != session_id:
             raise CapabilityError(
                 f"the approval for {tool_name} was given in another session"
             )
@@ -290,6 +328,21 @@ class _Broker:
                 "the tier changed after consent was given"
             )
         return cap
+
+    def revoke(self, token: str) -> bool:
+        """Destroy one capability without spending it.
+
+        Used when the approval was genuine but the evidence could not be
+        written down: the grant exists in memory for a moment before its audit
+        row lands, and an action that runs with no record of its authorisation
+        is worse than one that does not run.
+        """
+        with self._lock:
+            cap = self._by_token.pop(token, None)
+            if cap is None:
+                return False
+            self._by_identity.pop(cap.identity, None)
+        return True
 
     def revoke_all(self) -> None:
         """Drop every live capability. For a stop, a logout, or a test."""
@@ -317,6 +370,10 @@ class _Broker:
 def _record_grant(cap: Capability, args: Any) -> None:
     """Tell `approval_integrity` a *real* grant exists for this call.
 
+    This is the payload binding, not the audit trail — the durable
+    "who approved what" row is written by `tool_capability`, which refuses the
+    action if it cannot land. Best-effort is correct *here* and wrong there.
+
     That module used to be fed by an unconditional snapshot taken before any
     consent, so a grant always existed and "verified" meant only "nobody
     mutated the payload". Feeding it from here instead means a grant exists if
@@ -339,13 +396,21 @@ _broker = _Broker()
 
 mint = _broker.mint
 consume = _broker.consume
+revoke = _broker.revoke
 revoke_all = _broker.revoke_all
 revoke_session = _broker.revoke_session
 live_count = _broker.live_count
 
 
-def requires_capability(tool_name: str, trusted_tools: tuple = ()) -> bool:
-    """Whether this tool may not execute without one.
+def requires_capability(
+    tool_name: str, trusted_tools: tuple = (), args: Any = None
+) -> bool:
+    """Whether this call may not execute without one.
+
+    ``args`` matters because a tier is not always a property of a name: the
+    same `browser_console` reads a console buffer or evaluates JavaScript, and
+    only the arguments say which. Omitting it answers the weaker, name-level
+    question, which is right for a settings screen and wrong for a gate.
 
     Fails closed on *any* error: if the permission layer cannot answer, the
     answer is "yes, it needs approval". An exception here previously meant the
@@ -353,8 +418,8 @@ def requires_capability(tool_name: str, trusted_tools: tuple = ()) -> bool:
     door.
     """
     try:
-        from hermes_cli.module_permissions import Decision, resolve
+        from hermes_cli.module_permissions import Decision, resolve_call
 
-        return resolve(tool_name, trusted_tools) is not Decision.ALLOW
+        return resolve_call(tool_name, args, trusted_tools) is not Decision.ALLOW
     except Exception:
         return True

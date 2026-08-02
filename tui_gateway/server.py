@@ -9159,9 +9159,12 @@ def _(rid, params: dict) -> dict:
             session["queued_prompt"] = None
         _clear_pending(sid)
         try:
-            from tools.approval import resolve_gateway_approval
+            from tools.approval import deny_all_pending
 
-            resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+            deny_all_pending(
+                session["session_key"], actor="system:session-teardown",
+                reason="the session ended",
+            )
         except Exception:
             pass
         return _ok(rid, {"status": "interrupted", "turn_isolation": True})
@@ -9199,9 +9202,12 @@ def _(rid, params: dict) -> dict:
     # process, silently resolving them to empty strings.
     _clear_pending(params.get("session_id", ""))
     try:
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import deny_all_pending
 
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        deny_all_pending(
+            session["session_key"], actor="system:session-teardown",
+            reason="the session ended",
+        )
     except Exception:
         pass
     return _ok(rid, {"status": "interrupted"})
@@ -9469,95 +9475,67 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
-#: How many client tokens a session remembers. A reconnect resubmits the
-#: message it was unsure about, not the last two hundred, so this only has to
-#: outlive one drop — but it is cheap and a browser that queued several while
-#: offline sends them all at once.
-_SUBMIT_TOKEN_MEMORY = 64
+# Prompt idempotency lives in `tui_gateway.submit_ledger`, which keeps the
+# in-memory cache *and* a durable record keyed by the session's persistent key.
+# Both properties matter and neither was true of the dictionary this replaces:
+# an in-flight claim is never evicted to make room, and a claim survives an
+# orphan reap, a restart and a cold resume — which is precisely when a client
+# resends, because it reconnects *because* something died.
+from tui_gateway import submit_ledger  # noqa: E402
+from tui_gateway.submit_ledger import SubmitLedgerFull  # noqa: E402
+from tui_gateway.submit_ledger import claim as _claim_submit_token  # noqa: E402
+from tui_gateway.submit_ledger import lookup as _lookup_submit_token  # noqa: E402
+from tui_gateway.submit_ledger import record_outcome as _record_submit_outcome  # noqa: E402
+from tui_gateway.submit_ledger import release as _release_submit_token  # noqa: E402
 
-#: The value stored while a token's first submission is still being handled.
-_SUBMIT_IN_FLIGHT = object()
+#: Re-exported so the handler's length cap and the ledger's budget are read
+#: from one place.
+_SUBMIT_TOKEN_MEMORY = submit_ledger.SUBMIT_TOKEN_MEMORY
 
-#: Its own lock, not the session's. `history_lock` is a plain `threading.Lock`
-#: and two of the release sites sit *inside* a block already holding it, so
-#: reusing it would deadlock the handler on its own error paths. The table is
-#: tiny and touched twice per submission, so one process-wide lock costs
-#: nothing and cannot participate in a cycle: nothing here ever takes
-#: `history_lock`.
-_submit_token_lock = threading.Lock()
+#: A client cannot present an unbounded list of tokens to reconcile. Anything
+#: beyond this is not a reconnecting composer, it is a probe.
+_MAX_RECONCILE_TOKENS = 64
 
 
-def _claim_submit_token(session: dict, token: str):
-    """First caller for ``token`` claims it; later ones get what to say instead.
+@method("prompt.reconcile")
+def _(rid, params: dict) -> dict:
+    """Did these messages land? Asked *before* resending, not after.
 
-    Returns None when this caller should go ahead and submit, or a response dict
-    when it must not — either the recorded outcome of the first submission, or
-    an acknowledgement that the first one is still running.
+    A client that went offline holding composed messages has to decide, for
+    each one, between losing it and sending it twice. `prompt.submit` already
+    makes the second choice safe, but only once the message has been sent — and
+    a client that would rather ask first has, until now, had nothing to ask.
 
-    This is what makes a resubmit safe. A prompt whose acknowledgement was lost
-    to a dropped socket has an unknown fate: it may have reached the agent and
-    it may not, and the client cannot tell the two apart. Without a key the
-    client has to choose between losing the message and sending it twice. With
-    one it can just send it again, and the gateway decides which of those two
-    situations it is actually in.
+    Returns one entry per token with a ``resend`` flag. ``resend: true`` means
+    the gateway has no record of that token at all, so the message provably did
+    not land. Everything else — a live claim, a recorded outcome, an
+    interrupted submission, or a lookup that failed — is ``resend: false``,
+    because none of those is evidence that nothing happened, and only the first
+    of them is evidence that something did.
     """
-    if not token:
-        # An empty key is not a key. The handler already guards this, but a
-        # helper that filed every tokenless submission under "" would make them
-        # all collide with each other — one blank entry claiming to be the
-        # outcome of whatever ran first.
-        return None
-    with _submit_token_lock:
-        seen = session.get("_submit_tokens")
-        if seen is None:
-            seen = collections.OrderedDict()
-            session["_submit_tokens"] = seen
-        if token in seen:
-            seen.move_to_end(token)
-            recorded = seen[token]
-            if recorded is _SUBMIT_IN_FLIGHT:
-                # The original is still being handled. Saying "accepted" would
-                # be a second promise about one message; saying "queued" is
-                # true — it is going to run, and it is not running yet.
-                return {"status": "queued", "duplicate": True}
-            return dict(recorded, duplicate=True)
-        seen[token] = _SUBMIT_IN_FLIGHT
-        while len(seen) > _SUBMIT_TOKEN_MEMORY:
-            seen.popitem(last=False)
-    return None
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
 
+    raw = params.get("client_tokens")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return _err(rid, -32602, "client_tokens must be a list of strings")
+    if len(raw) > _MAX_RECONCILE_TOKENS:
+        return _err(
+            rid, -32602,
+            f"at most {_MAX_RECONCILE_TOKENS} tokens may be reconciled at once",
+        )
 
-def _record_submit_outcome(session: dict, token: str, result: dict) -> dict:
-    """Remember what this submission decided, so a replay repeats it."""
-    if not token:
-        return result
-    try:
-        with _submit_token_lock:
-            seen = session.get("_submit_tokens")
-            if isinstance(seen, collections.OrderedDict) and token in seen:
-                seen[token] = dict(result)
-    except Exception:
-        pass
-    return result
+    tokens: list[str] = []
+    for value in raw:
+        if isinstance(value, str) and value.strip():
+            token = value.strip()[:128]
+            if token not in tokens:
+                tokens.append(token)
 
-
-def _release_submit_token(session: dict, token: str) -> None:
-    """Forget a claim that never produced an outcome.
-
-    A submission that errored out did not happen, so holding the token would
-    make the retry a no-op — the client would resend, get "queued, duplicate",
-    and wait forever for a turn nobody started.
-    """
-    if not token:
-        return
-    try:
-        with _submit_token_lock:
-            seen = session.get("_submit_tokens")
-            if isinstance(seen, collections.OrderedDict):
-                if seen.get(token) is _SUBMIT_IN_FLIGHT:
-                    seen.pop(token, None)
-    except Exception:
-        pass
+    return _ok(rid, {"tokens": [_lookup_submit_token(session, t) for t in tokens]})
 
 
 @method("prompt.submit")
@@ -9578,7 +9556,14 @@ def _(rid, params: dict) -> dict:
     raw_token = params.get("client_token")
     token = raw_token.strip()[:128] if isinstance(raw_token, str) else ""
     if token:
-        replay = _claim_submit_token(session, token)
+        try:
+            replay = _claim_submit_token(session, token)
+        except SubmitLedgerFull as exc:
+            # Refusing is the safe direction. The alternative is forgetting a
+            # claim that is currently protecting a message from being sent
+            # twice, and a visible error the client can retry is much better
+            # than a silent duplicate.
+            return _err(rid, -32000, str(exc))
         if replay is not None:
             return _ok(rid, replay)
     isolation_cfg = _load_dashboard_process_isolation_config()
@@ -11490,24 +11475,72 @@ def _(rid, params: dict) -> dict:
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
+    """Answer one rendered approval, by the id it was rendered with.
+
+    Two things changed here and both are deliberate.
+
+    ``approval_id`` is required. The handler used to resolve whichever request
+    was oldest in the session queue, and that queue is shared with every
+    parallel subagent — so a second request arriving between the card being
+    drawn and the owner tapping it silently inherited the answer.
+
+    ``all`` is gone as an *approval* path. It turned one tap into a
+    session-wide grant covering requests the owner had never seen. A bulk
+    **deny** is still available, because declining things nobody looked at is
+    safe in a way approving them is not.
+
+    The actor is taken from the authenticated session, never from ``params``.
+    A response that names its own author is not attribution.
+    """
     session, err = _sess(params, rid)
     if err:
         return err
     try:
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import deny_all_pending, resolve_gateway_approval
 
-        return _ok(
-            rid,
-            {
-                "resolved": resolve_gateway_approval(
-                    session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
+        choice = params.get("choice", "deny")
+        actor = _authenticated_actor(session)
+
+        if params.get("all"):
+            if choice != "deny":
+                return _err(
+                    rid, 4019,
+                    "bulk approval is not available; answer each request by its "
+                    "approval_id. Bulk deny is allowed.",
                 )
-            },
-        )
+            return _ok(rid, {"resolved": deny_all_pending(
+                session["session_key"], actor=actor,
+                reason=params.get("reason") or None,
+            )})
+
+        approval_id = str(params.get("approval_id") or "").strip()
+        if not approval_id:
+            return _err(
+                rid, 4020,
+                "approval_id is required; it is carried on the approval.request "
+                "event this answers",
+            )
+        return _ok(rid, {"resolved": resolve_gateway_approval(
+            session["session_key"], choice,
+            approval_id=approval_id, actor=actor,
+            reason=params.get("reason") or None,
+        )})
     except Exception as e:
         return _err(rid, 5004, str(e))
+
+
+def _authenticated_actor(session: dict) -> str:
+    """Who this session belongs to, as the transport established it.
+
+    Never a client-supplied field. The websocket was authenticated before any
+    RPC was accepted, so the session it resolved to *is* the identity — and it
+    is the only thing here a caller cannot choose for itself.
+    """
+    for key in ("owner", "user", "account"):
+        value = str(session.get(key) or "").strip()
+        if value:
+            return f"session:{value}"
+    return f"session:{str(session.get('session_key') or 'unknown').strip()}"
 
 
 # ── Methods: config ──────────────────────────────────────────────────

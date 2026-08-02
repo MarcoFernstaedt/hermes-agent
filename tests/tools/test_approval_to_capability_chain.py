@@ -28,6 +28,10 @@ from hermes_cli.module_permissions import Tier
 
 SESSION = "session-under-test"
 CALL_ID = "toolu_probe_0001"
+#: Who answered. The gateway derives this from the authenticated session, never
+#: from the response payload, so a test that supplies it is standing in for the
+#: transport rather than for the person.
+OWNER = "owner:test-console"
 
 
 @pytest.fixture(autouse=True)
@@ -97,8 +101,15 @@ def owner():
         def notify(payload: dict) -> None:
             seen.append(payload)
             # The card is queued before notify runs, so answering here resolves
-            # the entry the agent thread is about to wait on.
-            resolve_gateway_approval(SESSION, choice)
+            # the entry the agent thread is about to wait on — and answers *the
+            # card it was shown*, by the id that travelled on the payload,
+            # rather than whatever happens to be at the front of the queue.
+            resolve_gateway_approval(
+                SESSION,
+                choice,
+                approval_id=payload["approval_id"],
+                actor=OWNER,
+            )
 
         register_gateway_notify(SESSION, notify)
         return seen
@@ -203,6 +214,9 @@ class TestTheEvidenceIsBoundToTheCall:
         assert cap.tool_name == "probe_tool"
         assert cap.tier == "always_approval"
         assert cap.receipt.startswith("human_gateway:once:")
+        # Who, not just what. A grant nobody can be traced to cannot be
+        # reviewed or revoked afterwards, so it is not evidence of a decision.
+        assert cap.approver == OWNER
         assert cap.args_fingerprint == capabilities.argument_fingerprint({"to": "bob"})
 
     def test_a_capability_from_one_session_does_not_authorise_another(self, tool, owner):
@@ -226,6 +240,7 @@ class TestTheEvidenceIsBoundToTheCall:
             tool_name="probe_tool", tool_call_id=CALL_ID, args={"n": 1},
             session_id=SESSION, tier="always_approval",
             source=capabilities.SOURCE_HUMAN, receipt="human_gateway:once:r1",
+            approver=OWNER,
         )
         with pytest.raises(capabilities.CapabilityError, match="another session"):
             capabilities.consume(
@@ -391,7 +406,7 @@ class TestFailingClosed:
         reg, calls = tool(Tier.APPROVAL)
 
         def gate(tool_name, reason, **kw):
-            kw["on_authoritative_response"]("once", "some_new_surface", "r1")
+            kw["on_authoritative_response"]("once", "some_new_surface", "r1", OWNER)
             return {"approved": True, "message": None}
 
         monkeypatch.setattr("tools.approval.request_tool_approval", gate)
@@ -401,6 +416,56 @@ class TestFailingClosed:
                 tool_call_id=CALL_ID,
             )
         assert calls == []
+
+    @pytest.mark.parametrize("actor", ["", "   ", None])
+    def test_a_response_nobody_can_be_traced_to_refuses(
+        self, tool, monkeypatch, actor
+    ):
+        """An anonymous "yes" is not evidence that anyone said yes.
+
+        The transport reporting a positive choice without saying who made it
+        is a transport that cannot support review or revocation afterwards.
+        Minting on it would produce an audit row attributing an irreversible
+        action to nobody.
+        """
+        from hermes_cli import tool_capability
+        from hermes_cli.execution_capability import CapabilityError
+
+        reg, calls = tool(Tier.APPROVAL)
+
+        def gate(tool_name, reason, **kw):
+            kw["on_authoritative_response"]("once", "human_gateway", "r1", actor)
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", gate)
+        with pytest.raises(CapabilityError, match="approver identity"):
+            tool_capability.authorise(
+                tool_name="probe_tool", args={}, session_id=SESSION,
+                tool_call_id=CALL_ID,
+            )
+        assert calls == []
+
+    def test_an_approval_that_cannot_be_audited_refuses(
+        self, tool, owner, monkeypatch
+    ):
+        """The owner said yes and the audit write failed. Nothing runs.
+
+        An action that happened with no record of its authorisation is worse
+        than an action that did not happen: the record is the only thing that
+        makes the approval reviewable afterwards, so a grant that could not be
+        written is revoked rather than used.
+        """
+        reg, calls = tool(Tier.ALWAYS_APPROVAL)
+        owner("once")
+
+        def boom(**kw):
+            raise RuntimeError("audit log unwritable")
+
+        monkeypatch.setattr("hermes_cli.audit_log.record", boom)
+
+        assert refused(reg.dispatch("probe_tool", {}, session_id=SESSION))
+        assert calls == []
+        assert capabilities.live_count() == 0, "a revoked grant stayed live"
 
 
 class TestThePreConsentPseudoGrantIsGone:

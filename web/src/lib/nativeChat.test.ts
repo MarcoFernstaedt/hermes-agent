@@ -797,6 +797,81 @@ describe("prompt idempotency", () => {
     await session.open();
     expect(await session.submit("hello", "tok-1")).toBe("queued");
   });
+
+  it("surfaces an interrupted earlier submission rather than accepting it", async () => {
+    // The gateway claimed this message and then died before recording what
+    // became of it. Reporting that as accepted would put a second bubble on
+    // screen for a message that may already be in the conversation.
+    const transport = fakeTransport({
+      "prompt.submit": { status: "unresolved", duplicate: true },
+    });
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    expect(await session.submit("hello", "tok-1")).toBe("unresolved");
+  });
+});
+
+describe("reconciling held sends before resending them", () => {
+  /**
+   * A client that went offline holding composed messages has to decide, per
+   * message, between losing it and sending it twice. Asking first turns that
+   * guess into a lookup — but only "the gateway has never heard of this token"
+   * proves the message did not land, so every other answer must hold the send.
+   */
+  async function openWith(reports: unknown) {
+    const transport = fakeTransport({ "prompt.reconcile": { tokens: reports } });
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    return { transport, session };
+  }
+
+  it("presents the tokens it is unsure about", async () => {
+    const { transport, session } = await openWith([]);
+    await session.reconcile(["tok-1", "tok-2"]);
+
+    const call = transport.calls.find((c) => c.method === "prompt.reconcile");
+    expect(call?.params?.client_tokens).toEqual(["tok-1", "tok-2"]);
+  });
+
+  it("resends only what the gateway proves never landed", async () => {
+    const { session } = await openWith([
+      { token: "never-landed", state: "unknown", resend: true },
+      { token: "already-ran", state: "settled", resend: false },
+      { token: "still-running", state: "in_flight", resend: false },
+      { token: "interrupted", state: "unresolved", resend: false },
+    ]);
+
+    expect(
+      await session.tokensSafeToResend([
+        "never-landed", "already-ran", "still-running", "interrupted",
+      ]),
+    ).toEqual(["never-landed"]);
+  });
+
+  it("holds a token the gateway did not answer for", async () => {
+    // Silence is not "no". A token missing from the report has no verdict, and
+    // resending on no verdict is the duplicate this exists to prevent.
+    const { session } = await openWith([
+      { token: "tok-1", state: "unknown", resend: true },
+    ]);
+    expect(await session.tokensSafeToResend(["tok-1", "tok-2"])).toEqual(["tok-1"]);
+  });
+
+  it("resends nothing at all when the lookup itself fails", async () => {
+    const transport = fakeTransport({
+      "prompt.reconcile": new Error("gateway unreachable"),
+    });
+    const session = new NativeChatSession(transport, { onEvent: () => {} });
+    await session.open();
+    expect(await session.tokensSafeToResend(["tok-1"])).toEqual([]);
+  });
+
+  it("does not call the gateway when there is nothing to reconcile", async () => {
+    const { transport, session } = await openWith([]);
+    expect(await session.reconcile([])).toEqual([]);
+    expect(await session.reconcile(["", "   "])).toEqual([]);
+    expect(transport.calls.some((c) => c.method === "prompt.reconcile")).toBe(false);
+  });
 });
 
 describe("newClientToken", () => {

@@ -1077,11 +1077,19 @@ def handle_function_call(
     # request/execution middleware layers legitimately rewrite args, so
     # snapshotting here produced false mismatches on real tools (found live on
     # the terminal tool). Only the tier decision is made here.
+    #
+    # `tier_for_call`, not `get_tier`: some tools are gated by their arguments
+    # rather than their name — `browser_console(expression=...)` is a read
+    # until it is arbitrary JavaScript. Asking the name-level question here
+    # skipped the integrity snapshot for exactly the calls that most need one.
     _integrity_gated = False
     try:
-        from hermes_cli.module_permissions import Tier, get_tier
+        from hermes_cli.module_permissions import Tier, tier_for_call
 
-        _integrity_gated = bool(tool_call_id) and get_tier(function_name) is not Tier.AUTO
+        _integrity_gated = (
+            bool(tool_call_id)
+            and tier_for_call(function_name, function_args) is not Tier.AUTO
+        )
     except Exception:
         _integrity_gated = False
 

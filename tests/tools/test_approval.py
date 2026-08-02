@@ -2351,7 +2351,13 @@ class TestApprovalTimeoutIsNotConsent:
             if mod._gateway_queues.get(self.SESSION_KEY):
                 break
             time.sleep(0.02)
-        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        # Answer the card that was actually rendered, by its id, as the
+        # gateway's `approval.respond` does.
+        mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny",
+            approval_id=notified[0]["approval_id"],
+            actor="owner:test-console",
+        )
         t.join(timeout=5)
         assert "r" in result_holder, "approval wait did not return after deny"
 

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.module_permissions import Tier, get_tier
+from hermes_cli.module_permissions import Tier, get_tier, tier_for_call
 
 DEFAULT_SCOPE = "full"
 
@@ -93,10 +93,17 @@ def _toolset_of(tool_name: str) -> str:
         return ""
 
 
-def scope_permits(scope_name: str, tool_name: str) -> bool:
-    """Whether ``scope_name`` allows ``tool_name`` to run at all."""
+def scope_permits(scope_name: str, tool_name: str, args=None) -> bool:
+    """Whether ``scope_name`` allows this call to run at all.
+
+    ``args`` is consulted through `tier_for_call`, so a read-only scope stays
+    read-only: `browser_console` is an AUTO read of the console buffer, and
+    `browser_console(expression=...)` is arbitrary JavaScript in the page. A
+    scope that admitted the second because it admits the first would not be
+    describing what it allows.
+    """
     scope = BUILTIN_SCOPES.get(scope_name) or BUILTIN_SCOPES[DEFAULT_SCOPE]
-    tier = get_tier(tool_name)
+    tier = tier_for_call(tool_name, args)
     if tier not in scope.allow_tiers:
         return False
     if tier is not Tier.AUTO and scope.write_toolsets is not None:
@@ -184,13 +191,17 @@ def set_session_scope(session_id: str, scope_name: str) -> str:
 
 # -- the enforcement gate (called from registry.dispatch) ------------------
 
-def enforce_dispatch(tool_name: str) -> Optional[str]:
+def enforce_dispatch(tool_name: str, args=None) -> Optional[str]:
     """Return a refusal message if this tool call must be blocked, else None.
 
     The global stop is unconditional: once engaged it halts *all* tool activity
     at the chokepoint, whether or not a scope is armed. The per-scope restriction
     applies only to armed agent turns — an unarmed internal/system call carries no
     scope and is never scope-gated.
+
+    ``args`` is optional so existing callers keep working, and is passed by the
+    dispatch chokepoint so a scope is judged against the call rather than the
+    tool name. See `scope_permits`.
     """
     if is_agent_halted():
         return (
@@ -200,7 +211,7 @@ def enforce_dispatch(tool_name: str) -> Optional[str]:
     scope = _ACTIVE_SCOPE.get()
     if scope is None:
         return None
-    if not scope_permits(scope, tool_name):
+    if not scope_permits(scope, tool_name, args):
         return (
             f"Tool '{tool_name}' is not permitted in the '{scope}' session scope."
         )

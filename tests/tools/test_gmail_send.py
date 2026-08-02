@@ -60,7 +60,10 @@ def sent(monkeypatch):
 
         def send_message(self, raw, **kw):
             outbox.append(raw)
-            return {"id": f"msg-{len(outbox)}"}
+            # Shaped like a real Gmail id (16 lowercase hex). The broker only
+            # accepts an identifier the provider could actually have issued,
+            # so a placeholder like "msg-1" is correctly read as no id at all.
+            return {"id": f"18f2c9a0b7e4d3{len(outbox):02x}"}
 
     monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", FakeClient)
     monkeypatch.setattr(
@@ -312,7 +315,7 @@ class TestIdempotency:
 
             def send_message(self, raw, **kw):
                 outbox.append(raw)
-                return {"id": "msg-1"}
+                return {"id": "18f2c9a0b7e4d301"}
 
         monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
         out = call(**ARGS)
@@ -621,17 +624,17 @@ class TestAMalformedProviderResponseIsNotASend:
         assert self._state() == "ambiguous"
 
     def test_a_confirmed_identity_does_produce_success(self, home, monkeypatch):
-        self._client_returning(monkeypatch, {"id": "real-provider-id"})
+        self._client_returning(monkeypatch, {"id": "18f2c9a0b7e4d31c"})
         out = call(**ARGS)
         assert out["sent"] is True
-        assert out["message_id"] == "real-provider-id"
+        assert out["message_id"] == "18f2c9a0b7e4d31c"
         assert self._state() == "succeeded"
 
     def test_an_unconfirmed_send_is_not_retried_into_a_duplicate(self, home, monkeypatch):
         self._client_returning(monkeypatch, {})
         assert errored(**ARGS)
         # Even with a healthy provider afterwards, it stays blocked.
-        self._client_returning(monkeypatch, {"id": "would-be-second-copy"})
+        self._client_returning(monkeypatch, {"id": "18f2c9a0b7e4d31d"})
         assert errored(**ARGS)
 
 
@@ -677,7 +680,7 @@ class TestReconciliation:
 
         def search(message_id):
             searched.append(message_id)
-            return "found-provider-id"
+            return "18f2c9a0b7e4d31e"
 
         result = reconcile_ambiguous_send(fingerprint=fp, search=search)
         assert result["reconciled"] is True
@@ -686,12 +689,87 @@ class TestReconciliation:
         assert searched == [rfc_message_id(fp)]
         assert self._store().lookup(f"gmail_send:{fp}")["state"] == "succeeded"
 
-    def test_not_finding_it_makes_the_message_sendable_again(self, home, monkeypatch):
+    def test_not_finding_it_is_not_proof_it_was_not_delivered(self, home, monkeypatch):
+        """An empty search result must leave the row ambiguous.
+
+        Gmail's `rfc822msgid:` index is eventually consistent and lags a send;
+        a throttled query returns an empty page. Settling `failed` on that
+        emptiness marks the message sendable again, and the case where it is
+        wrong is the case that matters: the message already went out, and the
+        owner sends a second copy of something irreversible.
+        """
         from tools.gmail_send_tool import reconcile_ambiguous_send
 
         fp = self._make_ambiguous(home, monkeypatch)
         result = reconcile_ambiguous_send(fingerprint=fp, search=lambda _id: None)
+        assert result["reconciled"] is False
+        assert result["state"] == "ambiguous"
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "ambiguous"
+        # And the message is still blocked from going out a second time.
+        assert errored(**ARGS)
+
+    @pytest.mark.parametrize(
+        "malformed", [{"id": "x"}, ["x"], 1, True, {}, object()]
+    )
+    def test_a_malformed_search_result_is_not_a_find(
+        self, home, monkeypatch, malformed
+    ):
+        # Coercing this to a string would settle the row `succeeded` and report
+        # a delivery on the strength of a reply that named no message.
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        result = reconcile_ambiguous_send(
+            fingerprint=fp, search=lambda _id: malformed
+        )
+        assert result["reconciled"] is False
+        assert result["state"] == "ambiguous"
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "ambiguous"
+
+    @pytest.mark.parametrize(
+        "proof",
+        [
+            None,
+            {},
+            {"kind": "owner_confirmed"},                  # nobody attributed
+            {"kind": "owner_confirmed", "actor": "  "},   # blank actor
+            {"kind": "i_looked", "actor": "marco"},       # unrecognised kind
+            {"actor": "marco"},                           # no kind
+            "owner_confirmed",                            # not a mapping
+            {"kind": True, "actor": "marco"},
+        ],
+    )
+    def test_an_unusable_proof_does_not_unblock_the_send(
+        self, home, monkeypatch, proof
+    ):
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        result = reconcile_ambiguous_send(
+            fingerprint=fp, search=lambda _id: None, proof=proof
+        )
+        assert result["reconciled"] is False
+        assert self._store().lookup(f"gmail_send:{fp}")["state"] == "ambiguous"
+
+    @pytest.mark.parametrize(
+        "kind", ["owner_confirmed", "provider_permanent_failure"]
+    )
+    def test_authoritative_non_delivery_proof_makes_it_sendable_again(
+        self, home, monkeypatch, kind
+    ):
+        from tools.gmail_send_tool import reconcile_ambiguous_send
+
+        fp = self._make_ambiguous(home, monkeypatch)
+        result = reconcile_ambiguous_send(
+            fingerprint=fp, search=lambda _id: None,
+            proof={"kind": kind, "actor": "owner:marco"},
+        )
         assert result["state"] == "failed"
+        # Who said so is recorded: this is the write that permits a second copy
+        # of an irreversible action.
+        record = self._store().lookup(f"gmail_send:{fp}")
+        assert record["result"]["proof_kind"] == kind
+        assert record["result"]["proof_actor"] == "owner:marco"
 
         outbox: list = []
 
@@ -701,7 +779,7 @@ class TestReconciliation:
 
             def send_message(self, raw, **kw):
                 outbox.append(raw)
-                return {"id": "now-sent"}
+                return {"id": "18f2c9a0b7e4d321"}
 
         monkeypatch.setattr("hermes_cli.google.gmail.GmailClient", Working)
         assert call(**ARGS)["sent"] is True
@@ -711,14 +789,14 @@ class TestReconciliation:
         from tools.gmail_send_tool import reconcile_ambiguous_send
 
         fp = self._make_ambiguous(home, monkeypatch)
-        first = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "id-1")
-        second = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "id-2")
+        first = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "18f2c9a0b7e4d31f")
+        second = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "18f2c9a0b7e4d320")
 
         assert first["state"] == "succeeded"
         assert second["reconciled"] is False
         record = self._store().lookup(f"gmail_send:{fp}")
         assert record["state"] == "succeeded"
-        assert record["result"]["message_id"] == "id-1"
+        assert record["result"]["message_id"] == "18f2c9a0b7e4d31f"
 
     def test_an_unreachable_provider_leaves_it_ambiguous(self, home, monkeypatch):
         # Not being able to look is not evidence either way.
@@ -741,7 +819,10 @@ class TestReconciliation:
             sender="marco@example.com", to=ARGS["to"],
             subject=ARGS["subject"], body=ARGS["body"],
         )
-        result = reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: None)
+        result = reconcile_ambiguous_send(
+            fingerprint=fp, search=lambda _i: None,
+            proof={"kind": "owner_confirmed", "actor": "owner:marco"},
+        )
         assert result["reconciled"] is False
         assert self._store().lookup(f"gmail_send:{fp}")["state"] == "succeeded"
 
@@ -767,7 +848,7 @@ class TestReconciliation:
             sender="marco@example.com", to=ARGS["to"],
             subject="SECRET-SUBJECT", body="SECRET-BODY",
         )
-        reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "x")
+        reconcile_ambiguous_send(fingerprint=fp, search=lambda _i: "18f2c9a0b7e4d322")
         blob = json.dumps(self._store().lookup(f"gmail_send:{fp}"))
         for secret in ("SECRET-SUBJECT", "SECRET-BODY", "bob@example.com"):
             assert secret not in blob

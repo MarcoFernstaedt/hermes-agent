@@ -71,10 +71,18 @@ _PREVIEW_VALUE_CHARS = 300
 _PREVIEW_MAX_KEYS = 24
 
 
-def _tier_of(tool_name: str):
-    from hermes_cli.module_permissions import Tier, get_tier
+def _tier_of(tool_name: str, args: Any = None):
+    """The tier of this call — the declared one, possibly raised by its args.
 
-    return get_tier(tool_name), Tier
+    `tier_for_call` is used rather than `get_tier` because several tools are
+    not one action: `browser_console` reads a log or evaluates JavaScript,
+    `terminal` runs `ls` or `curl | sh`. The escalated tier is what decides
+    `once_only` below, so the dangerous form of a tool the owner trusts is
+    minted for that call and nothing else.
+    """
+    from hermes_cli.module_permissions import Tier, tier_for_call
+
+    return tier_for_call(tool_name, args), Tier
 
 
 def approval_preview(tool_name: str, args: Any) -> dict:
@@ -118,13 +126,24 @@ def authorise(
     Returns the spent capability, or None when the tool's tier does not need
     one. Raises `CapabilityError` on every other outcome — there is no falsy
     return that a caller could forget to check.
-    """
-    from hermes_cli.module_permissions import Decision, resolve
 
-    tier, Tier = _tier_of(tool_name)
-    if resolve(tool_name, trusted_tools) is Decision.ALLOW:
+    ``session_id`` and ``tool_call_id`` default to empty only so the signature
+    reads as keyword-only; both are *required* for a gated tool and refused
+    below when absent. A capability that matches any session or any call is not
+    scoped to either.
+    """
+    from hermes_cli.module_permissions import Decision, resolve_call
+
+    tier, Tier = _tier_of(tool_name, args)
+    if resolve_call(tool_name, args, trusted_tools) is Decision.ALLOW:
         # Either AUTO, or an APPROVAL-tier tool the owner explicitly trusted.
         # Both are decisions the owner already made; neither needs a ticket.
+        #
+        # `resolve_call`, not `resolve`: the owner trusted a tool name, and
+        # this asks whether that grant covers *these arguments*. It does not
+        # cover the escalated forms — arbitrary JavaScript in the page, a
+        # chosen output path, a dangerous shell command — which land at
+        # ALWAYS_APPROVAL for this call and ignore the trusted set entirely.
         return None
 
     identity = dict(
@@ -143,7 +162,7 @@ def authorise(
         # approval" into "here, have another one".
         return capabilities.consume(token, args=args, **identity)
 
-    if not tool_call_id:
+    if not tool_call_id or not tool_call_id.strip():
         # Without a correlation identity a capability cannot be bound to a
         # call, so there is nothing that could be approved. Refusing is the
         # only honest answer; the staged `observe` mode is where this shows up
@@ -151,6 +170,11 @@ def authorise(
         raise CapabilityError(
             f"{tool_name} needs the owner's approval, but this call carries no "
             "tool call id to bind an approval to"
+        )
+    if not session_id or not session_id.strip():
+        raise CapabilityError(
+            f"{tool_name} needs the owner's approval, but this call carries no "
+            "session id to bind an approval to"
         )
 
     try:
@@ -160,7 +184,9 @@ def authorise(
 
     minted: list[Capability] = []
 
-    def _on_response(choice: str, decided_by: str, receipt: str) -> None:
+    def _on_response(
+        choice: str, decided_by: str, receipt: str, actor: str
+    ) -> None:
         """The trusted response boundary. Raising here refuses the action."""
         source = _SOURCE_BY_DECISION.get(decided_by)
         if source is None:
@@ -168,14 +194,32 @@ def authorise(
                 f"approval for {tool_name} arrived from an unrecognised "
                 f"decision path {decided_by!r}"
             )
-        minted.append(
-            capabilities.mint(
-                args=args,
-                source=source,
-                receipt=f"{decided_by}:{choice}:{receipt}",
-                **identity,
+        if not actor or not actor.strip():
+            # The transport did not tell us who answered. That is not a
+            # formality: a grant nobody can be traced to cannot be reviewed,
+            # revoked, or held against anyone, so it is not evidence of a
+            # decision and must not become one.
+            raise CapabilityError(
+                f"approval for {tool_name} carried no approver identity"
             )
+        cap = capabilities.mint(
+            args=args,
+            source=source,
+            receipt=f"{decided_by}:{choice}:{receipt}",
+            approver=actor.strip(),
+            **identity,
         )
+        # Persist the evidence before the capability is usable. If the audit
+        # cannot record who approved what, the approval is revoked and the
+        # handler is never entered — an action that happened with no record of
+        # its authorisation is worse than an action that did not happen.
+        if not _record_grant_durably(cap, args):
+            capabilities.revoke(cap.token)
+            raise CapabilityError(
+                f"the approval for {tool_name} could not be recorded; refusing "
+                "to run an action whose authorisation cannot be audited"
+            )
+        minted.append(cap)
 
     from tools.approval import request_tool_approval
 
@@ -210,3 +254,37 @@ def authorise(
     # one-use property is exercised by the same code path a presented token
     # takes and cannot be true only on paper.
     return capabilities.consume(minted[0].token, args=args, **identity)
+
+
+def _record_grant_durably(cap: Capability, args: Any) -> bool:
+    """Write the approval to the audit log. False when it did not land.
+
+    Returns rather than raises so the caller can revoke first. The audit call
+    is deliberately *not* wrapped in a swallow-everything: the whole point of
+    this record is that it exists, and "we tried" is not the same claim.
+    """
+    try:
+        from hermes_cli import audit_log
+
+        audit_log.record(
+            actor=cap.approver,
+            module="capability",
+            tool=cap.tool_name,
+            action="approval_granted",
+            target=cap.tool_call_id,
+            decision="approved",
+            outcome="minted",
+            detail={
+                "session_id": cap.session_id,
+                "tier": cap.tier,
+                "source": cap.source,
+                "receipt": cap.receipt,
+                # The hash, never the arguments: this record must not become a
+                # second place the payload lives.
+                "args_fingerprint": cap.args_fingerprint,
+                "expires_at": cap.expires_at,
+            },
+        )
+        return True
+    except Exception:
+        return False

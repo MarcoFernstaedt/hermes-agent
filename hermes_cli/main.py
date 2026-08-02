@@ -15317,5 +15317,14 @@ def main():
         parser.print_help()
 
 
+# State the shipped permission modes explicitly at process start.
+# `tools.registry.tool_gate_mode()` refuses when its variable is unset
+# rather than falling back to its weakest setting, so the product has to
+# say what the default is. Never overwrites an operator's own value.
+from hermes_constants import apply_default_gate_modes as _apply_gate_modes
+
+_apply_gate_modes()
+
+
 if __name__ == "__main__":
     main()
