@@ -1612,7 +1612,22 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         from hermes_cli.providers import get_provider
         pconfig = get_provider(normalized)
     if pconfig and pconfig.auth_type == "api_key":
-        for env_var in pconfig.api_key_env_vars:
+        env_vars = tuple(pconfig.api_key_env_vars or ())
+        if not env_vars:
+            # The catalog fallback can hand back a `ProviderDef` with no env
+            # vars at all — that is what happens whenever the models.dev
+            # catalog has not been fetched, which is every offline start and
+            # every fresh container. The provider then had *no* env var to
+            # check, so a user who had explicitly set `OPENROUTER_API_KEY` was
+            # reported as not having configured openrouter, and the model
+            # picker hid it. That is the exact regression this function was
+            # changed to fix, reappearing whenever the network is unavailable.
+            #
+            # `<ID>_API_KEY` is the near-universal convention and costs nothing
+            # to check: it only ever reports "configured" because the user set
+            # that specific variable, which is a deliberate act.
+            env_vars = (f"{normalized.replace('-', '_').upper()}_API_KEY",)
+        for env_var in env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
             if has_usable_secret(os.getenv(env_var, "")):

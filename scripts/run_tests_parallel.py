@@ -75,15 +75,21 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
 #
-# Set to 300s (5 min) deliberately generous: the per-test subprocess
-# isolation plugin spawns a fresh Python process per test, so a
-# large-collection file pays N × (interpreter startup + import) of
-# overhead before any test logic runs — and that overhead dilates under
-# load on shared CI runners, producing false "no tests ran" timeouts on
-# files that finish in ~100s on a quiet box. The Docker build matrix jobs
-# take 7-10 min anyway, so this headroom costs nothing on total CI wall
-# time while keeping a genuinely hung file bounded.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
+# The per-test subprocess isolation plugin spawns a fresh Python process per
+# test, so a large-collection file pays N × (interpreter startup + import) of
+# overhead before any test logic runs — and that overhead dilates under load on
+# shared runners, producing false "no tests ran" timeouts on files that finish
+# comfortably on a quiet box.
+#
+# Raised from 300s because 300s was not, in fact, generous enough:
+# ``tests/run_agent/test_run_agent.py`` is 436 tests in one file and takes
+# ~315s **alone on an idle machine**, so it timed out on every full run and was
+# reported as a collection failure. An all-passing file being counted as broken
+# because of the harness's own budget is the worst kind of red: it trains
+# people to ignore the runner. The Docker build matrix takes 7-10 minutes
+# anyway, so this headroom costs nothing on total wall time while still
+# bounding a genuinely hung file.
+_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0
 
 # One-shot retry of failing test FILES. A file that exits non-zero is re-run
 # once in a fresh subprocess; if the re-run passes, the file counts as passed

@@ -548,7 +548,16 @@ class TestGeneratedSystemdUnits:
             "_get_restart_drain_timeout",
             lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        # Identity stubbed, the way every other unit-content test here does it.
+        # Without it the unit is generated for whoever ran the suite, and the
+        # production guard refuses to install a system service as root — so on
+        # any root-owned CI or container this failed on an identity check while
+        # asserting nothing about identity.
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
@@ -1539,6 +1548,22 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _no_real_systemd(self, monkeypatch):
+        """Bypass the D-Bus reachability check for the whole class.
+
+        These tests stub `_run_systemctl` and then assert on the calls it
+        received — but `systemd_restart` runs `_preflight_user_systemd` first,
+        which shells out to the real `loginctl`. In a container there is no
+        systemd as PID 1, so every one of them failed on "Host is down" before
+        reaching the routing logic under test.
+
+        Individual tests elsewhere in this file already stub this one at a
+        time; doing it for the class means the next test added here inherits
+        it rather than rediscovering the same environment dependency.
+        """
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -2244,7 +2269,13 @@ class TestGeneratedUnitIncludesLocalBin:
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        # Same reason as above: pin the identity so the unit does not depend on
+        # who is running the tests.
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 

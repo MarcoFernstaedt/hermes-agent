@@ -955,19 +955,27 @@ def _home_prefix_fold_regex(path: str):
     patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
     required (``+``), so a bare home with no path under it is not folded.
 
-    Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / HERMES_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
-    because the resolved home is stable across calls on this hot path.
+    Returns ``None`` for an unset or degenerate path — a bare root such as
+    ``/``, ``C:\\`` or ``""`` — so a stray HOME / HERMES_HOME cannot rewrite
+    unrelated filesystem prefixes. Cached because the resolved home is stable
+    across calls on this hot path.
+
+    The guard used to require *two* components below the root, which silently
+    disabled every absolute-path check for anyone whose home is a single
+    segment. ``/root`` is the case that matters: for the root user, and in
+    almost every container, ``~/.ssh/authorized_keys`` was guarded and
+    ``/root/.ssh/authorized_keys`` — the same file, written the way an agent
+    actually writes it — was not. One component is a real home; zero is a root.
+
+    A lone Windows drive designator is still rejected: ``C:`` has one component
+    and folding it would rewrite the entire filesystem to ``~/``.
     """
     if not path:
         return None
     components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
-    if len(components) < 2:
+    if not components:
+        return None
+    if len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0]):
         return None
     body = r"[/\\]+".join(re.escape(c) for c in components)
     # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows

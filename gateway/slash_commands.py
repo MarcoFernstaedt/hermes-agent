@@ -2766,6 +2766,14 @@ class GatewaySlashCommandsMixin:
         and their interactive pickers)."""
         import yaml
         from gateway.run import _hermes_home
+        # `atomic_config_write` was used below and never imported, so every
+        # `--global` write raised NameError — which this function catches,
+        # logs, and reports as a failed save. The command still answered
+        # "saved globally" from its session-scoped path, so `/fast fast
+        # --global` and `/reasoning ... --global` looked like they worked and
+        # persisted nothing at all; the setting came back on the next restart.
+        from hermes_cli.config import atomic_config_write
+
         config_path = _hermes_home / "config.yaml"
         try:
             user_config = {}

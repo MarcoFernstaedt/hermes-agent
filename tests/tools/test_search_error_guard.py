@@ -26,6 +26,8 @@ import shutil
 
 import pytest
 
+from tests.conftest import requires_unprivileged
+
 from tools.file_operations import (
     ShellFileOperations,
     _pattern_has_regex_newline,
@@ -109,6 +111,7 @@ class TestSearchErrorGuard:
         assert res.error is None, f"truncated success wrongly errored: {res.error!r}"
         assert len(res.matches) == 5
 
+    @requires_unprivileged
     def test_files_only_excludes_diagnostics(self, method, partial_error_tree):
         # files_only mode must not list a diagnostic line as a fake file path.
         res = _search(_ops(partial_error_tree), method, "needle",

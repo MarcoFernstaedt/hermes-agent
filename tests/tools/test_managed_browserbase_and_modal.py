@@ -14,6 +14,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "tools"
+AGENT_DIR = REPO_ROOT / "agent"
 PLUGINS_DIR = REPO_ROOT / "plugins"
 
 
@@ -96,7 +97,19 @@ def _install_fake_tools_package():
     sys.modules["tools.environments"] = env_package
 
     agent_package = types.ModuleType("agent")
-    agent_package.__path__ = []  # type: ignore[attr-defined]
+    # The real path, not an empty one. This used to be `[]` so that no real
+    # `agent` submodule was reachable, and the handful the import chain needed
+    # were stubbed below. That list is a snapshot of one moment: every time a
+    # module in the chain grew a new import — most recently
+    # `hermes_cli.auth` → `agent.credential_persistence` — the test failed with
+    # a ModuleNotFoundError about something it had never heard of and did not
+    # care about.
+    #
+    # The stubs still win: `sys.modules` is consulted before `__path__`, so
+    # everything installed below shadows the real module exactly as before.
+    # What changes is that an unanticipated submodule now resolves instead of
+    # exploding.
+    agent_package.__path__ = [str(AGENT_DIR)]  # type: ignore[attr-defined]
     sys.modules["agent"] = agent_package
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",

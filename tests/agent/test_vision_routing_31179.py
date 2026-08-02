@@ -157,8 +157,32 @@ model:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
-        provider, client, _model = resolve_vision_provider_client(provider="auto")
+        import importlib
+
+        # `import_module`, not `from agent import auxiliary_client`.
+        # `_fresh_modules()` deletes the entry from `sys.modules` but the
+        # `agent` package object still holds an attribute pointing at the OLD
+        # module, so the `from agent import ...` form hands back the stale one
+        # and every patch lands on an object nothing will call.
+        auxiliary_client = importlib.import_module("agent.auxiliary_client")
+
+        # Pin the capability answer. `_main_model_supports_vision` consults the
+        # models.dev catalog and returns True when it has no data — a
+        # deliberate permissive fallback, covered by
+        # `test_unknown_capability_does_not_block` below. Offline, or on a
+        # fresh container that has never fetched the catalog, that fallback is
+        # what actually runs, so this test was asserting the catalogued
+        # behaviour while the catalog was absent and reporting the guard as
+        # broken. The guard under test is "known text-only is skipped", so the
+        # test has to state that the provider is known text-only.
+        monkeypatch.setattr(
+            auxiliary_client, "_main_model_supports_vision",
+            lambda provider, model: False,
+        )
+
+        provider, client, _model = auxiliary_client.resolve_vision_provider_client(
+            provider="auto"
+        )
         assert client is None, (
             f"Vision auto-detect must skip text-only main {provider!r} when "
             "no vision-capable aggregator is available, not return a client "
@@ -245,6 +269,18 @@ model:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
 
+        # Same pin as above: without capability data the permissive fallback
+        # runs and deepseek is not *known* to be text-only, so the gate that is
+        # under test never engages. See
+        # `TestTextOnlyMainSkippedForVision.test_text_only_main_skipped_when_no_aggregator`.
+        import importlib
+
+        monkeypatch.setattr(
+            importlib.import_module("agent.auxiliary_client"),
+            "_main_model_supports_vision",
+            lambda provider, model: False,
+        )
+
         from tools.vision_tools import check_vision_requirements
         assert check_vision_requirements() is False
 
@@ -259,6 +295,18 @@ model:
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+
+        # Same pin as above: without capability data the permissive fallback
+        # runs and deepseek is not *known* to be text-only, so the gate that is
+        # under test never engages. See
+        # `TestTextOnlyMainSkippedForVision.test_text_only_main_skipped_when_no_aggregator`.
+        import importlib
+
+        monkeypatch.setattr(
+            importlib.import_module("agent.auxiliary_client"),
+            "_main_model_supports_vision",
+            lambda provider, model: False,
+        )
 
         import tools.browser_tool
         # Force the browser side to True so we exercise the vision-gating part.

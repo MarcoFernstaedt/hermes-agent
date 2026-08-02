@@ -7,7 +7,15 @@ import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+# Every variable `resolve_httpx_verify` reads, not most of them.
+# `CURL_CA_BUNDLE` is the fourth in the chain and was missing, so on any
+# machine behind a TLS-inspecting proxy the resolver found a bundle and
+# returned an SSLContext — and the test reported a defect in code that was
+# doing exactly what it says. `test_ssl_ca_guard.py` already had the full
+# list; this one had drifted.
+_CA_ENV_VARS = (
+    "HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+)
 
 
 @pytest.fixture

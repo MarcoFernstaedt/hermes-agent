@@ -108,8 +108,20 @@ def test_opencode_go_totally_unknown_model_still_accepted():
 
 @_patched
 def test_opencode_zen_known_model_accepted():
-    """opencode-zen also uses _PROVIDER_MODELS; kimi-k2 is in its catalog."""
-    result = validate_requested_model("kimi-k2", "opencode-zen")
+    """opencode-zen also uses `_PROVIDER_MODELS`.
+
+    The model id is read from the catalog rather than written out. It used to
+    name `kimi-k2` literally; the catalog moved on to `kimi-k2.5` / `kimi-k2.6`
+    and the test kept asserting a model that no longer existed — which the
+    fuzzy matcher then *accepted* while reporting `recognized: False`, so the
+    failure looked like a validator bug rather than a stale fixture. A test
+    about "the catalog is consulted" should not carry its own copy of the
+    catalog.
+    """
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    known = _PROVIDER_MODELS["opencode-zen"][0]
+    result = validate_requested_model(known, "opencode-zen")
     assert result["accepted"] is True
     assert result["recognized"] is True
 

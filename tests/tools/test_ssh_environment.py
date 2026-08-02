@@ -44,6 +44,15 @@ class TestBuildSSHCommand:
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        # And the availability check. These tests build argument strings and
+        # socket paths; they never invoke ssh, which is why `subprocess.run` is
+        # already stubbed above. The constructor's fail-fast check was the one
+        # thing still requiring the binary, so on a machine without an OpenSSH
+        # client these failed at construction — reporting "SSH is not
+        # installed" from tests that had no intention of using it.
+        monkeypatch.setattr(
+            "tools.environments.ssh._ensure_ssh_available", lambda: None
+        )
 
     def test_base_flags(self):
         env = SSHEnvironment(host="h", user="u")
@@ -86,6 +95,15 @@ class TestControlSocketPath:
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        # And the availability check. These tests build argument strings and
+        # socket paths; they never invoke ssh, which is why `subprocess.run` is
+        # already stubbed above. The constructor's fail-fast check was the one
+        # thing still requiring the binary, so on a machine without an OpenSSH
+        # client these failed at construction — reporting "SSH is not
+        # installed" from tests that had no intention of using it.
+        monkeypatch.setattr(
+            "tools.environments.ssh._ensure_ssh_available", lambda: None
+        )
 
     # SSH appends ``.XXXXXXXXXXXXXXXX`` (17 bytes) to the ControlPath in
     # ControlMaster mode; the macOS sun_path field is 104 bytes including

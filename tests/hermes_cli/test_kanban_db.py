@@ -3248,6 +3248,20 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
+    from hermes_sqlite import sqlite_wal_reset_is_fixed
+
+    if not sqlite_wal_reset_is_fixed(_sqlite3.sqlite_version_info):
+        # This runtime is one of the SQLite builds affected by the WAL-reset
+        # corruption bug, so `connect()` moves straight to DELETE and never
+        # attempts WAL at all. The WAL-blocking connection below therefore
+        # never fires and no fallback warning is emitted — the test's premise
+        # simply does not hold here, which is not the same as the fallback
+        # being broken.
+        pytest.skip(
+            f"SQLite {_sqlite3.sqlite_version} never attempts WAL; "
+            "the fallback under test cannot be reached"
+        )
+
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

@@ -226,21 +226,49 @@ def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: in
     will then fail with a clear browser-side error instead of silently
     doing nothing).
     """
+    import errno
     import socket
+
+    # A family the host does not have is not a family the port is busy on.
+    #
+    # This checked both loopbacks unconditionally, so on an IPv4-only host —
+    # most containers, and plenty of CI — the `::1` bind failed with
+    # EAFNOSUPPORT for *every* candidate, no port was ever considered bindable,
+    # and the function fell through to `preferred + 1` every single time. That
+    # is not a degraded answer, it is the exact bind conflict the function
+    # exists to avoid, returned confidently.
+    families = [(socket.AF_INET, "127.0.0.1")]
+    if _family_available(socket.AF_INET6):
+        families.append((socket.AF_INET6, "::1"))
 
     for port in range(preferred + 1, preferred + 1 + attempts):
         bindable = True
-        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        for family, host in families:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as sock:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     sock.bind((host, port))
-            except OSError:
+            except OSError as exc:
+                # An address family that vanished between the probe and here
+                # still is not evidence about the port.
+                if exc.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+                    continue
                 bindable = False
                 break
         if bindable:
             return port
     return preferred + 1
+
+
+def _family_available(family) -> bool:
+    """Can this host open a socket in *family* at all?"""
+    import socket
+
+    try:
+        with socket.socket(family, socket.SOCK_STREAM):
+            return True
+    except OSError:
+        return False
 
 
 def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> str | None:

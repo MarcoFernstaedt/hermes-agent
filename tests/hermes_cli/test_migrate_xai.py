@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import requires_unprivileged
+
 from hermes_cli.xai_retirement import (
     RetirementIssue,
     apply_migration,
@@ -228,6 +230,7 @@ class TestIdempotence:
 # ---------------------------------------------------------------------------
 
 class TestUnreadableExistingConfig:
+    @requires_unprivileged
     def test_apply_refuses_to_overwrite_unreadable_config(self, trap_config: Path):
         """apply_migration must not clobber an existing config.yaml it can't
         read. It reads the file first (which raises on an unreadable file), and

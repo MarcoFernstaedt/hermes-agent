@@ -42,7 +42,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from utils import base_url_host_matches, base_url_hostname
-import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
@@ -1571,4 +1570,12 @@ def main(
 
 
 if __name__ == "__main__":
+    # Imported here rather than at module scope. `fire` is the CLI argument
+    # parser and is needed by exactly this line, but importing it at the top
+    # made the whole module unimportable without it — so a test that only wants
+    # `load_compression_config` failed on a missing dependency of the command
+    # line. A library's importability should not depend on how its CLI is
+    # spelled.
+    import fire
+
     fire.Fire(main)
