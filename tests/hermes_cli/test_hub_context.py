@@ -256,9 +256,17 @@ class TestProgressIsWhatNowSaysAboutTheDay:
 
         repo = LifeRepository(default_database_path())
         repo.migrate()
-        assert collect_hub_context(["progress"])["sections"]["progress"]["intention"] is None
+        section = collect_hub_context(["progress"])["sections"]["progress"]
+        assert section["intention"] is None
 
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        # "Yesterday" relative to the day the *section* reports, not to this
+        # process's own clock. Computing it independently made the test a
+        # midnight race: run it either side of the rollover and the two dates
+        # disagree by one, the reflection lands on a day nothing reads, and the
+        # failure looks like the carry being broken.
+        yesterday = (
+            date.fromisoformat(section["day"]) - timedelta(days=1)
+        ).isoformat()
         repo.set_reflection(
             day=yesterday, wake_time="", bedtime="", energy=None, mood="",
             win="", obstacle="", lesson="", tomorrow="Finish the packet for Acme.",
