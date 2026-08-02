@@ -365,6 +365,50 @@ class TestObserveMode:
         assert reg.dispatch("probe_tool", {}) == "ran"
         assert len(calls) == 1
 
+    def test_observe_does_not_ask_the_owner_anything(self, gated, monkeypatch):
+        """A card whose answer is discarded is worse than no card.
+
+        In `observe` the call runs whichever button is pressed. Rendering the
+        prompt anyway teaches the owner that approval cards do not mean
+        anything — which is a larger problem than the gap being measured, and
+        it would arrive the moment a tier is tightened rather than when the
+        gate is deliberately turned on.
+        """
+        monkeypatch.setenv("HERMES_TOOL_GATE_MODE", "observe")
+        asked: list = []
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *a, **kw: (asked.append(a), {"approved": True})[1],
+        )
+        reg, calls = gated(Tier.ALWAYS_APPROVAL)
+        assert reg.dispatch("probe_tool", {}) == "ran"
+        assert asked == [], "observe mode interrupted the owner"
+        assert len(calls) == 1
+
+    def test_enforce_does_ask(self, gated, monkeypatch):
+        asked: list = []
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *a, **kw: (asked.append(a), {"approved": False,
+                                                "message": "denied"})[1],
+        )
+        reg, calls = gated(Tier.ALWAYS_APPROVAL)
+        assert refused(reg.dispatch("probe_tool", {}, session_id="s1"))
+        assert len(asked) == 1
+        assert calls == []
+
+    def test_observe_still_honours_a_capability_that_exists(
+        self, gated, monkeypatch
+    ):
+        # Not asking is not the same as not checking. A presented ticket is
+        # still consumed, so the one-use property holds in either mode.
+        monkeypatch.setenv("HERMES_TOOL_GATE_MODE", "observe")
+        reg, calls = gated(Tier.ALWAYS_APPROVAL)
+        args = {"q": 1}
+        token = mint(tool_name="probe_tool", args=args, source=cap.SOURCE_HUMAN).token
+        assert reg.dispatch("probe_tool", args, capability=token, session_id="s1") == "ran"
+        assert cap.live_count() == 0, "the capability was not spent"
+
     def test_observe_audits_what_it_would_have_refused(self, gated, monkeypatch):
         monkeypatch.setenv("HERMES_TOOL_GATE_MODE", "observe")
         rows: list[dict] = []

@@ -457,6 +457,15 @@ New in this candidate, and the part most worth trying to defeat. In a
    UI. There is nothing to add: trust is per *name*, and the escalated call
    ignores it.
 
+**The cost, stated.** Under `enforce`, a dangerous `terminal` command now
+produces *two* cards: the tier card, and the dangerous-command card that has
+always fired underneath it. That is the price of the tier layer being honest
+about what `curl | sh` is, and it lands only when the gate is deliberately
+turned on. Under `observe` — the shipped default — no card is produced at all:
+the call runs whichever button is pressed, so asking would be a question whose
+answer is discarded. Judge whether the doubled prompt is acceptable *before*
+enforcing, because it is the kind of friction that gets a gate switched off.
+
 ---
 
 ## 8. Prompt idempotency and reconciliation

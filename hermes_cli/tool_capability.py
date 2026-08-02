@@ -120,6 +120,7 @@ def authorise(
     tool_call_id: str = "",
     token: Optional[str] = None,
     trusted_tools: tuple = (),
+    prompt: bool = True,
 ) -> Optional[Capability]:
     """Establish the right to run ``tool_name`` with exactly these arguments.
 
@@ -131,6 +132,13 @@ def authorise(
     reads as keyword-only; both are *required* for a gated tool and refused
     below when absent. A capability that matches any session or any call is not
     scoped to either.
+
+    ``prompt=False`` answers the question without asking anybody: an existing
+    capability is still honoured, and its absence is a refusal rather than a
+    reason to interrupt the owner. That is what `observe` mode needs. Asking
+    while not enforcing produces a card whose answer is discarded — the call
+    runs either way — which trains the owner that the cards do not mean
+    anything, and is a much worse failure than the gap it was measuring.
     """
     from hermes_cli.module_permissions import Decision, resolve_call
 
@@ -181,6 +189,15 @@ def authorise(
         return capabilities.consume(args=args, **identity)
     except CapabilityError:
         pass  # Nothing minted for this call yet — go and ask.
+
+    if not prompt:
+        # Measuring, not enforcing. The caller will let the call through and
+        # record what it would have refused; interrupting the owner for an
+        # answer that changes nothing is not measurement.
+        raise CapabilityError(
+            f"{tool_name} would need the owner's approval and none has been "
+            "given for this call"
+        )
 
     minted: list[Capability] = []
 

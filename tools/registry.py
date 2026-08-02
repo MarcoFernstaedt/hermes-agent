@@ -352,6 +352,11 @@ def _capability_refusal(
             tool_call_id=tool_call_id if tool_call_id is not None else _current_tool_call_id(),
             token=capability,
             trusted_tools=_trusted_tools(),
+            # Only `enforce` asks. In `observe` the call runs whatever the
+            # owner answers, so a card here would be a question whose answer is
+            # discarded — which teaches the owner that these cards do not mean
+            # anything, and is a worse outcome than the gap being measured.
+            prompt=mode == "enforce",
         )
         return None
     except Exception as exc:
