@@ -29,6 +29,8 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
+import { createNativeChatDraftImporter } from "@/plugins/chat-draft-import";
+import { getChatDraftRegistry } from "@/plugins/chat-drafts";
 import { registerSlot, PluginSlot } from "./slots";
 
 // ---------------------------------------------------------------------------
@@ -95,7 +97,7 @@ export function getRegisteredCount(): number {
  * Exposed at runtime as ``window.__HERMES_PLUGIN_SDK__.sdkVersion`` so a
  * plugin (or a future host-side compatibility gate) can read it.
  */
-export const SDK_CONTRACT_VERSION = "1.1.0";
+export const SDK_CONTRACT_VERSION = "2.0.0";
 
 // Window globals for the plugin SDK are declared in ``plugins/sdk.d.ts`` —
 // the single source of truth for the public contract. Don't redeclare them
@@ -125,6 +127,11 @@ export function exposePluginSDK() {
 
     // Hermes API client
     api,
+    // Native-only authenticated import trigger. Plugins can request an import,
+    // but cannot provide payload bytes, acknowledge records, or inject drafts.
+    chatDrafts: createNativeChatDraftImporter(
+      getChatDraftRegistry(window.location.origin),
+    ),
     // Raw fetchJSON for plugin-specific JSON endpoints
     fetchJSON,
     // Authenticated fetch for non-JSON endpoints (uploads / blob downloads).

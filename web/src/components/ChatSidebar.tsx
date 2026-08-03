@@ -32,6 +32,7 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import { busyStateAfterEvent } from "@/lib/chat-busy-state";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -77,6 +78,7 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
+  onAgentBusyChange?: (busy: boolean) => void;
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -100,6 +102,7 @@ export function ChatSidebar({
   className,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
+  onAgentBusyChange,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -138,6 +141,7 @@ export function ChatSidebar({
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
     null,
   );
+  const agentBusyRef = useRef(false);
 
   const refreshEffectiveModel = useCallback(() => {
     void api
@@ -279,6 +283,11 @@ export function ChatSidebar({
         }
 
         const { type, payload } = frame.params;
+        const nextBusy = busyStateAfterEvent(agentBusyRef.current, type);
+        if (nextBusy !== agentBusyRef.current) {
+          agentBusyRef.current = nextBusy;
+          onAgentBusyChange?.(nextBusy);
+        }
 
         if (type === "session.info") {
           const title = titleFromSessionInfoPayload(payload);
@@ -293,9 +302,13 @@ export function ChatSidebar({
 
     return () => {
       unmounting = true;
+      if (agentBusyRef.current) {
+        agentBusyRef.current = false;
+        onAgentBusyChange?.(false);
+      }
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+  }, [channel, onAgentBusyChange, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

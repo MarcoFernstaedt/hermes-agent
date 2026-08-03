@@ -36,6 +36,7 @@
  */
 
 import type { ComponentType } from "react";
+import type { ChatDraftImportResult } from "./chat-draft-import";
 
 // ---------------------------------------------------------------------------
 // Auth-relevant helpers (the surface this PR adds/sanctions)
@@ -114,6 +115,14 @@ export interface HermesPluginSDK {
    * specific methods they need. See ``web/src/lib/api.ts`` for the concrete shape.
    */
   api: Record<string, (...args: never[]) => unknown>;
+
+  /**
+   * Ask native Chat to import the pending reviewed context directly from the
+   * authenticated Browser Helper. Callers cannot provide payload bytes.
+   */
+  chatDrafts: {
+    importReviewedContext(): Promise<ChatDraftImportResult>;
+  };
 
   /** JSON fetch with host auth handling. */
   fetchJSON: FetchJSON;

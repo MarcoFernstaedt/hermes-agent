@@ -32,6 +32,11 @@ import { useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { ChatDraftInbox } from "@/components/ChatDraftInbox";
+import {
+  insertChatDraftIntoNativeInput,
+  prepareChatDraftForTerminalPaste,
+} from "@/lib/chat-draft-submit";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -43,6 +48,7 @@ import {
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
+  scheduleAutomaticPtyReconnect,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
@@ -54,8 +60,10 @@ import {
   shouldShowResumeLoadingOverlay,
 } from "@/lib/pty-resume-loading";
 import {
+  enqueuePtyOnData,
   MOBILE_REPLACEMENT_WINDOW_MS,
-  normalizePtyMobileInput,
+  ptyInputStateForConnection,
+  type PtyInputState,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
 import {
@@ -64,6 +72,8 @@ import {
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { PluginSlot } from "@/plugins";
+import { createNativeChatDraftImporter } from "@/plugins/chat-draft-import";
+import { getChatDraftRegistry, type ChatDraft } from "@/plugins/chat-drafts";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
@@ -165,6 +175,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const chatDraftRegistry = useMemo(
+    () => getChatDraftRegistry(window.location.origin),
+    [],
+  );
+  const [chatDrafts, setChatDrafts] = useState<readonly ChatDraft[]>(() =>
+    chatDraftRegistry.list(),
+  );
+  const [draftAnnouncement, setDraftAnnouncement] = useState("");
+  const draftImporter = useMemo(
+    () => createNativeChatDraftImporter(chatDraftRegistry),
+    [chatDraftRegistry],
+  );
+  const importAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (!isActive || importAttemptedRef.current) return;
+    importAttemptedRef.current = true;
+    draftImporter.importReviewedContext().then((result) => {
+      setDraftAnnouncement(result.message);
+    }).catch((error) => {
+      setDraftAnnouncement(error instanceof Error
+        ? `${error.message}. No automatic retry occurred.`
+        : "Browser context import failed. No automatic retry occurred.");
+    });
+  }, [draftImporter, isActive]);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const handleAgentBusyChange = useCallback((next: boolean) => setAgentBusy(next), []);
+  useEffect(
+    () => chatDraftRegistry.subscribe(setChatDrafts),
+    [chatDraftRegistry],
+  );
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -205,7 +245,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
   const connectInFlightRef = useRef(false);
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ptyInputLineRef = useRef("");
+  const ptyInputStateRef = useRef<PtyInputState>(ptyInputStateForConnection(false));
+  const [ptyInputState, setPtyInputState] = useState<PtyInputState>(() => ptyInputStateForConnection(false));
+  const draftInsertionActiveRef = useRef(false);
+  const draftInsertionDeliveryRef = useRef<"unknown" | "failed" | "blocked" | null>(null);
   const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
     useState<PtyConnectionState>("connecting");
@@ -237,7 +280,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
+    ptyInputStateRef.current = ptyInputStateForConnection(false);
+    setPtyInputState(ptyInputStateRef.current);
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
@@ -249,7 +293,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
+    ptyInputStateRef.current = ptyInputStateForConnection(true);
+    setPtyInputState(ptyInputStateRef.current);
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
@@ -264,7 +309,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
+    ptyInputStateRef.current = ptyInputStateForConnection(true);
+    setPtyInputState(ptyInputStateRef.current);
     mobileReplacementInputUntilRef.current = 0;
     setSearchParams(next, { replace: true });
     setBanner(null);
@@ -492,6 +538,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
+      screenReaderMode: true,
       fontFamily:
         "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
       fontSize: terminalFontSizeForWidth(tierW0),
@@ -951,19 +998,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
     const scheduleReconnect = (code: number) => {
-      if (reconnectTimerRef.current) {
-        return;
-      }
-      const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
-      reconnectAttemptRef.current = attempt;
-      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
-      setBanner(null);
-      setLastCloseCode(code);
-      setPtyState("reconnecting");
-      reconnectTimerRef.current = setTimeout(() => {
-        reconnectTimerRef.current = null;
-        setReconnectNonce((n) => n + 1);
-      }, delayMs);
+      scheduleAutomaticPtyReconnect({
+        hasPendingTimer: () => reconnectTimerRef.current !== null,
+        getAttempt: () => reconnectAttemptRef.current,
+        setAttempt: (attempt) => { reconnectAttemptRef.current = attempt; },
+        setTimer: (timer) => { reconnectTimerRef.current = timer; },
+        setBanner: () => setBanner(null),
+        setLastCloseCode,
+        setPtyState,
+        setInputUnknown: () => {
+          ptyInputStateRef.current = ptyInputStateForConnection(false);
+          setPtyInputState(ptyInputStateRef.current);
+        },
+        incrementReconnectNonce: () => setReconnectNonce((n) => n + 1),
+        closeCode: code,
+      });
     };
     void (async () => {
       if (unmounting) return;
@@ -1187,10 +1236,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        if (
-          ws.readyState !== WebSocket.OPEN ||
-          shouldBlockPtyInput(ptyStateRef.current)
-        ) {
+        const enqueueResult = enqueuePtyOnData({
+          data,
+          current: ptyInputStateRef.current,
+          socketOpen: ws.readyState === WebSocket.OPEN,
+          blocked: shouldBlockPtyInput(ptyStateRef.current),
+          replacementActive: Date.now() <= mobileReplacementInputUntilRef.current,
+          send: (nextData) => ws.send(nextData),
+        });
+        ptyInputStateRef.current = enqueueResult.input;
+        setPtyInputState(enqueueResult.input);
+        if (enqueueResult.normalized) mobileReplacementInputUntilRef.current = 0;
+
+        if (enqueueResult.delivery === "blocked") {
           if (!blockedInputNoticeRef.current) {
             blockedInputNoticeRef.current = true;
             term.write(
@@ -1200,16 +1258,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        const normalized = normalizePtyMobileInput(
-          data,
-          ptyInputLineRef.current,
-          Date.now() <= mobileReplacementInputUntilRef.current,
-        );
-        ptyInputLineRef.current = normalized.nextLine;
-        if (normalized.normalized) {
-          mobileReplacementInputUntilRef.current = 0;
+        if (draftInsertionActiveRef.current) {
+          draftInsertionDeliveryRef.current = enqueueResult.delivery;
+          return;
         }
-        ws.send(normalized.data);
+
+        if (enqueueResult.submitIntent) {
+          const retainedDraft = chatDraftRegistry.list().find(
+            (draft) => draft.state === "inserted-unknown",
+          );
+          if (retainedDraft) {
+            if (enqueueResult.delivery === "failed") {
+              chatDraftRegistry.markSubmissionFailed(retainedDraft.id);
+              setDraftAnnouncement("Native Send enqueue failed. No retry occurred; inspect Chat manually.");
+            } else {
+              chatDraftRegistry.markSubmissionUnknown(retainedDraft.id);
+              setDraftAnnouncement("Native Enter was queued, but PTY and provider acceptance remain unknown. Inspect Chat; no retry occurred.");
+            }
+          }
+        }
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -1269,6 +1336,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [
     hasActivated,
     channel,
+    chatDraftRegistry,
     clearReconnectTimer,
     resumeParam,
     scopedProfile,
@@ -1479,6 +1547,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onAgentBusyChange={handleAgentBusyChange}
               />
             </div>
             <ChatSessionList
@@ -1496,6 +1565,81 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <PluginSlot name="chat:top" />
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {draftAnnouncement}
+      </div>
+      <ChatDraftInbox
+        drafts={[...chatDrafts]}
+        connected={ptyState === "open"}
+        busy={agentBusy}
+        nativeInputState={ptyInputState.certainty === "unknown"
+          ? "unknown"
+          : ptyInputState.value.length > 0
+            ? "non-empty"
+            : "empty"}
+        onClearAll={() => {
+          for (const draft of chatDraftRegistry.list()) chatDraftRegistry.clear(draft.id);
+          setDraftAnnouncement("All volatile browser context was cleared from process-local memory.");
+          termRef.current?.focus();
+        }}
+        onDismiss={(id) => {
+          const retained = chatDraftRegistry.get(id);
+          chatDraftRegistry.clear(id);
+          setDraftAnnouncement(retained?.state === "pending" || retained?.state === "acknowledged"
+            ? "Browser context discarded."
+            : "Retained browser context dismissed after manual inspection.");
+          termRef.current?.focus();
+        }}
+        onInsert={(draft, edits) => {
+          const terminal = termRef.current;
+          if (!terminal) {
+            const message = "Native Chat input is unavailable. No insertion occurred.";
+            setDraftAnnouncement(message);
+            throw new Error(message);
+          }
+          try {
+            const result = insertChatDraftIntoNativeInput(
+              {
+                isConnected: () => wsRef.current?.readyState === WebSocket.OPEN,
+                isBusy: () => agentBusy,
+                currentState: () => ptyInputStateRef.current.certainty === "unknown"
+                  ? "unknown"
+                  : ptyInputStateRef.current.value.length > 0
+                    ? "non-empty"
+                    : "empty",
+                insert: (message) => {
+                  draftInsertionDeliveryRef.current = null;
+                  draftInsertionActiveRef.current = true;
+                  try {
+                    terminal.paste(prepareChatDraftForTerminalPaste(message));
+                  } catch {
+                    draftInsertionDeliveryRef.current = "failed";
+                  } finally {
+                    draftInsertionActiveRef.current = false;
+                  }
+                  return draftInsertionDeliveryRef.current === "failed" ||
+                    draftInsertionDeliveryRef.current === "blocked"
+                    ? "failed"
+                    : "queued-unknown";
+                },
+              },
+              draft,
+              edits,
+            );
+            if (!chatDraftRegistry.markInserted(draft.id)) {
+              throw new Error("Draft insertion state could not be retained");
+            }
+            setDraftAnnouncement(result.message);
+            terminal.focus();
+            return result.message;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Native input insertion failed";
+            if (message.includes("enqueue failed")) chatDraftRegistry.markInsertionFailed(draft.id);
+            setDraftAnnouncement(`${message}. No automatic retry occurred; inspect Chat manually.`);
+            throw error;
+          }
+        }}
+      />
       {mobileModelToolsPortal}
 
       {visibleBanner && (
@@ -1612,6 +1756,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onAgentBusyChange={handleAgentBusyChange}
               />
             </div>
 

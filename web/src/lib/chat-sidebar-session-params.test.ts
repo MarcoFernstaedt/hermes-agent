@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sidecarSessionCreateParams } from "@/components/ChatSidebar";
+import { busyStateAfterEvent } from "@/lib/chat-busy-state";
 
 describe("sidecarSessionCreateParams", () => {
   it("opts into close_on_disconnect", () => {
@@ -31,5 +32,18 @@ describe("sidecarSessionCreateParams", () => {
   it("omits profile when undefined", () => {
     const params = sidecarSessionCreateParams();
     expect(params).not.toHaveProperty("profile");
+  });
+});
+
+describe("busyStateAfterEvent", () => {
+  it("tracks authoritative turn start and terminal events", () => {
+    expect(busyStateAfterEvent(false, "message.start")).toBe(true);
+    expect(busyStateAfterEvent(true, "message.complete")).toBe(false);
+    expect(busyStateAfterEvent(true, "error")).toBe(false);
+  });
+
+  it("preserves busy state for unrelated events", () => {
+    expect(busyStateAfterEvent(true, "session.info")).toBe(true);
+    expect(busyStateAfterEvent(false, "tool.call")).toBe(false);
   });
 });

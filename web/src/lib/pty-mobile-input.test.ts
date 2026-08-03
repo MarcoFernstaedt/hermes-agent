@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  enqueuePtyOnData,
+  knownPtyInput,
   normalizePtyMobileInput,
+  ptyInputStateForConnection,
   shouldTreatInputAsMobileReplacement,
+  trackPtyInput,
+  unknownPtyInput,
   updatePtyInputLine,
 } from "./pty-mobile-input";
 
@@ -70,31 +75,96 @@ describe("normalizePtyMobileInput", () => {
   });
 });
 
-describe("updatePtyInputLine", () => {
-  it("tracks printable text, delete, and submit", () => {
+describe("conservative PTY input tracking", () => {
+  it("treats same-PTY reconnect as unknown and only a fresh session as empty", () => {
+    expect(ptyInputStateForConnection(false)).toEqual(unknownPtyInput());
+    expect(ptyInputStateForConnection(true)).toEqual(knownPtyInput(""));
+  });
+
+  it("tracks printable text, delete, and an explicit line reset", () => {
     expect(updatePtyInputLine("", "abc")).toBe("abc");
     expect(updatePtyInputLine("abc", "\x7f")).toBe("ab");
     expect(updatePtyInputLine("abc", "\r")).toBe("");
+    expect(trackPtyInput(knownPtyInput("abc"), "\r")).toEqual(knownPtyInput(""));
   });
 
-  it("resets tracking on escape sequences instead of appending their payload", () => {
-    // Left-arrow arrives as one CSI chunk; the tracker cannot model cursor
-    // moves, so it must disarm rather than record "hello[D".
-    expect(updatePtyInputLine("hello", "\x1b[D")).toBe("");
-    expect(updatePtyInputLine("hello", "\x1b[H")).toBe("");
-    expect(updatePtyInputLine("hello", "\x1bOP")).toBe("");
+  it("turns cursor and unknown control input into unknown, never empty", () => {
+    expect(updatePtyInputLine("hello", "\x1b[D")).toBeNull();
+    expect(trackPtyInput(knownPtyInput("hello"), "\x1b[D")).toEqual(unknownPtyInput());
+    expect(trackPtyInput(knownPtyInput("hello"), "\x1b[H")).toEqual(unknownPtyInput());
+    expect(trackPtyInput(knownPtyInput("hello"), "\x01")).toEqual(unknownPtyInput());
+  });
+
+  it("stays unknown after printable input until a definitive reset", () => {
+    expect(trackPtyInput(unknownPtyInput(), "more")).toEqual(unknownPtyInput());
+    expect(trackPtyInput(unknownPtyInput(), "\x7f")).toEqual(unknownPtyInput());
+    expect(trackPtyInput(unknownPtyInput(), "\x15")).toEqual(knownPtyInput(""));
   });
 });
 
-describe("normalizePtyMobileInput after cursor movement", () => {
-  it("does not emit a replacement against a tracker reset by arrow keys", () => {
-    // Simulate: type "hello my name is kain", press left-arrow, then a
-    // Gboard suggestion arrives. The tracker reset means no replacement
-    // heuristic can fire against a stale line snapshot.
-    const afterArrow = updatePtyInputLine("hello my name is kain", "\x1b[D");
-    const result = normalizePtyMobileInput("Kain", afterArrow, true);
+describe("production PTY onData to WebSocket enqueue", () => {
+  it("enqueues insertion bytes once without Enter but reports acceptance unknown", () => {
+    const sent: string[] = [];
+    const result = enqueuePtyOnData({
+      data: "Review this context",
+      current: knownPtyInput(""),
+      replacementActive: false,
+      socketOpen: true,
+      blocked: false,
+      send: (data: string) => sent.push(data),
+    });
 
-    expect(result.normalized).toBe(false);
-    expect(result.data).toBe("Kain");
+    expect(sent).toEqual(["Review this context"]);
+    expect(sent[0]).not.toContain("\r");
+    expect(sent[0]).not.toContain("\n");
+    expect(result.delivery).toBe("unknown");
+    expect(result.input).toEqual(knownPtyInput("Review this context"));
+    expect(result.submitIntent).toBe(false);
+  });
+
+  it("preserves unknown tracking and blocks disconnected enqueue without retry", () => {
+    const sent: string[] = [];
+    const unknown = enqueuePtyOnData({
+      data: "user text",
+      current: unknownPtyInput(),
+      replacementActive: false,
+      socketOpen: true,
+      blocked: false,
+      send: (data: string) => sent.push(data),
+    });
+    const disconnected = enqueuePtyOnData({
+      data: "draft",
+      current: knownPtyInput(""),
+      replacementActive: false,
+      socketOpen: false,
+      blocked: false,
+      send: (data: string) => sent.push(data),
+    });
+
+    expect(unknown).toMatchObject({ delivery: "unknown", input: unknownPtyInput() });
+    expect(disconnected.delivery).toBe("blocked");
+    expect(sent).toEqual(["user text"]);
+  });
+
+  it("reports a queued submit as unknown and a thrown WebSocket enqueue as failed", () => {
+    const submit = enqueuePtyOnData({
+      data: "\r",
+      current: knownPtyInput("draft"),
+      replacementActive: false,
+      socketOpen: true,
+      blocked: false,
+      send: () => undefined,
+    });
+    const failed = enqueuePtyOnData({
+      data: "draft",
+      current: knownPtyInput(""),
+      replacementActive: false,
+      socketOpen: true,
+      blocked: false,
+      send: () => { throw new Error("socket closed during enqueue"); },
+    });
+
+    expect(submit).toMatchObject({ delivery: "unknown", submitIntent: true });
+    expect(failed).toMatchObject({ delivery: "failed", input: unknownPtyInput() });
   });
 });

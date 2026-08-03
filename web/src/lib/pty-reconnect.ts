@@ -28,6 +28,52 @@ export const PTY_CONNECTING_TIMEOUT_MS = 8000;
 // repainted, while under-running it re-opens the blank-viewport bug.
 export const PTY_RESUME_SANITIZE_WINDOW_MS = 30000;
 
+export interface AutomaticPtyReconnectOptions {
+  hasPendingTimer: () => boolean;
+  getAttempt: () => number;
+  setAttempt: (attempt: number) => void;
+  setTimer: (timer: ReturnType<typeof setTimeout> | null) => void;
+  setBanner: () => void;
+  setLastCloseCode: (code: number) => void;
+  setPtyState: (state: "reconnecting") => void;
+  setInputUnknown: () => void;
+  incrementReconnectNonce: () => void;
+  closeCode: number;
+}
+
+export function scheduleAutomaticPtyReconnect({
+  hasPendingTimer,
+  getAttempt,
+  setAttempt,
+  setTimer,
+  setBanner,
+  setLastCloseCode,
+  setPtyState,
+  setInputUnknown,
+  incrementReconnectNonce,
+  closeCode,
+}: AutomaticPtyReconnectOptions): number | null {
+  if (hasPendingTimer()) {
+    return null;
+  }
+  const attempt = Math.min(getAttempt() + 1, 5);
+  setAttempt(attempt);
+  const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
+  setBanner();
+  setLastCloseCode(closeCode);
+  setPtyState("reconnecting");
+  const timer = setTimeout(() => {
+    setTimer(null);
+    // A transient reconnect reuses the same attach token and therefore cannot
+    // prove that the still-living PTY's editable line is empty. Fail closed
+    // synchronously before reconnectNonce causes that same-PTY reattachment.
+    setInputUnknown();
+    incrementReconnectNonce();
+  }, delayMs);
+  setTimer(timer);
+  return delayMs;
+}
+
 export interface PtyResumeReconnectInput {
   isActive: boolean;
   visibilityState?: DocumentVisibilityState;

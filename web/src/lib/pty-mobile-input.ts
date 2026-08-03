@@ -87,36 +87,54 @@ export function shouldTreatInputAsMobileReplacement(
   return isMobileLike && inputType === "insertText" && (data?.length ?? 0) > 1;
 }
 
-export function updatePtyInputLine(currentLine: string, data: string): string {
-  // Escape sequences (arrow keys, home/end, function keys, paste guards)
-  // move the cursor or edit the line in ways this flat tracker cannot
-  // model — and the per-char loop below would append their printable
-  // payload (e.g. the "[D" of a left-arrow) as if it were typed text.
-  // Reset instead: an unknown cursor position must disarm replacement
-  // normalization until the user starts a fresh, cleanly-tracked line.
-  if (data.includes("\x1b")) {
-    return "";
-  }
-  let next = currentLine;
+export type PtyInputState =
+  | { certainty: "known"; value: string }
+  | { certainty: "unknown"; value: null };
+
+export function knownPtyInput(value = ""): PtyInputState {
+  return { certainty: "known", value };
+}
+
+export function unknownPtyInput(): PtyInputState {
+  return { certainty: "unknown", value: null };
+}
+
+export function ptyInputStateForConnection(freshSession: boolean): PtyInputState {
+  return freshSession ? knownPtyInput("") : unknownPtyInput();
+}
+
+export function trackPtyInput(current: PtyInputState, data: string): PtyInputState {
+  let next = current;
   for (const ch of chars(data)) {
-    if (ch === "\r" || ch === "\n") {
-      next = "";
+    if (ch === "\r" || ch === "\n" || ch === "\x15") {
+      next = knownPtyInput("");
+    } else if (ch === "\x1b") {
+      next = unknownPtyInput();
     } else if (ch === DELETE || ch === "\b") {
-      next = removeLastChar(next);
-    } else if (ch === "\x15") {
-      next = "";
+      next = next.certainty === "known"
+        ? knownPtyInput(removeLastChar(next.value))
+        : unknownPtyInput();
     } else if (isPlainText(ch)) {
-      next += ch;
+      next = next.certainty === "known"
+        ? knownPtyInput(next.value + ch)
+        : unknownPtyInput();
+    } else {
+      next = unknownPtyInput();
     }
   }
   return next;
+}
+
+export function updatePtyInputLine(currentLine: string, data: string): string | null {
+  const next = trackPtyInput(knownPtyInput(currentLine), data);
+  return next.certainty === "known" ? next.value : null;
 }
 
 export function normalizePtyMobileInput(
   data: string,
   currentLine: string,
   replacementActive: boolean,
-): { data: string; nextLine: string; normalized: boolean } {
+): { data: string; nextLine: string | null; normalized: boolean } {
   if (replacementActive && isPlainText(data)) {
     const replacementLine = replacementLineForMobileInput(currentLine, data);
     if (replacementLine !== null) {
@@ -133,4 +151,61 @@ export function normalizePtyMobileInput(
     nextLine: updatePtyInputLine(currentLine, data),
     normalized: false,
   };
+}
+
+export type PtyEnqueueResult = {
+  delivery: "blocked" | "failed" | "unknown";
+  input: PtyInputState;
+  submitIntent: boolean;
+  normalized: boolean;
+};
+
+/**
+ * Production seam for xterm `onData` → WebSocket input enqueue.
+ *
+ * An open WebSocket proves only that enqueue can be attempted. It never proves
+ * that the PTY or Hermes accepted, parsed, or submitted the bytes, so successful
+ * `send()` calls intentionally return `delivery: "unknown"`.
+ */
+export function enqueuePtyOnData(options: {
+  data: string;
+  current: PtyInputState;
+  replacementActive: boolean;
+  socketOpen: boolean;
+  blocked: boolean;
+  send: (data: string) => void;
+}): PtyEnqueueResult {
+  const submitIntent = /[\r\n]/u.test(options.data);
+  if (!options.socketOpen || options.blocked) {
+    return {
+      delivery: "blocked",
+      input: options.current,
+      submitIntent,
+      normalized: false,
+    };
+  }
+
+  let outbound = options.data;
+  let normalized = false;
+  if (options.current.certainty === "known") {
+    const result = normalizePtyMobileInput(
+      options.data,
+      options.current.value,
+      options.replacementActive,
+    );
+    outbound = result.data;
+    normalized = result.normalized;
+  }
+  const input = trackPtyInput(options.current, outbound);
+  try {
+    options.send(outbound);
+  } catch {
+    return {
+      delivery: "failed",
+      input: unknownPtyInput(),
+      submitIntent,
+      normalized,
+    };
+  }
+  return { delivery: "unknown", input, submitIntent, normalized };
 }

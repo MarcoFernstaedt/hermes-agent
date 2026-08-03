@@ -1,9 +1,87 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  scheduleAutomaticPtyReconnect,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "./pty-reconnect";
+import {
+  knownPtyInput,
+  ptyInputStateForConnection,
+  type PtyInputState,
+} from "./pty-mobile-input";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("scheduleAutomaticPtyReconnect", () => {
+  it("marks same-PTY input unknown before the automatic reconnect nonce changes", () => {
+    vi.useFakeTimers();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let reconnectNonce = 0;
+    let inputState: PtyInputState = knownPtyInput("");
+    const callbackOrder: string[] = [];
+
+    const delay = scheduleAutomaticPtyReconnect({
+      hasPendingTimer: () => timer !== null,
+      getAttempt: () => attempt,
+      setAttempt: (value: number) => { attempt = value; },
+      setTimer: (value: ReturnType<typeof setTimeout> | null) => { timer = value; },
+      setBanner: () => undefined,
+      setLastCloseCode: () => undefined,
+      setPtyState: () => undefined,
+      setInputUnknown: () => {
+        inputState = ptyInputStateForConnection(false);
+        callbackOrder.push("input-unknown");
+      },
+      incrementReconnectNonce: () => {
+        callbackOrder.push("reconnect-nonce");
+        reconnectNonce += 1;
+      },
+      closeCode: 1006,
+    });
+
+    expect(delay).toBe(250);
+    expect(inputState.certainty).toBe("known");
+    vi.advanceTimersByTime(250);
+    expect(inputState).toEqual({ certainty: "unknown", value: null });
+    expect(callbackOrder).toEqual(["input-unknown", "reconnect-nonce"]);
+    expect(reconnectNonce).toBe(1);
+    expect(timer).toBeNull();
+  });
+
+  it("preserves reconnect deduplication and capped exponential backoff", () => {
+    vi.useFakeTimers();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let reconnects = 0;
+    let unknownResets = 0;
+    const options = {
+      hasPendingTimer: () => timer !== null,
+      getAttempt: () => attempt,
+      setAttempt: (value: number) => { attempt = value; },
+      setTimer: (value: ReturnType<typeof setTimeout> | null) => { timer = value; },
+      setBanner: () => undefined,
+      setLastCloseCode: () => undefined,
+      setPtyState: () => undefined,
+      setInputUnknown: () => { unknownResets += 1; },
+      incrementReconnectNonce: () => { reconnects += 1; },
+      closeCode: 1006,
+    };
+
+    for (const delay of [250, 500, 1000, 2000, 3000, 3000]) {
+      expect(scheduleAutomaticPtyReconnect(options)).toBe(delay);
+      expect(scheduleAutomaticPtyReconnect(options)).toBeNull();
+      vi.advanceTimersByTime(delay);
+    }
+
+    expect(attempt).toBe(5);
+    expect(unknownResets).toBe(6);
+    expect(reconnects).toBe(6);
+  });
+});
 
 describe("shouldReconnectPtyOnPageResume", () => {
   it("reconnects a missing socket when the active page becomes visible", () => {
