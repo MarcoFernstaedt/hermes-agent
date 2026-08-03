@@ -1748,20 +1748,38 @@ def _refresh_active_lazy_features(
         return True
 
     try:
-        active = lazy_deps.active_features()
+        active = set(lazy_deps.active_features())
     except Exception as exc:
         logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
         return True
 
+    # A managed Python cutover creates a fresh venv before this refresh runs.
+    # Installed-package discovery alone therefore reports no active messaging
+    # backends even when their gateway platforms remain configured. Include
+    # configured lazy platforms so an update cannot restart the gateway without
+    # the SDKs required by those platforms.
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_cfg = load_gateway_config()
+        for platform, platform_cfg in gateway_cfg.platforms.items():
+            feature = f"platform.{platform.value}"
+            if platform_cfg.enabled and feature in lazy_deps.LAZY_DEPS:
+                active.add(feature)
+    except Exception as exc:
+        logger.debug("Configured lazy platform discovery failed: %s", exc)
+
     if not active:
         return True
+
+    active = sorted(active)
 
     print()
     print(f"→ Refreshing {len(active)} active lazy backend(s)...")
 
     unexpected_failure = False
     try:
-        results = lazy_deps.refresh_active_features(prompt=False)
+        results = lazy_deps.refresh_active_features(prompt=False, features=active)
     except Exception as exc:
         # refresh_active_features is documented as never-raise, but defend
         # the update flow against future regressions.

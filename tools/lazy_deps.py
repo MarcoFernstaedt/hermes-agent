@@ -1061,7 +1061,11 @@ def active_features() -> list[str]:
     return active
 
 
-def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
+def refresh_active_features(
+    *,
+    prompt: bool = False,
+    features: list[str] | None = None,
+) -> dict[str, str]:
     """Re-run ``ensure`` for every feature the user has previously activated.
 
     Returns a ``{feature: status}`` map where status is one of:
@@ -1071,11 +1075,16 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
                                   whether to surface it (we don't raise)
         ``"skipped: <reason>"`` — gated off (config flag, user decline)
 
-    Intended for ``hermes update``. Never raises; lazy-install failures
-    here must not block the rest of the update flow.
+    ``features`` lets the updater include configured backends whose anchor
+    packages are absent after a managed-runtime replacement. When omitted,
+    the historical installed-package discovery behavior is preserved.
+
+    Intended for ``hermes update``. Never raises; lazy-install failures here
+    must not block the rest of the update flow.
     """
     results: dict[str, str] = {}
-    for feature in active_features():
+    selected = active_features() if features is None else features
+    for feature in selected:
         missing = feature_missing(feature)
         if not missing:
             results[feature] = "current"

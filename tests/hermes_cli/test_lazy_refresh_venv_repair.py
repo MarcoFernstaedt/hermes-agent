@@ -4,9 +4,43 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.main as m
+
+
+def test_refresh_restores_configured_platform_after_runtime_replacement(
+    monkeypatch,
+):
+    import gateway.config as gateway_config
+    import tools.lazy_deps as lazy_deps_mod
+
+    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: [])
+    monkeypatch.setattr(
+        gateway_config,
+        "load_gateway_config",
+        lambda: SimpleNamespace(
+            platforms={
+                gateway_config.Platform.TELEGRAM: SimpleNamespace(enabled=True)
+            }
+        ),
+    )
+
+    refreshed: list[list[str]] = []
+
+    def fake_refresh(*, prompt=False, features=None):
+        refreshed.append(list(features or []))
+        return {feature: "current" for feature in features or []}
+
+    monkeypatch.setattr(
+        lazy_deps_mod,
+        "refresh_active_features",
+        fake_refresh,
+    )
+
+    assert m._refresh_active_lazy_features() is True
+    assert refreshed == [["platform.telegram"]]
 
 
 
