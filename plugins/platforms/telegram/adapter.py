@@ -598,6 +598,10 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Steady-state getUpdates should complete well inside this window even for an
+# idle bot. Keep the threshold above both the normal long-poll duration and the
+# 90-second heartbeat cadence so one delayed response cannot cause churn.
+_POLLING_STEADY_STATE_PROGRESS_TIMEOUT = 180.0
 # Telegram transcodes an uploaded video before it answers sendVideo, so the
 # wait for the response is unrelated to how fast the bytes went out and can
 # outlast the 20s read timeout the rest of the Bot API is tuned for. Only
@@ -774,6 +778,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_generation: int = 0
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting: bool = False
+        self._polling_last_progress_at: Optional[float] = None
+        self._polling_last_progress_generation: int = 0
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
@@ -2159,6 +2165,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if generation != self._polling_generation:
             return
         self._polling_progress_event.set()
+        self._polling_last_progress_at = time.monotonic()
+        self._polling_last_progress_generation = generation
         self._polling_network_error_count = 0
         self._polling_conflict_count = 0
         self._send_path_degraded = False
@@ -2858,6 +2866,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return
         self._polling_not_running_count = 0
+        last_progress_at = self._polling_last_progress_at
+        if (
+            self._polling_progress_accepting
+            and last_progress_at is not None
+            and self._polling_last_progress_generation == self._polling_generation
+        ):
+            stalled_for = time.monotonic() - last_progress_at
+            if stalled_for > _POLLING_STEADY_STATE_PROGRESS_TIMEOUT:
+                logger.warning(
+                    "[%s] Telegram getUpdates made no successful progress for "
+                    "%.0fs while updater remained running; triggering polling restart",
+                    self.name, stalled_for,
+                )
+                self._schedule_polling_recovery(
+                    RuntimeError(
+                        "getUpdates consumer stalled: no successful polling "
+                        f"progress for {stalled_for:.0f}s"
+                    ),
+                    reason="polling heartbeat: successful getUpdates progress stalled",
+                )
+                return
         get_webhook_info = getattr(bot, "get_webhook_info", None)
         if not callable(get_webhook_info):
             return

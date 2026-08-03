@@ -98,3 +98,37 @@ async def test_reconnect_in_flight_skips_stopped_updater_escalation():
     # so the transient stop()->start_polling() window never trips a re-trigger.
     assert adapter._polling_not_running_count == 0
     rec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stale_successful_getupdates_progress_recovers_with_zero_pending_queue():
+    """A running updater cannot stay healthy indefinitely without getUpdates I/O."""
+    adapter = _make_adapter(pending=0)
+    generation, _ = adapter._begin_polling_generation()
+    polling_request = MagicMock()
+    polling_request.parse_json_payload.return_value = {"ok": True, "result": []}
+    with patch(
+        "plugins.platforms.telegram.adapter.time.monotonic", return_value=1000.0
+    ):
+        adapter._observe_polling_request_result(
+            polling_request,
+            generation,
+            (200, b'{"ok":true,"result":[]}'),
+        )
+
+    with (
+        patch(
+            "plugins.platforms.telegram.adapter.time.monotonic",
+            return_value=4600.0,
+        ),
+        patch.object(adapter, "_schedule_polling_recovery") as schedule_recovery,
+    ):
+        await adapter._probe_pending_updates(adapter._app.bot, 5)
+
+    schedule_recovery.assert_called_once()
+    error = schedule_recovery.call_args.args[0]
+    assert "getUpdates" in str(error)
+    assert schedule_recovery.call_args.kwargs["reason"] == (
+        "polling heartbeat: successful getUpdates progress stalled"
+    )
+    adapter._app.bot.get_webhook_info.assert_not_awaited()
