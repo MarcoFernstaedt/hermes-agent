@@ -19,6 +19,26 @@ database:
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
+# Kanban Worker Policy
+# =============================================================================
+kanban:
+  # Dispatcher-spawned workers normally receive kanban_create and kanban_link.
+  # Set false on a specialist profile to keep only these assigned-task lifecycle
+  # model tools: kanban_show, kanban_comment, kanban_attach, kanban_attach_url,
+  # kanban_attachments, kanban_complete, kanban_block, and kanban_heartbeat.
+  # The model schema omits kanban_create and kanban_link. Kanban CLI
+  # create/link/decompose/swarm commands fail closed before Kanban board, DB, or
+  # workspace bootstrap. The guarded in-process boundaries are
+  # kanban_db.create_task, kanban_db.link_tasks,
+  # kanban_db.decompose_triage_task, and kanban_swarm.create_swarm.
+  # Invalid, malformed, or unreadable policy config also denies. General CLI
+  # profile startup before Kanban command dispatch is outside this policy, and
+  # this in-process Hermes boundary is not an operating-system sandbox.
+  # Explicit Kanban orchestrator profiles outside HERMES_KANBAN_TASK are not
+  # restricted by this worker-only policy.
+  worker_allow_create: true
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

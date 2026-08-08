@@ -35,8 +35,13 @@ from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
-from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from hermes_cli.kanban_policy import (
+    WorkerKanbanRoutingPolicyError,
+    worker_kanban_routing_allowed,
+    worker_policy_denial_message,
+)
+from tools.registry import registry, security_sensitive_check, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,14 @@ def _check_kanban_mode() -> bool:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
     return _profile_has_kanban_toolset()
+
+
+@security_sensitive_check
+def _check_kanban_routing_mutation_mode() -> bool:
+    """Expose create/link to allowed workers and explicit orchestrators only."""
+    if not _check_kanban_mode():
+        return False
+    return worker_kanban_routing_allowed()
 
 
 def _check_kanban_orchestrator_mode() -> bool:
@@ -1203,6 +1216,8 @@ def _handle_create(args: dict, **kw) -> str:
     delegated_err = _reject_delegated_child_mutation("kanban_create")
     if delegated_err:
         return delegated_err
+    if not worker_kanban_routing_allowed():
+        return tool_error(worker_policy_denial_message("kanban_create"))
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -1328,6 +1343,8 @@ def _handle_create(args: dict, **kw) -> str:
             )
         finally:
             conn.close()
+    except WorkerKanbanRoutingPolicyError as e:
+        return tool_error(str(e))
     except ValueError as e:
         return tool_error(f"kanban_create: {e}")
     except Exception as e:
@@ -1496,6 +1513,8 @@ def _handle_link(args: dict, **kw) -> str:
     delegated_err = _reject_delegated_child_mutation("kanban_link")
     if delegated_err:
         return delegated_err
+    if not worker_kanban_routing_allowed():
+        return tool_error(worker_policy_denial_message("kanban_link"))
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:
@@ -1508,6 +1527,8 @@ def _handle_link(args: dict, **kw) -> str:
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
             conn.close()
+    except WorkerKanbanRoutingPolicyError as e:
+        return tool_error(str(e))
     except ValueError as e:
         # Covers cycle + self-parent rejections
         return tool_error(f"kanban_link: {e}")
@@ -2212,7 +2233,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_CREATE_SCHEMA,
     handler=_handle_create,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_routing_mutation_mode,
     emoji="➕",
 )
 
@@ -2230,6 +2251,6 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_routing_mutation_mode,
     emoji="🔗",
 )

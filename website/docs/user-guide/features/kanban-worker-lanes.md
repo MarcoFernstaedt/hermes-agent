@@ -84,6 +84,27 @@ The shape every kanban worker takes today: the assignee is a profile name, the d
 
 When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (the orchestrator side of the contract is part of the injected `KANBAN_GUIDANCE`).
 
+#### Restricting assigned-worker routing mutations
+
+By default, dispatcher-spawned workers retain the existing `kanban_create` behavior. To give a specialist only its assigned-task lifecycle surface, set this in that profile's `config.yaml`:
+
+```yaml
+kanban:
+  worker_allow_create: false
+```
+
+When `HERMES_KANBAN_TASK` is set for that profile, the enforcement layers are deliberately distinct:
+
+- **Model schema:** `kanban_create` and `kanban_link` are omitted. The restricted model lifecycle allowlist remains exactly `kanban_show`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_complete`, `kanban_block`, and `kanban_heartbeat`, subject to the existing task-ownership and delegated-child guards. `kanban_comment` deliberately remains the cross-task handoff channel.
+- **Kanban command dispatch:** create, link, decompose, and swarm commands are denied before Kanban board resolution, database/bootstrap initialization, workspace effects, or handler dispatch. Their directly imported command handlers repeat the precheck and translate a lower policy denial into a controlled CLI error without a traceback.
+- **Guarded shared boundaries:** `kanban_db.create_task()`, `kanban_db.link_tasks()`, `kanban_db.decompose_triage_task()`, and the fan-out composition helper `kanban_swarm.create_swarm()` re-check the same strict policy at entry, before argument validation, iterator consumption, task-ID generation, database reads or writes, link/event creation, or workspace effects. This keeps a supported in-process caller from bypassing the command or model-handler guard by importing a lower helper directly.
+
+The command-level precheck runs before **Kanban** board, database, and workspace bootstrap. It does not prevent unrelated process startup: a standalone `python -m hermes_cli.main ...` invocation may perform general profile bootstrap before Kanban command dispatch. That general CLI startup is outside this policy; the denied Kanban command still creates no Kanban board, database, task, link, event, ID, or workspace state.
+
+The key defaults to `true` only when the active profile config is absent, the `kanban` section is absent, or the key itself is absent. Explicit booleans are honored exactly. Malformed or unreadable YAML, a non-mapping `kanban` section, or a non-boolean leaf deny routing mutations. Managed config retains normal leaf precedence and is resolved with the same strict integrity checks. The policy is worker-only: a profile that explicitly enables the `kanban` toolset outside a dispatcher task remains an orchestrator and retains create/link/list/unblock behavior.
+
+This is a least-privilege, in-process Hermes capability boundary, not an operating-system sandbox. A process that already has unrestricted terminal, code-execution, or filesystem/database access can rewrite its own environment or state. Specialist profiles that rely on this policy should separately disable those broader mutation surfaces.
+
 ### Orchestrator profile lane
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.

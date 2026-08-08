@@ -333,6 +333,11 @@ def get_tool_definitions(
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
         profile_scope = check_fn_cache_scope()
+        worker_policy = None
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_policy import worker_kanban_policy_cache_key
+
+            worker_policy = worker_kanban_policy_cache_key()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
                 frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
@@ -340,6 +345,7 @@ def get_tool_definitions(
                 registry._generation,
                 cfg_fp,
                 bool(os.environ.get("HERMES_KANBAN_TASK")),
+                worker_policy,
                 bool(skip_tool_search_assembly),
                 _is_delegated_child_context(),
                 profile_scope,

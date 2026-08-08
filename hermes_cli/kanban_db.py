@@ -89,6 +89,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from hermes_cli.kanban_policy import require_worker_kanban_routing_allowed
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -2869,6 +2870,18 @@ def _claimer_id() -> str:
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
+# SECURITY INSERTION-SURFACE CONTRACT:
+# Production INSERTs into tasks/task_links in this module are intentionally
+# limited to create_task (task plus optional parent links), link_tasks (one
+# explicit link), and decompose_triage_task (children and decomposition links).
+# Each function must call require_worker_kanban_routing_allowed at entry,
+# before validation, ID generation, database access, or filesystem work. A new
+# task/link insertion path must first extend that strict routing boundary.
+# Composition helpers that create through these functions are part of the same
+# supported routing surface: kanban_swarm.create_swarm must carry its own entry
+# guard, and its CLI action must deny before Kanban board/bootstrap resolution.
+
+
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
@@ -2946,6 +2959,7 @@ def create_task(
     board can supply the repo and branch convention. Its literal worktree is
     never reused; the new task still gets its own task-id-keyed path.
     """
+    require_worker_kanban_routing_allowed("kanban_create")
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
@@ -3526,6 +3540,7 @@ def set_reasoning_effort(
 # ---------------------------------------------------------------------------
 
 def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+    require_worker_kanban_routing_allowed("kanban_link")
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
@@ -6090,6 +6105,7 @@ def decompose_triage_task(
     the inserts so a malformed entry aborts the whole decomposition
     cleanly (no orphan children).
     """
+    require_worker_kanban_routing_allowed("kanban_decompose")
     if not children:
         return None
     if root_assignee is not None:

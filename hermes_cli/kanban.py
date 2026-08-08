@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import shlex
@@ -26,6 +27,11 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.kanban_policy import (
+    WorkerKanbanRoutingPolicyError,
+    worker_kanban_routing_allowed,
+    worker_policy_denial_message,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +964,36 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 # Command dispatch
 # ---------------------------------------------------------------------------
 
+_WORKER_ROUTING_ACTION_CAPABILITIES = {
+    "create": "kanban_create",
+    "link": "kanban_link",
+    "decompose": "kanban_decompose",
+    "swarm": "kanban_swarm",
+}
+
+
+def _deny_worker_routing_cli(capability: str) -> bool:
+    """Translate strict worker policy into the stable CLI error contract."""
+    if worker_kanban_routing_allowed():
+        return False
+    print(f"kanban: {worker_policy_denial_message(capability)}", file=sys.stderr)
+    return True
+
+
+def _translate_worker_routing_policy_errors(handler):
+    """Keep directly imported CLI handlers safe when the lower guard denies."""
+
+    @functools.wraps(handler)
+    def wrapped(args: argparse.Namespace) -> int:
+        try:
+            return handler(args)
+        except WorkerKanbanRoutingPolicyError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 1
+
+    return wrapped
+
+
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …`` argparse dispatch.
 
@@ -984,6 +1020,12 @@ def kanban_command(args: argparse.Namespace) -> int:
             "kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI",
             file=sys.stderr,
         )
+        return 1
+
+    # Enforce routing policy before board resolution, DB/bootstrap initialization,
+    # or handler work. Each handler repeats this because it is importable directly.
+    routing_capability = _WORKER_ROUTING_ACTION_CAPABILITIES.get(action)
+    if routing_capability and _deny_worker_routing_cli(routing_capability):
         return 1
 
     # Board-management commands operate on board metadata and the persisted
@@ -1091,7 +1133,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 2
         try:
             return int(handler(args) or 0)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, WorkerKanbanRoutingPolicyError) as exc:
             print(f"kanban: {exc}", file=sys.stderr)
             return 1
 
@@ -1472,7 +1514,10 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+@_translate_worker_routing_policy_errors
 def _cmd_create(args: argparse.Namespace) -> int:
+    if _deny_worker_routing_cli("kanban_create"):
+        return 1
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -1540,7 +1585,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+@_translate_worker_routing_policy_errors
 def _cmd_swarm(args: argparse.Namespace) -> int:
+    if _deny_worker_routing_cli("kanban_swarm"):
+        return 1
     try:
         workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
     except ValueError as exc:
@@ -1993,7 +2041,10 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     return 0
 
 
+@_translate_worker_routing_policy_errors
 def _cmd_link(args: argparse.Namespace) -> int:
+    if _deny_worker_routing_cli("kanban_link"):
+        return 1
     with kb.connect_closing() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
@@ -2938,10 +2989,13 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     return 0 if (ok_count > 0 or not ids) else 1
 
 
+@_translate_worker_routing_policy_errors
 def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all of them) out into a graph of child
     tasks via the auxiliary LLM, routed to specialist profiles by
     description. Thin wrapper over ``kanban_decompose``."""
+    if _deny_worker_routing_cli("kanban_decompose"):
+        return 1
     from hermes_cli import kanban_decompose as decomp
 
     all_flag = bool(getattr(args, "all_triage", False))

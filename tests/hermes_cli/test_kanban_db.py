@@ -163,6 +163,285 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _durable_row_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    tables = [
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    ]
+    return {
+        table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        for table in tables
+    }
+
+
+def _file_snapshot(root: Path) -> dict[str, tuple[bool, bytes]]:
+    snapshot: dict[str, tuple[bool, bytes]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        snapshot[relative] = (path.is_dir(), b"" if path.is_dir() else path.read_bytes())
+    return snapshot
+
+
+@pytest.mark.parametrize("policy_state", ["explicit-false", "malformed", "unreadable"])
+@pytest.mark.parametrize("mutation", ["create", "link"])
+def test_worker_db_routing_mutators_fail_closed_without_side_effects(
+    kanban_home,
+    monkeypatch,
+    policy_state,
+    mutation,
+):
+    """Direct DB imports cannot bypass worker create/link policy."""
+    config_path = kanban_home / "config.yaml"
+    workspaces = kanban_home / "worker-policy-workspaces"
+    workspaces.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces))
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="existing parent", assignee="operator")
+        child = kb.create_task(conn, title="existing child", assignee="operator")
+
+        if policy_state == "explicit-false":
+            config_path.write_text(
+                "kanban:\n  worker_allow_create: false\n", encoding="utf-8"
+            )
+        elif policy_state == "malformed":
+            config_path.write_text("kanban: [unterminated\n", encoding="utf-8")
+        else:
+            config_path.mkdir()
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+        before_rows = _durable_row_counts(conn)
+        before_files = _file_snapshot(kanban_home)
+
+        with pytest.raises(PermissionError) as denied:
+            if mutation == "create":
+                kb.create_task(
+                    conn,
+                    title="forbidden direct child",
+                    assignee="peer",
+                    workspace_kind="dir",
+                    workspace_path=str(workspaces / "must-not-exist"),
+                    parents=(parent,),
+                )
+            else:
+                kb.link_tasks(conn, parent, child)
+
+        assert str(denied.value) == (
+            f"kanban_{mutation} refused: this dispatcher-spawned worker profile "
+            "does not allow routing mutations under kanban.worker_allow_create"
+        )
+        assert _durable_row_counts(conn) == before_rows
+        assert _file_snapshot(kanban_home) == before_files
+        assert not (workspaces / "must-not-exist").exists()
+
+
+@pytest.mark.parametrize("policy_state", ["explicit-false", "malformed", "unreadable"])
+def test_worker_db_decompose_fails_closed_without_any_side_effects(
+    kanban_home,
+    monkeypatch,
+    policy_state,
+):
+    config_path = kanban_home / "config.yaml"
+    workspaces = kanban_home / "worker-policy-workspaces"
+    workspaces.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces))
+
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="triage root",
+            assignee="orchestrator",
+            triage=True,
+        )
+        if policy_state == "explicit-false":
+            config_path.write_text(
+                "kanban:\n  worker_allow_create: false\n", encoding="utf-8"
+            )
+        elif policy_state == "malformed":
+            config_path.write_text("kanban: [unterminated\n", encoding="utf-8")
+        else:
+            config_path.mkdir()
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+        def forbidden_task_id() -> str:
+            raise AssertionError("worker decompose denial must precede task-ID generation")
+
+        monkeypatch.setattr(kb, "_new_task_id", forbidden_task_id)
+        before_rows = _durable_row_counts(conn)
+        before_files = _file_snapshot(kanban_home)
+
+        with pytest.raises(PermissionError) as denied:
+            kb.decompose_triage_task(
+                conn,
+                root,
+                root_assignee="orchestrator",
+                children=[
+                    {
+                        "title": "forbidden child",
+                        "assignee": "peer",
+                        "workspace_kind": "dir",
+                        "workspace_path": str(workspaces / "must-not-exist"),
+                    }
+                ],
+                author="restricted-worker",
+            )
+
+        assert str(denied.value) == (
+            "kanban_decompose refused: this dispatcher-spawned worker profile "
+            "does not allow routing mutations under kanban.worker_allow_create"
+        )
+        assert _durable_row_counts(conn) == before_rows
+        assert _file_snapshot(kanban_home) == before_files
+        assert not (workspaces / "must-not-exist").exists()
+
+
+def test_worker_db_decompose_denies_before_validation_or_database_access(
+    kanban_home,
+    monkeypatch,
+):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  worker_allow_create: false\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    with pytest.raises(PermissionError, match="^kanban_decompose refused:"):
+        kb.decompose_triage_task(
+            None,  # type: ignore[arg-type] - denial must precede connection use
+            "",
+            root_assignee=None,
+            children=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        None,
+        "kanban: {}\n",
+        "kanban:\n  worker_allow_create: true\n",
+    ],
+    ids=["missing-policy", "missing-key", "explicit-true"],
+)
+def test_worker_db_routing_mutators_preserve_allowed_behavior(
+    kanban_home,
+    monkeypatch,
+    config_text,
+):
+    if config_text is not None:
+        (kanban_home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    with kb.connect() as conn:
+        before = _durable_row_counts(conn)
+        parent = kb.create_task(conn, title="worker parent", assignee="peer")
+        child = kb.create_task(conn, title="worker child", assignee="peer")
+        kb.link_tasks(conn, parent, child)
+        after = _durable_row_counts(conn)
+
+        assert after["tasks"] == before["tasks"] + 2
+        assert after["task_links"] == before["task_links"] + 1
+        assert kb.parent_ids(conn, child) == [parent]
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "toolsets:\n  - hermes-cli\n",
+        "kanban:\n  worker_allow_create: true\n",
+    ],
+    ids=["missing-key", "explicit-true"],
+)
+def test_worker_db_decompose_preserves_allowed_behavior(
+    kanban_home,
+    monkeypatch,
+    config_text,
+):
+    (kanban_home / "config.yaml").write_text(config_text, encoding="utf-8")
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="triage root", triage=True)
+        before = _durable_row_counts(conn)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "allowed child", "assignee": "peer"}],
+            author="worker",
+        )
+        after = _durable_row_counts(conn)
+
+        assert child_ids is not None and len(child_ids) == 1
+        assert after["tasks"] == before["tasks"] + 1
+        assert after["task_links"] == before["task_links"] + 1
+        assert kb.parent_ids(conn, root) == child_ids
+
+
+def test_non_worker_db_routing_mutators_ignore_worker_policy(kanban_home, monkeypatch):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  worker_allow_create: false\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    with kb.connect() as conn:
+        before = _durable_row_counts(conn)
+        parent = kb.create_task(conn, title="human parent", assignee="operator")
+        child = kb.create_task(conn, title="human child", assignee="operator")
+        kb.link_tasks(conn, parent, child)
+        after = _durable_row_counts(conn)
+
+        assert after["tasks"] == before["tasks"] + 2
+        assert after["task_links"] == before["task_links"] + 1
+        assert kb.parent_ids(conn, child) == [parent]
+
+        root = kb.create_task(conn, title="human triage root", triage=True)
+        before_decompose = _durable_row_counts(conn)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "human child", "assignee": "peer"}],
+        )
+        after_decompose = _durable_row_counts(conn)
+        assert child_ids is not None and len(child_ids) == 1
+        assert after_decompose["tasks"] == before_decompose["tasks"] + 1
+        assert after_decompose["task_links"] == before_decompose["task_links"] + 1
+
+
+def test_delegated_child_db_mutation_guard_remains_authoritative(
+    kanban_home,
+    monkeypatch,
+):
+    from agent.delegation_context import delegated_child_context
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="operator")
+        child = kb.create_task(conn, title="child", assignee="operator")
+        triage_root = kb.create_task(conn, title="triage root", triage=True)
+        before = _durable_row_counts(conn)
+
+        with delegated_child_context():
+            with pytest.raises(PermissionError, match="delegate_task child contexts"):
+                kb.create_task(conn, title="delegated child", assignee="peer")
+            with pytest.raises(PermissionError, match="delegate_task child contexts"):
+                kb.link_tasks(conn, parent, child)
+            with pytest.raises(PermissionError, match="delegate_task child contexts"):
+                kb.decompose_triage_task(
+                    conn,
+                    triage_root,
+                    root_assignee="orchestrator",
+                    children=[{"title": "delegated decomposition child"}],
+                )
+
+        assert _durable_row_counts(conn) == before
+        assert kb.parent_ids(conn, child) == []
+        assert kb.parent_ids(conn, triage_root) == []
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

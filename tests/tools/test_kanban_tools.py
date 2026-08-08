@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,295 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     assert kanban == set(), (
         f"kanban tools leaked into normal chat schema: {kanban}"
     )
+
+
+_WORKER_LIFECYCLE_TOOLS = {
+    "kanban_show",
+    "kanban_comment",
+    "kanban_attach",
+    "kanban_attach_url",
+    "kanban_attachments",
+    "kanban_complete",
+    "kanban_block",
+    "kanban_heartbeat",
+}
+
+
+_DUPLICATE_POLICY_CONFIGS = [
+    pytest.param(
+        "kanban:\n  worker_allow_create: false\n  worker_allow_create: true\n",
+        id="duplicate-leaf-false-true",
+    ),
+    pytest.param(
+        "kanban:\n  worker_allow_create: true\n  worker_allow_create: false\n",
+        id="duplicate-leaf-true-false",
+    ),
+    pytest.param(
+        "kanban:\n  worker_allow_create: false\n"
+        "kanban:\n  worker_allow_create: true\n",
+        id="duplicate-section-false-true",
+    ),
+    pytest.param(
+        "kanban:\n  worker_allow_create: true\n"
+        "kanban:\n  worker_allow_create: false\n",
+        id="duplicate-section-true-false",
+    ),
+    pytest.param(
+        "document_flag: false\ndocument_flag: true\n"
+        "kanban:\n  worker_allow_create: true\n",
+        id="duplicate-document-key-false-true",
+    ),
+    pytest.param(
+        "document_flag: true\ndocument_flag: false\n"
+        "kanban:\n  worker_allow_create: true\n",
+        id="duplicate-document-key-true-false",
+    ),
+    pytest.param(
+        "metadata:\n  nested_flag: false\n  nested_flag: true\n"
+        "kanban:\n  worker_allow_create: true\n",
+        id="duplicate-nested-key-false-true",
+    ),
+    pytest.param(
+        "metadata:\n  nested_flag: true\n  nested_flag: false\n"
+        "kanban:\n  worker_allow_create: true\n",
+        id="duplicate-nested-key-true-false",
+    ),
+]
+
+
+@pytest.mark.parametrize("config_text", _DUPLICATE_POLICY_CONFIGS)
+@pytest.mark.parametrize("source", ["user", "managed"])
+def test_worker_policy_rejects_duplicate_yaml_keys_at_every_mapping_depth(
+    monkeypatch,
+    tmp_path,
+    config_text,
+    source,
+):
+    from hermes_cli.kanban_policy import worker_kanban_routing_allowed
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+    if source == "user":
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    else:
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / "config.yaml").write_text(config_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+
+    assert worker_kanban_routing_allowed() is False
+
+
+def _worker_schema_names(*, clear_caches: bool = True) -> set[str]:
+    import tools.kanban_tools  # noqa: F401 - ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    if clear_caches:
+        invalidate_check_fn_cache()
+        _clear_tool_defs_cache()
+    schema = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+    return {s["function"]["name"] for s in schema if "function" in s}
+
+
+@pytest.mark.parametrize(
+    ("config_text", "allow_create"),
+    [
+        (None, True),
+        ("toolsets:\n  - hermes-cli\n", True),
+        ("kanban: {}\n", True),
+        ("kanban:\n  worker_allow_create: true\n", True),
+        ("kanban:\n  worker_allow_create: false\n", False),
+        ("kanban:\n  worker_allow_create: 'false'\n", False),
+        ("kanban:\n  worker_allow_create: 1\n", False),
+        ("kanban:\n  worker_allow_create: [false]\n", False),
+        ("kanban:\n  worker_allow_create: null\n", False),
+        ("kanban: false\n", False),
+        ("kanban: 0\n", False),
+        ("kanban: null\n", False),
+        ("kanban: broken\n", False),
+        ("kanban: [broken]\n", False),
+        ("kanban: [unterminated\n", False),
+        ("[]\n", False),
+    ],
+    ids=[
+        "config-absent",
+        "section-absent",
+        "key-absent",
+        "explicit-true",
+        "explicit-false",
+        "leaf-string",
+        "leaf-number",
+        "leaf-list",
+        "leaf-null",
+        "section-false",
+        "section-zero",
+        "section-null",
+        "section-string",
+        "section-list",
+        "malformed-yaml",
+        "non-mapping-root",
+    ],
+)
+def test_worker_schema_uses_strict_fail_closed_policy(
+    monkeypatch,
+    tmp_path,
+    config_text,
+    allow_create,
+):
+    """Restricted workers receive exactly the approved lifecycle surface."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    if config_text is not None:
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    kanban_names = {n for n in _worker_schema_names() if n.startswith("kanban_")}
+    expected = set(_WORKER_LIFECYCLE_TOOLS)
+    if allow_create:
+        expected.update({"kanban_create", "kanban_link"})
+    assert kanban_names == expected
+
+
+def test_worker_schema_denies_when_config_cannot_be_read(monkeypatch, tmp_path):
+    """A directory at config.yaml is a portable, real read failure for any user."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    kanban_names = {n for n in _worker_schema_names() if n.startswith("kanban_")}
+    assert kanban_names == _WORKER_LIFECYCLE_TOOLS
+
+
+@pytest.mark.parametrize(("user_value", "managed_text", "allow_create"), [
+    ("true", "kanban:\n  worker_allow_create: false\n", False),
+    ("false", "kanban:\n  worker_allow_create: true\n", True),
+    ("true", "kanban: [unterminated\n", False),
+])
+def test_worker_schema_honors_strict_managed_policy(
+    monkeypatch,
+    tmp_path,
+    user_value,
+    managed_text,
+    allow_create,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"kanban:\n  worker_allow_create: {user_value}\n",
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(managed_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    kanban_names = {n for n in _worker_schema_names() if n.startswith("kanban_")}
+    expected = set(_WORKER_LIFECYCLE_TOOLS)
+    if allow_create:
+        expected.update({"kanban_create", "kanban_link"})
+    assert kanban_names == expected
+
+
+def test_worker_schema_revocation_bypasses_generic_availability_cache(
+    monkeypatch,
+    tmp_path,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "kanban:\n  worker_allow_create: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_assigned")
+
+    first = _worker_schema_names()
+    assert {"kanban_create", "kanban_link"} <= first
+
+    config_path.write_text(
+        "kanban:\n  worker_allow_create: false\n",
+        encoding="utf-8",
+    )
+    second = _worker_schema_names(clear_caches=False)
+
+    assert {n for n in second if n.startswith("kanban_")} == _WORKER_LIFECYCLE_TOOLS
+
+
+def test_stale_schema_snapshot_cannot_authorize_create_after_revocation(
+    monkeypatch,
+    worker_env,
+):
+    home = Path(os.environ["HERMES_HOME"])
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "kanban:\n  worker_allow_create: true\n",
+        encoding="utf-8",
+    )
+    stale_schema = _worker_schema_names()
+    assert "kanban_create" in stale_schema
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        before_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    finally:
+        conn.close()
+
+    config_path.write_text(
+        "kanban:\n  worker_allow_create: false\n",
+        encoding="utf-8",
+    )
+    result = json.loads(kt._handle_create({
+        "title": "stale schema must not write",
+        "assignee": "peer",
+    }))
+
+    assert result.get("ok") is not True
+    conn = kb.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before_tasks
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE title='stale schema must not write'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_orchestrator_create_schema_ignores_worker_policy(monkeypatch, tmp_path):
+    """The worker-only gate must not constrain explicit orchestrator profiles."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "toolsets:\n  - kanban\nkanban:\n  worker_allow_create: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    import tools.kanban_tools  # noqa: F401 - ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    schema = get_tool_definitions(enabled_toolsets=["kanban"], quiet_mode=True)
+    names = {s["function"]["name"] for s in schema if "function" in s}
+
+    assert "kanban_create" in names
+    assert "kanban_link" in names
+    assert "kanban_list" in names
+    assert "kanban_unblock" in names
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +706,158 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+@pytest.mark.parametrize("config_text", [
+    "kanban:\n  worker_allow_create: false\n",
+    "kanban:\n  worker_allow_create: invalid\n",
+    "kanban: false\n",
+    "kanban: [unterminated\n",
+])
+def test_worker_create_policy_rejects_direct_handler_before_state_access(
+    monkeypatch,
+    worker_env,
+    config_text,
+):
+    """A direct handler call must fail before opening or mutating Kanban state."""
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    workspaces_root = home / "kanban-workspaces"
+    workspaces_root.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_root))
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    def db_row_counts():
+        conn = kb.connect()
+        try:
+            tables = [
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                    "ORDER BY name"
+                ).fetchall()
+            ]
+            return {
+                table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                for table in tables
+            }
+        finally:
+            conn.close()
+
+    before_rows = db_row_counts()
+    assert {"tasks", "task_events", "kanban_notify_subs"} <= before_rows.keys()
+    before_workspace = {
+        path.relative_to(workspaces_root) for path in workspaces_root.rglob("*")
+    }
+
+    def forbidden_connect(*_args, **_kwargs):
+        raise AssertionError("worker create denial must happen before DB access")
+
+    monkeypatch.setattr(kt, "_connect", forbidden_connect)
+    result = json.loads(
+        kt._handle_create(
+            {
+                "title": "forbidden follow-up",
+                "assignee": "peer",
+                "parents": [worker_env],
+            }
+        )
+    )
+
+    assert result.get("ok") is not True
+    assert "worker_allow_create" in result.get("error", "")
+    assert db_row_counts() == before_rows
+    assert {
+        path.relative_to(workspaces_root) for path in workspaces_root.rglob("*")
+    } == before_workspace
+
+
+def test_worker_create_policy_prevents_actual_direct_write(monkeypatch, worker_env):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban: [unterminated\n",
+        encoding="utf-8",
+    )
+    workspaces_root = home / "kanban-workspaces"
+    workspaces_root.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_root))
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        before_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        before_links = conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0]
+    finally:
+        conn.close()
+    before_workspace = {
+        path.relative_to(workspaces_root) for path in workspaces_root.rglob("*")
+    }
+
+    result = json.loads(kt._handle_create({
+        "title": "must not exist",
+        "assignee": "peer",
+    }))
+
+    assert result.get("ok") is not True
+    assert "worker_allow_create" in result.get("error", "")
+    conn = kb.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before_tasks
+        assert conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0] == before_links
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE title='must not exist'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert {
+        path.relative_to(workspaces_root) for path in workspaces_root.rglob("*")
+    } == before_workspace
+
+
+def test_restricted_worker_link_denies_before_foreign_graph_mutation(
+    monkeypatch,
+    worker_env,
+):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  worker_allow_create: false\n",
+        encoding="utf-8",
+    )
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        parent = kb.create_task(conn, title="foreign parent", assignee="other")
+        child = kb.create_task(conn, title="foreign child", assignee="other")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", worker_env)
+        before_links = conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0]
+    finally:
+        conn.close()
+
+    def forbidden_connect(*_args, **_kwargs):
+        raise AssertionError("worker link denial must happen before DB access")
+
+    monkeypatch.setattr(kt, "_connect", forbidden_connect)
+    result = json.loads(kt._handle_link({"parent_id": parent, "child_id": child}))
+
+    assert result.get("ok") is not True
+    assert "worker_allow_create" in result.get("error", "")
+    conn = kb.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0] == before_links
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_links WHERE parent_id=? AND child_id=?",
+            (parent, child),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -428,6 +870,76 @@ def test_link_happy_path(worker_env):
     out = kt._handle_link({"parent_id": a, "child_id": b})
     d = json.loads(out)
     assert d["ok"] is True
+
+
+def test_explicit_orchestrator_handlers_ignore_worker_policy(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  worker_allow_create: false\n",
+        encoding="utf-8",
+    )
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    created = json.loads(kt._handle_create({
+        "title": "orchestrator child",
+        "assignee": "worker",
+    }))
+    assert created["ok"] is True
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="orchestrator parent", assignee="worker")
+        blocked = kb.create_task(conn, title="orchestrator blocked", assignee="worker")
+        kb.block_task(conn, blocked, reason="review")
+    finally:
+        conn.close()
+
+    assert json.loads(kt._handle_link({
+        "parent_id": parent,
+        "child_id": created["task_id"],
+    }))["ok"] is True
+    assert json.loads(kt._handle_list({"limit": 100}))["count"] >= 3
+    assert json.loads(kt._handle_unblock({"task_id": blocked}))["ok"] is True
+
+
+@pytest.mark.parametrize("mutation", ["create", "link"])
+def test_worker_handlers_translate_lower_policy_denial_without_traceback_logging(
+    monkeypatch,
+    worker_env,
+    mutation,
+):
+    home = Path(os.environ["HERMES_HOME"])
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="operator")
+        child = kb.create_task(conn, title="child", assignee="operator")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker_env)
+    (home / "config.yaml").write_text(
+        "kanban:\n  worker_allow_create: false\n", encoding="utf-8"
+    )
+
+    # Model a policy change after the handler's UX precheck but before the DB
+    # mutator. The lower boundary must still deny, and the handler must return a
+    # controlled tool error without logging a permission traceback.
+    monkeypatch.setattr(kt, "worker_kanban_routing_allowed", lambda: True)
+
+    def forbidden_exception_log(*_args, **_kwargs):
+        raise AssertionError("policy denials must not be traceback-logged")
+
+    monkeypatch.setattr(kt.logger, "exception", forbidden_exception_log)
+    if mutation == "create":
+        raw = kt._handle_create({"title": "denied", "assignee": "peer"})
+    else:
+        raw = kt._handle_link({"parent_id": parent, "child_id": child})
+
+    payload = json.loads(raw)
+    assert payload.get("ok") is not True
+    assert "worker_allow_create" in payload["error"]
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):

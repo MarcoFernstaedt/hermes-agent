@@ -22,6 +22,7 @@ import sqlite3
 from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_policy import require_worker_kanban_routing_allowed
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
@@ -97,6 +98,7 @@ def create_swarm(
     ``done`` with topology metadata, parallel workers are ``ready``, the verifier
     waits for every worker, and the synthesizer waits for the verifier.
     """
+    require_worker_kanban_routing_allowed("kanban_swarm")
 
     goal = _require_text(goal, "goal")
     verifier_assignee = _require_text(verifier_assignee, "verifier_assignee")

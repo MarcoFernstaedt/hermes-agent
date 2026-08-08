@@ -268,6 +268,16 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
+def security_sensitive_check(fn: Callable) -> Callable:
+    """Mark an authorization-sensitive availability check as uncached.
+
+    Generic provider/service probes retain their TTL and last-good grace. Policy
+    revocations must be observed immediately and therefore bypass both layers.
+    """
+    setattr(fn, "_hermes_security_sensitive_check", True)
+    return fn
+
+
 def _check_fn_cached(fn: Callable) -> bool:
     """Return bool(fn()), TTL-cached across calls.
 
@@ -277,6 +287,17 @@ def _check_fn_cached(fn: Callable) -> bool:
     re-probes) to keep flaky external checks (Docker daemon busy, socket
     contention, probe timeout) from silently stripping tools mid-session.
     """
+    if getattr(fn, "_hermes_security_sensitive_check", False):
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "security-sensitive check_fn %s raised; dependent tools will "
+                "be unavailable this turn",
+                getattr(fn, "__qualname__", fn),
+            )
+            return False
+
     now = time.monotonic()
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
