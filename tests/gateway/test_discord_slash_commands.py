@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter, _apply_yaml_config  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class FakeTree:
@@ -203,53 +203,48 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
     )
 
 
-def test_voice_channels_disabled_keeps_voice_message_slash(adapter):
-    adapter._voice_channels_enabled = False
+def _registered_voice_choice_values(adapter):
+    original_proxy = adapter._slash_proxy
+    with patch.object(adapter, "_slash_proxy", wraps=original_proxy) as proxy:
+        with patch("hermes_cli.commands.COMMAND_REGISTRY", []):
+            adapter._register_slash_commands()
 
-    with patch("hermes_cli.commands.COMMAND_REGISTRY", []):
-        adapter._register_slash_commands()
-
-    assert "voice" in adapter._client.tree.commands
-
-
-def test_voice_channels_enabled_by_default_registers_native_discord_slash(adapter):
-    with patch("hermes_cli.commands.COMMAND_REGISTRY", []):
-        adapter._register_slash_commands()
-
-    assert adapter._voice_channels_enabled is True
-    assert "voice" in adapter._client.tree.commands
-
-
-def test_voice_channels_enabled_yaml_flag_is_seeded_into_adapter_config():
-    assert _apply_yaml_config({}, {"voice_channels_enabled": False}) == {
-        "voice_channels_enabled": False
-    }
+    voice_args = next(call.args[1] for call in proxy.call_args_list if call.args[0] == "voice")
+    return {value for _label, value in voice_args[0][4]}
 
 
 @pytest.mark.parametrize(
-    ("yaml_cfg", "discord_cfg"),
+    ("yaml_value", "channel_actions_available"),
     [
-        ({}, {"voice_channels_enabled": None}),
-        ({"platforms": {"discord": {"extra": {"voice_channels_enabled": None}}}}, {}),
+        (None, True),
+        ("true", True),
+        ("false", False),
+        ('"false"', False),
+        ("null", False),
+        ("1", False),
+        ("[]", False),
     ],
 )
-def test_voice_channels_enabled_explicit_null_is_preserved_for_fail_closed_validation(
-    yaml_cfg, discord_cfg
+def test_discord_voice_channel_config_controls_native_actions(
+    monkeypatch, tmp_path, yaml_value, channel_actions_available
 ):
-    assert _apply_yaml_config(yaml_cfg, discord_cfg) == {"voice_channels_enabled": None}
+    from gateway.config import Platform, load_gateway_config
 
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    setting = "" if yaml_value is None else f"  voice_channels_enabled: {yaml_value}\n"
+    (hermes_home / "config.yaml").write_text(f"discord:\n{setting}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
 
-@pytest.mark.parametrize("raw_value", ["false", "true", 0, None, {}])
-def test_voice_channels_enabled_malformed_values_fail_closed(raw_value):
-    config = PlatformConfig(
-        enabled=True,
-        token="***",
-        extra={"voice_channels_enabled": raw_value},
-    )
+    configured = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+    configured._client = SimpleNamespace(tree=FakeTree())
+    choices = _registered_voice_choice_values(configured)
 
-    configured_adapter = DiscordAdapter(config)
-
-    assert configured_adapter._voice_channels_enabled is False
+    assert {"on", "tts", "off", "status"} <= choices
+    channel_actions = {"join", "channel", "leave"}
+    assert channel_actions.issubset(choices) is channel_actions_available
+    assert channel_actions.isdisjoint(choices) is not channel_actions_available
 
 
 @pytest.mark.asyncio
@@ -579,7 +574,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
+        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(mock_categories, mock_uncategorized, 0),
     ):
         adapter._register_slash_commands()
@@ -629,7 +624,7 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
+        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(large_categories, [], 0),
     ):
         adapter._register_slash_commands()
@@ -651,3 +646,43 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     )
 
 
+
+
+# ------------------------------------------------------------------
+# _build_slash_event — guild/parent ids reach profile_routes (#69178, #91633)
+# ------------------------------------------------------------------
+
+
+def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypatch):
+    """A guild-keyed profile route must match a native slash command exactly
+    as it matches a regular message: build_source needs guild_id (and the
+    thread's parent_chat_id) or the route never fires and /new resets the
+    default profile's session instead of the routed one."""
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+    from gateway.profile_routing import ProfileRoute
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        profile_routes=[ProfileRoute(name="work", profile="work", platform="discord", guild_id="1")],
+    )
+    monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda _cfg: [("work", None)])
+    adapter.gateway_runner = runner
+    user = SimpleNamespace(display_name="Jezza", id=42)
+
+    channel_event = adapter._build_slash_event(
+        SimpleNamespace(channel=SimpleNamespace(id=200, name="general", guild=SimpleNamespace(id=1, name="G"), topic=None),
+                        channel_id=200, guild_id=1, user=user),
+        "/new",
+    )
+    thread_event = adapter._build_slash_event(
+        SimpleNamespace(channel=_FakeThreadChannel(channel_id=555), channel_id=555, guild_id=None, user=user),
+        "/status",
+    )
+
+    assert channel_event.source.guild_id == "1"
+    assert channel_event.source.profile == "work"
+    assert thread_event.source.guild_id == "1"
+    assert thread_event.source.parent_chat_id == "100"
+    assert thread_event.source.profile == "work"

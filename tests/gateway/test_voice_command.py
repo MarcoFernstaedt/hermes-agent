@@ -85,15 +85,102 @@ def _make_runner(tmp_path):
     return runner
 
 
+@pytest.mark.asyncio
+async def test_disabled_discord_voice_channels_stop_at_gateway_and_adapter_boundaries(tmp_path):
+    import weakref
+
+    from gateway.config import Platform, PlatformConfig
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from tests.gateway.test_unknown_command import (
+        _make_event as make_dispatch_event,
+        _make_runner as make_dispatch_runner,
+    )
+
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"voice_channels_enabled": False},
+        )
+    )
+    adapter._client = MagicMock()
+
+    def discord_event(command):
+        event = make_dispatch_event(command)
+        event.source.platform = Platform.DISCORD
+        setattr(event.source, "_transport_adapter_ref", weakref.ref(adapter))
+        return event
+
+    hook_calls = []
+
+    async def emit_collect(event_type, ctx):
+        hook_calls.append(event_type)
+        if event_type == "command:voice" and ctx["platform"] != "discord":
+            return [{"decision": "handled", "message": "plugin handled voice"}]
+        return []
+
+    dispatch_runner = make_dispatch_runner()
+    dispatch_runner.hooks.emit_collect = AsyncMock(side_effect=emit_collect)
+    dispatch_runner._adapter_for_source = MagicMock(
+        side_effect=AssertionError("disabled VC actions must not look up an adapter")
+    )
+    with patch("hermes_cli.plugins.fire_pre_command_hook") as pre_command:
+        for command in ("/VoIcE JoIn", "/voice CHANNEL", "/VOICE leave"):
+            event = discord_event(command)
+            assert await dispatch_runner._handle_message(event) == (
+                "Discord voice channels are disabled."
+            )
+            assert await dispatch_runner._handle_voice_channel_join(event) == (
+                "Discord voice channels are disabled."
+            )
+            assert await dispatch_runner._handle_voice_channel_leave(event) == (
+                "Discord voice channels are disabled."
+            )
+    assert hook_calls == []
+    pre_command.assert_not_called()
+    dispatch_runner._adapter_for_source.assert_not_called()
+
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=111),
+        id=222,
+        connect=AsyncMock(),
+    )
+    assert await adapter.join_voice_channel(channel) is False
+    channel.connect.assert_not_awaited()
+
+    dispatch_runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
+    dispatch_runner._adapter_for_source = MagicMock(return_value=adapter)
+    with patch("hermes_cli.plugins.fire_pre_command_hook") as pre_command:
+        for command, expected_mode in (
+            ("/voice on", "voice_only"),
+            ("/voice tts", "all"),
+            ("/voice off", "off"),
+            ("/voice status", "off"),
+        ):
+            result = await dispatch_runner._handle_message(discord_event(command))
+            assert result != "Discord voice channels are disabled."
+            assert dispatch_runner._voice_mode.get("discord:c1", "off") == expected_mode
+    assert hook_calls == ["command:voice"] * 4
+    assert pre_command.call_count == 4
+
+    non_discord_runner = make_dispatch_runner()
+    non_discord_runner.hooks.emit_collect = AsyncMock(side_effect=emit_collect)
+    assert await non_discord_runner._handle_message(make_dispatch_event("/voice on")) == (
+        "plugin handled voice"
+    )
+
+    existing_connection = MagicMock()
+    existing_connection.is_connected.return_value = True
+    existing_connection.is_playing.return_value = False
+    existing_connection.disconnect = AsyncMock()
+    adapter._voice_clients[111] = existing_connection
+    await adapter.leave_voice_channel(111)
+    existing_connection.disconnect.assert_awaited_once_with()
+
+
 # =====================================================================
 # /voice command handler
 # =====================================================================
-
-def test_discord_voice_channels_enabled_default_is_backward_compatible():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["discord"]["voice_channels_enabled"] is True
-
 
 class TestHandleVoiceCommand:
 
@@ -109,183 +196,6 @@ class TestHandleVoiceCommand:
         result = await runner._handle_voice_command(event)
         assert "disabled" in result.lower()
         assert runner._voice_mode["telegram:123"] == "off"
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "/voice join",
-            "/voice channel",
-            "/voice leave",
-        ],
-    )
-    async def test_discord_voice_channels_disabled_rejects_vc_before_side_effects(
-        self, runner, command
-    ):
-        from gateway.config import Platform
-
-        adapter = SimpleNamespace(
-            _voice_channels_enabled=False,
-            join_voice_channel=AsyncMock(),
-            leave_voice_channel=AsyncMock(),
-            _auto_tts_disabled_chats=set(),
-            _auto_tts_enabled_chats=set(),
-        )
-        runner.adapters[Platform.DISCORD] = adapter
-        runner._adapter_for_source = MagicMock(return_value=adapter)
-        runner._voice_mode["discord:123"] = "voice_only"
-        runner._save_voice_modes = MagicMock()
-        runner._handle_voice_channel_join = AsyncMock()
-        runner._handle_voice_channel_leave = AsyncMock()
-        event = _make_event(command)
-        event.source.platform = Platform.DISCORD
-
-        result = await runner._handle_voice_command(event)
-
-        assert result == "Discord voice channels are disabled."
-        assert runner._voice_mode == {"discord:123": "voice_only"}
-        runner._save_voice_modes.assert_not_called()
-        runner._handle_voice_channel_join.assert_not_awaited()
-        runner._handle_voice_channel_leave.assert_not_awaited()
-        adapter.join_voice_channel.assert_not_awaited()
-        adapter.leave_voice_channel.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("command", "expected_mode"),
-        [
-            ("/voice on", "voice_only"),
-            ("/voice tts", "all"),
-            ("/voice off", "off"),
-        ],
-    )
-    async def test_discord_voice_channels_disabled_keeps_voice_message_modes(
-        self, runner, command, expected_mode
-    ):
-        from gateway.config import Platform
-
-        adapter = SimpleNamespace(
-            _voice_channels_enabled=False,
-            _auto_tts_disabled_chats=set(),
-            _auto_tts_enabled_chats=set(),
-        )
-        runner.adapters[Platform.DISCORD] = adapter
-        runner._adapter_for_source = MagicMock(return_value=adapter)
-        event = _make_event(command)
-        event.source.platform = Platform.DISCORD
-
-        result = await runner._handle_voice_command(event)
-
-        assert result != "Discord voice channels are disabled."
-        assert runner._voice_mode["discord:123"] == expected_mode
-
-    @pytest.mark.asyncio
-    async def test_discord_voice_channels_disabled_keeps_voice_status(self, runner):
-        from gateway.config import Platform
-
-        adapter = SimpleNamespace(
-            _voice_channels_enabled=False,
-            _auto_tts_disabled_chats=set(),
-            _auto_tts_enabled_chats=set(),
-        )
-        runner.adapters[Platform.DISCORD] = adapter
-        runner._adapter_for_source = MagicMock(return_value=adapter)
-        event = _make_event("/voice status")
-        event.source.platform = Platform.DISCORD
-
-        result = await runner._handle_voice_command(event)
-
-        assert result != "Discord voice channels are disabled."
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("resolver_result", [None, RuntimeError("resolver failed")])
-    async def test_discord_voice_fails_closed_when_source_adapter_unavailable(
-        self, runner, resolver_result
-    ):
-        from gateway.config import Platform
-
-        runner.adapters[Platform.DISCORD] = SimpleNamespace(_voice_channels_enabled=True)
-        runner._voice_mode["discord:123"] = "voice_only"
-        runner._save_voice_modes = MagicMock()
-        if isinstance(resolver_result, Exception):
-            runner._adapter_for_source = MagicMock(side_effect=resolver_result)
-        else:
-            runner._adapter_for_source = MagicMock(return_value=resolver_result)
-
-        event = _make_event("/VoIcE join")
-        event.source.platform = Platform.DISCORD
-        event.source.profile = "secondary"
-
-        result = await runner._handle_voice_command(event)
-
-        assert result == "Discord voice channels are disabled."
-        assert runner._voice_mode == {"discord:123": "voice_only"}
-        runner._save_voice_modes.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_discord_voice_denial_runs_before_command_hooks(self):
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
-        from tests.gateway.test_unknown_command import (
-            _make_event as make_dispatch_event,
-            _make_runner as make_dispatch_runner,
-        )
-
-        dispatch_runner = make_dispatch_runner()
-        dispatch_runner.config = GatewayConfig(
-            platforms={
-                Platform.DISCORD: PlatformConfig(
-                    enabled=True,
-                    token="***",
-                    extra={"voice_channels_enabled": False},
-                )
-            }
-        )
-        dispatch_runner.adapters = {
-            Platform.DISCORD: SimpleNamespace(_voice_channels_enabled=True)
-        }
-        dispatch_runner._adapter_for_source = MagicMock(
-            side_effect=RuntimeError("profile adapter unavailable")
-        )
-        plugin_side_effects = []
-
-        async def emit_collect(event_type, _ctx):
-            if event_type == "command:voice":
-                plugin_side_effects.append("plugin_voice_hook_ran")
-                return [{"decision": "handled", "message": "plugin handled voice"}]
-            return []
-
-        dispatch_runner.hooks.emit_collect = AsyncMock(side_effect=emit_collect)
-        event = make_dispatch_event("/VoIcE join")
-        event.source.platform = Platform.DISCORD
-        event.source.profile = "secondary"
-
-        with patch("hermes_cli.plugins.fire_pre_command_hook") as pre_command:
-            result = await dispatch_runner._handle_message(event)
-
-        assert result == "Discord voice channels are disabled."
-        assert plugin_side_effects == []
-        pre_command.assert_not_called()
-        dispatch_runner._adapter_for_source.assert_called_once_with(event.source)
-
-    @pytest.mark.asyncio
-    async def test_non_discord_voice_command_hooks_are_unchanged(self):
-        from tests.gateway.test_unknown_command import (
-            _make_event as make_dispatch_event,
-            _make_runner as make_dispatch_runner,
-        )
-
-        dispatch_runner = make_dispatch_runner()
-
-        async def emit_collect(event_type, _ctx):
-            if event_type == "command:voice":
-                return [{"decision": "handled", "message": "plugin handled voice"}]
-            return []
-
-        dispatch_runner.hooks.emit_collect = AsyncMock(side_effect=emit_collect)
-
-        result = await dispatch_runner._handle_message(make_dispatch_event("/voice on"))
-
-        assert result == "plugin handled voice"
 
 
     @pytest.mark.asyncio
@@ -491,7 +401,7 @@ class TestSendVoiceReply:
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -519,7 +429,7 @@ class TestSendVoiceReply:
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -1237,7 +1147,7 @@ class TestStreamTtsToSpeaker:
 
     def test_none_sentinel_flushes_buffer(self):
         """None sentinel causes remaining buffer to be spoken."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1255,7 +1165,7 @@ class TestStreamTtsToSpeaker:
 
     def test_stop_event_aborts_early(self):
         """Setting stop_event causes early exit."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1271,7 +1181,7 @@ class TestStreamTtsToSpeaker:
 
     def test_done_event_set_on_exception(self):
         """tts_done_event is set even when an exception occurs."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -2101,7 +2011,7 @@ class TestStreamTtsTempfileFallback:
         import wave
         import tools.tts_tool as tts_mod
         import tools.voice_mode as vm
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
 
         # Fake registry streamer so resolve_streaming_provider yields chunked
         # PCM regardless of which real providers are configured in the env.
