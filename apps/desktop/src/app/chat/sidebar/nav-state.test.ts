@@ -13,78 +13,89 @@ const item = (id: string, route: string): SidebarNavItem => ({
 })
 
 describe('sidebar navigation selection', () => {
-  test('reports chat when focus is on a session tile', () => {
-    expect(sidebarVisibleView('extension', true)).toBe('chat')
-  })
-
-  test('preserves the current view when focus is on the workspace', () => {
-    expect(sidebarVisibleView('extension', false)).toBe('extension')
-  })
-
-  test.each<[AppView, string, boolean]>([
-    ['extension', '/kanban', true],
-    ['extension', '/reports', false],
-    ['chat', '/kanban', false]
-  ])('selects a contributed route only when its page is visible', (currentView, pathname, expected) => {
-    expect(
-      sidebarNavItemIsActive({
-        contributed: true,
-        currentView,
-        item: item('kanban', '/kanban'),
-        pathname
-      })
-    ).toBe(expected)
-  })
-
-  test('applies the visible view rule to every contributed route', () => {
-    expect(
-      sidebarNavItemIsActive({
-        contributed: true,
-        currentView: 'chat',
-        item: item('reports', '/reports'),
-        pathname: '/reports'
-      })
-    ).toBe(false)
-  })
-
-  test.each<[string, string, AppView]>([
-    ['skills', '/skills', 'skills'],
-    ['messaging', '/messaging', 'messaging'],
-    ['artifacts', '/artifacts', 'artifacts'],
-    ['cron', '/cron', 'cron']
-  ])('preserves built in %s selection', (id, route, currentView) => {
-    expect(
-      sidebarNavItemIsActive({
+  test.each<{
+    contributed: boolean
+    currentView: AppView
+    expected: boolean
+    focusedSessionIsTile: boolean
+    id: string
+    pathname: string
+    route: string
+    visibleView: AppView
+  }>([
+    {
+      contributed: true,
+      currentView: 'extension',
+      expected: true,
+      focusedSessionIsTile: false,
+      id: 'kanban',
+      pathname: '/kanban',
+      route: '/kanban',
+      visibleView: 'extension'
+    },
+    {
+      contributed: true,
+      currentView: 'extension',
+      expected: false,
+      focusedSessionIsTile: false,
+      id: 'kanban',
+      pathname: '/reports',
+      route: '/kanban',
+      visibleView: 'extension'
+    },
+    ...['kanban', 'reports'].map(id => ({
+      contributed: true,
+      currentView: 'extension' as const,
+      expected: false,
+      focusedSessionIsTile: true,
+      id,
+      pathname: `/${id}`,
+      route: `/${id}`,
+      visibleView: 'chat' as const
+    })),
+    ...(['skills', 'messaging', 'artifacts', 'cron'] as const).flatMap(id => [
+      {
         contributed: false,
-        currentView,
-        item: item(id, route),
-        pathname: route
-      })
-    ).toBe(true)
+        currentView: id,
+        expected: true,
+        focusedSessionIsTile: false,
+        id,
+        pathname: `/${id}`,
+        route: `/${id}`,
+        visibleView: id
+      },
+      {
+        contributed: false,
+        currentView: id,
+        expected: false,
+        focusedSessionIsTile: true,
+        id,
+        pathname: `/${id}`,
+        route: `/${id}`,
+        visibleView: 'chat' as const
+      }
+    ]),
+    {
+      contributed: false,
+      currentView: 'skills',
+      expected: false,
+      focusedSessionIsTile: false,
+      id: 'messaging',
+      pathname: '/messaging',
+      route: '/messaging',
+      visibleView: 'skills'
+    }
+  ])('keeps route activity coherent for $id with tile focus $focusedSessionIsTile', input => {
+    const visibleView = sidebarVisibleView(input.currentView, input.focusedSessionIsTile)
 
+    expect(visibleView).toBe(input.visibleView)
     expect(
       sidebarNavItemIsActive({
-        contributed: false,
-        currentView: 'chat',
-        item: item(id, route),
-        pathname: '/session'
+        contributed: input.contributed,
+        currentView: visibleView,
+        item: item(input.id, input.route),
+        pathname: input.pathname
       })
-    ).toBe(false)
-  })
-
-  test.each<[string, string]>([
-    ['skills', '/skills'],
-    ['messaging', '/messaging'],
-    ['artifacts', '/artifacts'],
-    ['cron', '/cron']
-  ])('clears stale built in %s route selection while a session tile is visible', (id, route) => {
-    expect(
-      sidebarNavItemIsActive({
-        contributed: false,
-        currentView: 'chat',
-        item: item(id, route),
-        pathname: route
-      })
-    ).toBe(false)
+    ).toBe(input.expected)
   })
 })

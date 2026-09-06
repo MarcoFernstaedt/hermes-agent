@@ -8,9 +8,10 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
 
-import { ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
+import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
 
 import { ChatSidebar } from './index'
 
@@ -18,12 +19,17 @@ const noop = () => {}
 
 const noopAsync = async () => {}
 
-const renderSidebar = () =>
+const sessionRows = [
+  makeSessionInfo({ id: 'tile-one', last_active: 2, profile: 'default', started_at: 1, title: 'Tile one' }),
+  makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
+]
+
+const renderSidebar = (pathname: string, currentView: AppView) =>
   render(
-    <MemoryRouter initialEntries={['/kanban']}>
+    <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
         <ChatSidebar
-          currentView="extension"
+          currentView={currentView}
           onArchiveSession={noop}
           onBranchSession={noop}
           onDeleteSession={noop}
@@ -44,33 +50,39 @@ const currentButtons = () =>
 
 const activeButtons = () => screen.queryAllByRole('button').filter(button => button.dataset.active === 'true')
 
-const expectOnlyCurrent = (button: HTMLElement | null) => {
+const expectOnlyCurrent = (label: string | null) => {
+  const button = label ? screen.getByRole('button', { name: label }) : null
+
   expect(currentButtons()).toEqual(button ? [button] : [])
   expect(activeButtons()).toEqual(button ? [button] : [])
 }
 
 const expectOnlySelectedSession = (title: string | null) => {
-  const sessionRows = ['Tile one', 'Tile two'].map(label => screen.getByText(label).closest('.group.row-hover'))
-  const selectedRows = sessionRows.filter(row => row?.className.includes('bg-(--ui-row-active-background)'))
+  const rows = ['Tile one', 'Tile two']
+    .map(label => screen.queryByText(label)?.closest('.group.row-hover'))
+    .filter(row => row !== undefined)
 
-  expect(selectedRows).toEqual(title ? [screen.getByText(title).closest('.group.row-hover')] : [])
+  const selectedRows = rows.filter(row => row?.className.includes('bg-(--ui-row-active-background)'))
+  const expected = title ? [screen.getByText(title).closest('.group.row-hover')] : []
+
+  expect(selectedRows).toEqual(expected)
 }
 
-describe('ChatSidebar contributed navigation', () => {
-  let dispose: () => void
+const focus = (groupId: null | string) => act(() => noteActiveTreeGroup(groupId))
+
+describe('ChatSidebar navigation activity', () => {
+  let disposeContributions: () => void
 
   beforeEach(() => {
-    dispose = registry.registerMany([
+    disposeContributions = registry.registerMany([
       { area: ROUTES_AREA, id: 'kanban-page', data: { path: '/kanban' }, render: () => null },
       { area: ROUTES_AREA, id: 'reports-page', data: { path: '/reports' }, render: () => null },
       { area: SIDEBAR_NAV_AREA, id: 'kanban-nav', data: { codicon: 'project', label: 'Kanban', path: '/kanban' } },
       { area: SIDEBAR_NAV_AREA, id: 'reports-nav', data: { codicon: 'graph', label: 'Reports', path: '/reports' } }
     ])
     $selectedStoredSessionId.set('tile-one')
-    $sessions.set([
-      makeSessionInfo({ id: 'tile-one', last_active: 2, profile: 'default', started_at: 1, title: 'Tile one' }),
-      makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
-    ])
+    $sessions.set(sessionRows)
+    $removedSessionIds.set(new Set())
     $layoutTree.set(
       split('row', [
         group(['workspace'], { active: 'workspace', id: 'workspace-group' }),
@@ -83,48 +95,73 @@ describe('ChatSidebar contributed navigation', () => {
 
   afterEach(() => {
     cleanup()
-    dispose()
+    disposeContributions()
     $selectedStoredSessionId.set(null)
     $sessions.set([])
+    $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
   })
 
-  it('tracks the visible surface across routes tiles and null identities', () => {
-    renderSidebar()
-
-    const kanban = screen.getByRole('button', { name: 'Kanban' })
-    const reports = screen.getByRole('button', { name: 'Reports' })
-
-    expectOnlyCurrent(kanban)
+  it('keeps navigation and session activity coherent with the focused pane', () => {
+    renderSidebar('/kanban', 'extension')
+    expectOnlyCurrent('Kanban')
     expectOnlySelectedSession(null)
-    expect(reports.getAttribute('aria-current')).toBeNull()
-    expect(reports.getAttribute('data-active')).not.toBe('true')
 
-    act(() => noteActiveTreeGroup('tile-one-group'))
+    focus('tile-one-group')
     expectOnlyCurrent(null)
     expectOnlySelectedSession('Tile one')
-    expect(kanban.getAttribute('aria-current')).toBeNull()
-    expect(kanban.getAttribute('data-active')).not.toBe('true')
 
-    act(() => noteActiveTreeGroup('tile-two-group'))
+    focus('tile-two-group')
     expectOnlyCurrent(null)
     expectOnlySelectedSession('Tile two')
 
-    act(() => noteActiveTreeGroup('workspace-group'))
-    expectOnlyCurrent(kanban)
+    focus(null)
+    expectOnlyCurrent('Kanban')
     expectOnlySelectedSession(null)
 
-    act(() => $selectedStoredSessionId.set(null))
-    expectOnlyCurrent(kanban)
-
-    act(() => noteActiveTreeGroup('tile-one-group'))
+    focus('tile-two-group')
+    act(() => {
+      $removedSessionIds.set(new Set(['tile-two']))
+      $sessions.set([sessionRows[0]])
+    })
     expectOnlyCurrent(null)
+    expectOnlySelectedSession(null)
 
     act(() => {
-      $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'workspace-group' }))
-      noteActiveTreeGroup('workspace-group')
+      $removedSessionIds.set(new Set())
+      $sessions.set(sessionRows)
     })
-    expectOnlyCurrent(kanban)
+
+    for (const [pathname, currentView, label] of [
+      ['/skills', 'skills', 'Capabilities'],
+      ['/messaging', 'messaging', 'Messaging'],
+      ['/artifacts', 'artifacts', 'Artifacts'],
+      ['/cron', 'cron', 'Scheduled jobs']
+    ] as const) {
+      cleanup()
+      focus('workspace-group')
+      renderSidebar(pathname, currentView)
+      expectOnlyCurrent(label)
+      expectOnlySelectedSession(null)
+
+      focus('tile-one-group')
+      expectOnlyCurrent(null)
+      expectOnlySelectedSession('Tile one')
+    }
+
+    cleanup()
+    focus('workspace-group')
+    renderSidebar('/reports', 'extension')
+    expectOnlyCurrent('Reports')
+
+    cleanup()
+    disposeContributions()
+    disposeContributions = noop
+    focus('workspace-group')
+    renderSidebar('/kanban', 'extension')
+    expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
+    expectOnlyCurrent(null)
+    expectOnlySelectedSession(null)
   })
 })

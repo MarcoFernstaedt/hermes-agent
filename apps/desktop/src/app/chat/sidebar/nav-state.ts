@@ -21,7 +21,6 @@ export function sidebarNavItemIsActive({ contributed, currentView, item, pathnam
     (item.id === 'skills' && currentView === 'skills') ||
     (item.id === 'messaging' && currentView === 'messaging') ||
     (item.id === 'artifacts' && currentView === 'artifacts') ||
-    (item.id === 'cron' && currentView === 'cron') ||
-    (currentView !== 'chat' && Boolean(item.route) && pathname === item.route)
+    (item.id === 'cron' && currentView === 'cron')
   )
 }
