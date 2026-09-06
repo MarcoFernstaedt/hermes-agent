@@ -748,7 +748,7 @@ class GatewayInboundMixin:
         if _denied is not None:
             return True, _denied, command, canonical
 
-        # Voice-channel policy belongs to the receiving Discord adapter/profile. Deny participation
+        # Voice channel policy belongs to the receiving Discord adapter/profile. Deny participation
         # before observers or interceptors run; voice messages and TTS modes remain available.
         voice_channel_gate = getattr(self, "_discord_voice_channel_action_allowed", None)
         if canonical == "voice" and (

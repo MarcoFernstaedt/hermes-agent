@@ -363,7 +363,7 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 
 #### `discord.voice_channels_enabled`
 
-**Type:** boolean — **Default:** `true`
+**Type:** boolean. **Default:** `true`
 
 Set this to `false` to disable Discord voice channel participation. The `/voice join`, `/voice channel`, and `/voice leave` actions are removed from native command choices and rejected when typed. Voice messages remain available for transcription, and `/voice on`, `/voice tts`, `/voice off`, and `/voice status` continue to control spoken replies.
 
