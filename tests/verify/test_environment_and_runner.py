@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import venv
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -182,6 +183,133 @@ class TestPythonIsolation:
         venv = root / ".hermes" / "verify-venv"
         assert str(venv) in result.phases[0].output_tail
         assert (venv / "pyvenv.cfg").is_file()
+
+    def test_missing_pip_is_repaired_before_bare_pip_runs(self, tmp_path):
+        recipe = Recipe(name="Python", kind="python", bootstrap=["pip --version"])
+        assert run_verify(tmp_path, recipe, phases=("bootstrap",)).ok
+        venv = tmp_path / ".hermes" / "verify-venv"
+        pip = runner._scripts_dir_for_venv(venv) / (
+            "pip.exe" if os.name == "nt" else "pip"
+        )
+        pip.unlink()
+
+        result = run_verify(tmp_path, recipe, phases=("bootstrap",))
+
+        assert result.ok
+        assert pip.is_file()
+        assert str(venv) in result.phases[0].output_tail
+
+    @pytest.mark.platforms("posix")
+    def test_redirected_pip_launcher_is_repaired(self, tmp_path):
+        recipe = Recipe(name="Python", kind="python", bootstrap=["pip --version"])
+        assert run_verify(tmp_path, recipe, phases=("bootstrap",)).ok
+        pip = runner._scripts_dir_for_venv(tmp_path / ".hermes" / "verify-venv") / "pip"
+        pip.unlink()
+        pip.symlink_to(sys.executable)
+
+        result = run_verify(tmp_path, recipe, phases=("bootstrap",))
+
+        assert result.ok
+        assert not pip.is_symlink()
+        assert "pip " in result.phases[0].output_tail
+
+    def test_removed_pip_does_not_fall_through_to_caller_path(self, tmp_path):
+        venv = tmp_path / ".hermes" / "verify-venv"
+        pip = runner._scripts_dir_for_venv(venv) / (
+            "pip.exe" if os.name == "nt" else "pip"
+        )
+        recipe = Recipe(
+            name="Python",
+            kind="python",
+            bootstrap=[
+                _python_command(
+                    f"from pathlib import Path; Path({str(pip)!r}).unlink()"
+                )
+            ],
+            test=["pip --version"],
+        )
+
+        result = run_verify(tmp_path, recipe, phases=("bootstrap", "test"))
+
+        assert not result.ok
+        assert result.phases[-1].phase == "isolation"
+        assert not any(phase.phase == "test" for phase in result.phases)
+
+    def test_python_child_environment_drops_foreign_python_install_overrides(
+        self, tmp_path, monkeypatch
+    ):
+        overrides = {
+            "PIP_TARGET": str(tmp_path / "foreign-target"),
+            "PIP_PREFIX": str(tmp_path / "foreign-prefix"),
+            "PIP_USER": "1",
+            "PIP_ROOT": str(tmp_path / "foreign-root"),
+            "PIP_PYTHON": sys.executable,
+            "PYTHONPATH": str(tmp_path / "foreign-imports"),
+            "PYTHONUSERBASE": str(tmp_path / "foreign-userbase"),
+            "UV_SYSTEM_PYTHON": "1",
+            "UV_PYTHON": sys.executable,
+        }
+        for key, value in overrides.items():
+            monkeypatch.setenv(key, value)
+        recipe = Recipe(
+            name="Python",
+            kind="python",
+            test=[
+                _python_command(
+                    "import os; print(','.join(sorted(set(os.environ) & "
+                    f"{set(overrides)!r})))"
+                )
+            ],
+        )
+
+        result = run_verify(tmp_path, recipe, phases=("test",))
+
+        assert result.ok
+        assert result.phases[0].output_tail.strip() == ""
+
+    @pytest.mark.parametrize("override", ["environment", "config"])
+    def test_bare_pip_installs_local_wheel_only_into_project_venv(
+        self, tmp_path, monkeypatch, override
+    ):
+        wheel = tmp_path / "verify_isolation_probe-0.1-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("verify_isolation_probe/__init__.py", "value = 42\n")
+            archive.writestr(
+                "verify_isolation_probe-0.1.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: verify-isolation-probe\nVersion: 0.1\n",
+            )
+            archive.writestr(
+                "verify_isolation_probe-0.1.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nGenerator: verify-test\n"
+                "Root-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            archive.writestr("verify_isolation_probe-0.1.dist-info/RECORD", "")
+
+        foreign = tmp_path / "foreign-target"
+        if override == "environment":
+            monkeypatch.setenv("PIP_TARGET", str(foreign))
+        else:
+            config = tmp_path / "pip.conf"
+            config.write_text(f"[global]\ntarget = {foreign}\n", encoding="utf-8")
+            monkeypatch.setenv("PIP_CONFIG_FILE", str(config))
+        recipe = Recipe(
+            name="Python",
+            kind="python",
+            bootstrap=[
+                _shell_command("pip", "install", "--no-index", "--no-deps", str(wheel))
+            ],
+            test=[
+                _python_command(
+                    "import verify_isolation_probe; print(verify_isolation_probe.value)"
+                )
+            ],
+        )
+
+        result = run_verify(tmp_path, recipe, phases=("bootstrap", "test"))
+
+        assert result.ok, [p.output_tail for p in result.phases]
+        assert result.phases[-1].output_tail.strip() == "42"
+        assert not (foreign / "verify_isolation_probe").exists()
 
     @pytest.mark.parametrize("kind", ["python", "django", "fastapi", "flask"])
     def test_established_python_recipe_kinds_use_isolation(
@@ -411,6 +539,10 @@ class TestPythonIsolation:
             "more tools",
         ))
         assert "PYTHONHOME" not in environment
+        assert environment["PIP_CONFIG_FILE"] == os.devnull
+        assert (environment.get("NoDefaultCurrentDirectoryInExePath") == "1") == (
+            os_name == "nt"
+        )
 
     def test_detected_uv_recipe_uses_one_project_environment(
         self, tmp_path, monkeypatch

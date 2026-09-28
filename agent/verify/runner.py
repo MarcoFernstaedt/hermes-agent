@@ -69,12 +69,38 @@ def _environment_for_venv(
         else str(scripts_dir)
     )
     environment.pop("PYTHONHOME", None)
+    # Ambient Python/pip/uv overrides can bypass the project environment even
+    # when PATH and VIRTUAL_ENV point at it. Projects can set their own options
+    # explicitly in recipe commands if they need a different destination.
+    for key in (
+        "PYTHONPATH",
+        "PYTHONUSERBASE",
+        "PIP_TARGET",
+        "PIP_PREFIX",
+        "PIP_USER",
+        "PIP_ROOT",
+        "PIP_PYTHON",
+        "UV_SYSTEM_PYTHON",
+        "UV_PYTHON",
+    ):
+        environment.pop(key, None)
+    # pip may also redirect installs through user/global config files. Keep
+    # recipe-owned options possible while ignoring caller-owned pip config.
+    environment["PIP_CONFIG_FILE"] = os.devnull
+    if os_name == "nt":
+        # cmd.exe may otherwise search cwd before PATH for pip.exe/python.exe.
+        environment["NoDefaultCurrentDirectoryInExePath"] = "1"
     return environment
 
 
 def _python_for_venv(venv_dir: Path, os_name: str = os.name) -> Path:
     executable = "python.exe" if os_name == "nt" else "python"
     return _scripts_dir_for_venv(venv_dir, os_name=os_name) / executable
+
+
+def _pip_launcher_present(venv_dir: Path) -> bool:
+    pip = _scripts_dir_for_venv(venv_dir) / ("pip.exe" if os.name == "nt" else "pip")
+    return pip.is_file() and not pip.is_symlink()
 
 
 def _path_is_redirect(
@@ -317,11 +343,16 @@ def _project_python_lock(root: Path, timeout: float):
 def _valid_python_environment(venv_dir: Path) -> bool:
     config = venv_dir / "pyvenv.cfg"
     python = _python_for_venv(venv_dir)
-    if not config.is_file() or not python.is_file():
+    if (
+        not config.is_file()
+        or not python.is_file()
+        or not _pip_launcher_present(venv_dir)
+    ):
         return False
 
     validation_environment = dict(os.environ)
     validation_environment.pop("PYTHONHOME", None)
+    validation_environment.pop("PIP_PYTHON", None)
     try:
         proc = subprocess.run(
             [str(python), "-I", "-c", "import sys; print(sys.prefix)"],
@@ -335,6 +366,20 @@ def _valid_python_environment(venv_dir: Path) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     if proc.returncode != 0:
+        return False
+    try:
+        pip_probe = subprocess.run(
+            [str(python), "-I", "-m", "pip", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+            text=True,
+            errors="replace",
+            env=validation_environment,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if pip_probe.returncode != 0:
         return False
     reported_prefix = proc.stdout.strip()
     if not reported_prefix:
@@ -659,9 +704,11 @@ def run_verify(
     environment: Mapping[str, str] | None = None
     lock_context = None
     lock_acquired = False
+    venv_dir = (
+        root / _VERIFY_VENV_RELPATH if recipe.kind in _PYTHON_RECIPE_KINDS else None
+    )
     if recipe.kind in _PYTHON_RECIPE_KINDS:
         isolation_started = time.monotonic()
-        venv_dir = root / _VERIFY_VENV_RELPATH
         lock_timeout = max(0.1, min(phase_timeout, DEFAULT_READY_TIMEOUT))
         try:
             lock_context = _project_python_lock(root, lock_timeout)
@@ -691,6 +738,17 @@ def run_verify(
             if phase not in selected:
                 continue
             for command in getattr(recipe, phase):
+                if venv_dir is not None and not _pip_launcher_present(venv_dir):
+                    result.phases.append(
+                        PhaseResult(
+                            phase="isolation",
+                            command=command,
+                            exit_code=1,
+                            duration=0.0,
+                            output_tail="Project pip launcher disappeared during verification; refusing to resolve a command through the caller's pip.",
+                        )
+                    )
+                    return result
                 phase_result = _run_phase_command(
                     phase,
                     command,
@@ -706,6 +764,18 @@ def run_verify(
                         return result
 
         if skip_start or "start" not in selected or failed or not recipe.start:
+            return result
+
+        if venv_dir is not None and not _pip_launcher_present(venv_dir):
+            result.phases.append(
+                PhaseResult(
+                    phase="isolation",
+                    command=recipe.start,
+                    exit_code=1,
+                    duration=0.0,
+                    output_tail="Project pip launcher disappeared during verification; refusing to start with a caller pip fallback.",
+                )
+            )
             return result
 
         result.readiness = _run_start_phase(
