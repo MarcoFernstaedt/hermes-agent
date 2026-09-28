@@ -99,8 +99,14 @@ def _python_for_venv(venv_dir: Path, os_name: str = os.name) -> Path:
 
 
 def _pip_launcher_present(venv_dir: Path) -> bool:
-    pip = _scripts_dir_for_venv(venv_dir) / ("pip.exe" if os.name == "nt" else "pip")
-    return pip.is_file() and not pip.is_symlink()
+    scripts = _scripts_dir_for_venv(venv_dir)
+    suffix = ".exe" if os.name == "nt" else ""
+    names = ("pip", "pip3", f"pip{sys.version_info.major}.{sys.version_info.minor}")
+    return all(
+        (scripts / f"{name}{suffix}").is_file()
+        and not (scripts / f"{name}{suffix}").is_symlink()
+        for name in names
+    )
 
 
 def _path_is_redirect(

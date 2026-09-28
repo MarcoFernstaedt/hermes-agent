@@ -184,12 +184,15 @@ class TestPythonIsolation:
         assert str(venv) in result.phases[0].output_tail
         assert (venv / "pyvenv.cfg").is_file()
 
-    def test_missing_pip_is_repaired_before_bare_pip_runs(self, tmp_path):
-        recipe = Recipe(name="Python", kind="python", bootstrap=["pip --version"])
+    @pytest.mark.parametrize("launcher", ["pip", "pip3"])
+    def test_missing_pip_is_repaired_before_bare_pip_runs(self, tmp_path, launcher):
+        recipe = Recipe(
+            name="Python", kind="python", bootstrap=[f"{launcher} --version"]
+        )
         assert run_verify(tmp_path, recipe, phases=("bootstrap",)).ok
         venv = tmp_path / ".hermes" / "verify-venv"
         pip = runner._scripts_dir_for_venv(venv) / (
-            "pip.exe" if os.name == "nt" else "pip"
+            f"{launcher}.exe" if os.name == "nt" else launcher
         )
         pip.unlink()
 
@@ -213,10 +216,11 @@ class TestPythonIsolation:
         assert not pip.is_symlink()
         assert "pip " in result.phases[0].output_tail
 
-    def test_removed_pip_does_not_fall_through_to_caller_path(self, tmp_path):
+    @pytest.mark.parametrize("launcher", ["pip", "pip3"])
+    def test_removed_pip_does_not_fall_through_to_caller_path(self, tmp_path, launcher):
         venv = tmp_path / ".hermes" / "verify-venv"
         pip = runner._scripts_dir_for_venv(venv) / (
-            "pip.exe" if os.name == "nt" else "pip"
+            f"{launcher}.exe" if os.name == "nt" else launcher
         )
         recipe = Recipe(
             name="Python",
@@ -226,7 +230,7 @@ class TestPythonIsolation:
                     f"from pathlib import Path; Path({str(pip)!r}).unlink()"
                 )
             ],
-            test=["pip --version"],
+            test=[f"{launcher} --version"],
         )
 
         result = run_verify(tmp_path, recipe, phases=("bootstrap", "test"))
