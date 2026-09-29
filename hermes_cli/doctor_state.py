@@ -720,7 +720,9 @@ def _check_cron_scheduler(should_fix: bool, f: Finding) -> None:
     from hermes_cli.profiles import get_active_profile_name
     profile = get_active_profile_name()
     verb = "has" if count == 1 else "have"
+    install = ("hermes gateway install" if profile == "default"
+               else "hermes --profile default gateway install")
     detail = (f"{count} enabled cron job{'s' if count != 1 else ''} in profile '{profile}' "
-              f"{verb} no scheduler; run hermes gateway install or hermes cron status")
+              f"{verb} no scheduler; run {install} or hermes cron status")
     check_warn(detail)
     f.manual_issues.append(detail)

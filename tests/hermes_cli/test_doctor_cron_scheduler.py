@@ -58,6 +58,7 @@ def test_doctor_scheduler_warning_is_profile_scoped_and_read_only(tmp_path, monk
     with use_cron_store(secondary.parent):
         finding = doctor_state._check_cron_scheduler(True)
     assert "profile 'secondary'" in capsys.readouterr().out
+    assert "hermes --profile default gateway install" in finding.manual_issues[0]
     assert "1 enabled cron job" in finding.manual_issues[0]
     assert jobs_file.read_text(encoding="utf-8-sig") == contents
 
