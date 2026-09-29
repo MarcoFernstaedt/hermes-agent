@@ -184,6 +184,26 @@ class TestPythonIsolation:
         assert str(venv) in result.phases[0].output_tail
         assert (venv / "pyvenv.cfg").is_file()
 
+    @pytest.mark.platforms("windows")
+    def test_windows_bare_pip_ignores_project_root_command(self, tmp_path):
+        root = tmp_path / "flask project with spaces"
+        root.mkdir()
+        (root / "requirements.txt").write_text("flask>=3.0\n", encoding="utf-8")
+        # cmd.exe may otherwise search the project directory ahead of PATH.
+        (root / "pip.cmd").write_text("@echo FOREIGN_PIP\r\n", encoding="utf-8")
+        recipe = detect_recipe(root)
+        assert recipe is not None and recipe.kind == "flask"
+        recipe.bootstrap = ["pip --version"]
+
+        result = run_verify(root, recipe, phases=("bootstrap",), skip_start=True)
+
+        assert result.ok
+        assert "FOREIGN_PIP" not in result.phases[0].output_tail
+        assert (
+            str(root / ".hermes" / "verify-venv").lower()
+            in result.phases[0].output_tail.lower()
+        )
+
     @pytest.mark.parametrize("launcher", ["pip", "pip3"])
     def test_missing_pip_is_repaired_before_bare_pip_runs(self, tmp_path, launcher):
         recipe = Recipe(
