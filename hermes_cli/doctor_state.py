@@ -715,7 +715,7 @@ def _check_cron_scheduler(should_fix: bool, f: Finding) -> None:
         return
     count = sum(is_job_runnable(job) and job.get("state") != "completed"
                 for job in jobs if isinstance(job, dict))
-    if not count or cron_cli._builtin_gateway_liveness() is not False:
+    if not count or cron_cli._builtin_gateway_liveness(cleanup_stale=False) is not False:
         return
     from hermes_cli.profiles import get_active_profile_name
     profile = get_active_profile_name()

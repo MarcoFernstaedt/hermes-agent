@@ -14,7 +14,7 @@ def test_doctor_warns_for_enabled_jobs_without_scheduler(tmp_path, monkeypatch, 
         {"id": "daily", "enabled": True},
         {"id": "disabled", "enabled": False},
     ]}), encoding="utf-8")
-    monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda: False)
+    monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda **_: False)
     with use_cron_store(tmp_path):
         finding = doctor_state._check_cron_scheduler(False)
     out = capsys.readouterr().out
@@ -31,7 +31,7 @@ def test_doctor_does_not_warn_without_enabled_jobs_or_with_a_scheduler(tmp_path,
                        ([{"id": "live", "enabled": True}], True),
                        ([{"id": "unknown", "enabled": True}], None)]:
         jobs_file.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
-        monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda live=live: live)
+        monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda live=live, **_: live)
         with use_cron_store(tmp_path):
             finding = doctor_state._check_cron_scheduler(False)
         assert not finding.manual_issues
@@ -43,7 +43,7 @@ def test_doctor_scheduler_warning_is_profile_scoped_and_read_only(tmp_path, monk
     from hermes_cli import profiles
 
     assert any(check is doctor._check_cron_scheduler for _, check in doctor.DOCTOR_CHECKS)
-    monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda: False)
+    monkeypatch.setattr(cron_cli, "_builtin_gateway_liveness", lambda **_: False)
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "secondary")
     primary = tmp_path / "primary" / "cron"
     secondary = tmp_path / "secondary" / "cron"
@@ -60,3 +60,48 @@ def test_doctor_scheduler_warning_is_profile_scoped_and_read_only(tmp_path, monk
     assert "profile 'secondary'" in capsys.readouterr().out
     assert "1 enabled cron job" in finding.manual_issues[0]
     assert jobs_file.read_text(encoding="utf-8-sig") == contents
+
+
+def test_doctor_probe_preserves_stale_gateway_identity_files(tmp_path, monkeypatch):
+    from hermes_cli import gateway as gateway_cli
+    import cron.jobs as jobs
+
+    home = tmp_path / "isolated"
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True)
+    (cron_dir / "jobs.json").write_text(json.dumps({"jobs": [{"id": "daily", "enabled": True}]}), encoding="utf-8")
+    pid_file = home / "gateway.pid"
+    lock_file = home / "gateway.lock"
+    pid_file.write_text("stale", encoding="utf-8")
+    lock_file.write_text("stale", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+    monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **_: [])
+    monkeypatch.setattr(gateway_cli, "_scan_gateway_pids", lambda *_, **__: [])
+    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: None)
+    with use_cron_store(home):
+        finding = doctor_state._check_cron_scheduler(False)
+    assert finding.manual_issues
+    assert pid_file.read_text(encoding="utf-8-sig") == "stale"
+    assert lock_file.read_text(encoding="utf-8-sig") == "stale"
+
+
+def test_doctor_reads_each_live_profile_scope_on_return_to_first(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli import gateway as gateway_cli
+
+    homes = [tmp_path / "first", tmp_path / "second"]
+    for home, enabled in zip(homes, (True, False)):
+        cron_dir = home / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text(
+            json.dumps({"jobs": [{"id": home.name, "enabled": enabled}]}), encoding="utf-8")
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+    monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **_: [])
+    monkeypatch.setattr(gateway_cli, "_scan_gateway_pids", lambda *_, **__: [])
+    for home, expected in [(homes[0], True), (homes[1], False), (homes[0], True)]:
+        token = set_hermes_home_override(home)
+        try:
+            assert bool(doctor_state._check_cron_scheduler(False).manual_issues) is expected
+        finally:
+            reset_hermes_home_override(token)
