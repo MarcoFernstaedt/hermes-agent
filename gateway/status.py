@@ -2099,7 +2099,8 @@ def get_running_pid(
     records and inactive-lock metadata still take the full poison-file cleanup."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
-    if is_gateway_runtime_lock_active(resolved_lock_path, cleanup_stale=cleanup_stale):
+    if (is_gateway_runtime_lock_active(resolved_lock_path) if cleanup_stale
+            else is_gateway_runtime_lock_active(resolved_lock_path, cleanup_stale=False)):
         records = (
             _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
         )
